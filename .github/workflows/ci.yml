@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint + Test (macOS arm64)
+    runs-on: macos-14
+
+    env:
+      # `ffmpeg-next` 7.1 needs ffmpeg 7.x headers; pin via Homebrew bottle.
+      PKG_CONFIG_PATH: /opt/homebrew/opt/ffmpeg@7/lib/pkgconfig
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system deps
+        run: |
+          brew install ffmpeg@7 pkg-config
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: uv sync (sidecar)
+        working-directory: sidecar
+        run: uv sync
+
+      - name: Generate ffmpeg test fixtures
+        run: bash scripts/generate_fixtures.sh
+
+      - name: make lint
+        run: make lint
+
+      - name: make test
+        run: make test

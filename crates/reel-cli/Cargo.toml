@@ -1,0 +1,18 @@
+[package]
+name              = "reel-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description       = "Reel headless CLI (probe, info, future batch ops)"
+
+[[bin]]
+name = "reel-cli"
+path = "src/main.rs"
+
+[dependencies]
+reel-core            = { path = "../reel-core" }
+clap.workspace       = true
+anyhow.workspace     = true
+tracing.workspace    = true
+serde_json.workspace = true

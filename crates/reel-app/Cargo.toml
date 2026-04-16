@@ -1,0 +1,25 @@
+[package]
+name              = "reel-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description       = "Reel desktop app (Slint UI)"
+
+[[bin]]
+name = "reel"
+path = "src/main.rs"
+
+[dependencies]
+reel-core                   = { path = "../reel-core" }
+slint.workspace             = true
+anyhow.workspace            = true
+tracing.workspace           = true
+parking_lot.workspace       = true
+crossbeam-channel.workspace = true
+ffmpeg-next.workspace       = true
+cpal.workspace              = true
+ringbuf.workspace           = true
+
+[build-dependencies]
+slint-build.workspace = true

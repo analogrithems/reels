@@ -1,0 +1,49 @@
+.PHONY: setup build lint test run run-cli clean ci check-tools fixtures fmt
+
+SHELL := /bin/bash
+
+# Pin ffmpeg@7 for ffmpeg-next 7.1 compatibility.
+FFMPEG7_PREFIX := $(shell brew --prefix ffmpeg@7 2>/dev/null)
+export PKG_CONFIG_PATH := $(FFMPEG7_PREFIX)/lib/pkgconfig:$(PKG_CONFIG_PATH)
+
+check-tools:
+	@command -v rustup >/dev/null    || { echo "rustup missing: https://rustup.rs"; exit 1; }
+	@command -v pkg-config >/dev/null || { echo "pkg-config missing: brew install pkg-config"; exit 1; }
+	@command -v uv >/dev/null         || { echo "uv missing: brew install uv"; exit 1; }
+	@brew list ffmpeg@7 >/dev/null 2>&1 || { echo "ffmpeg@7 missing: brew install ffmpeg@7"; exit 1; }
+	@pkg-config --exists libavformat  || { echo "ffmpeg@7 pkg-config not found at $(FFMPEG7_PREFIX); check PKG_CONFIG_PATH"; exit 1; }
+	@echo "tools OK ($(shell pkg-config --modversion libavformat) libavformat)"
+
+setup: check-tools
+	rustup show
+	cargo fetch
+	cd sidecar && uv sync
+
+build:
+	cargo build --workspace
+
+fmt:
+	cargo fmt --all
+
+lint:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cd sidecar && uv run ruff check .
+
+test:
+	cargo test --workspace --all-features
+
+run:
+	cargo run -p reel-app
+
+run-cli:
+	cargo run -p reel-cli -- $(ARGS)
+
+fixtures:
+	bash scripts/generate_fixtures.sh
+
+clean:
+	cargo clean
+	rm -rf sidecar/.venv
+
+ci: lint test

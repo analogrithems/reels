@@ -1,0 +1,25 @@
+# Rust
+/target
+Cargo.lock.bak
+
+# Python sidecar
+sidecar/.venv/
+sidecar/__pycache__/
+sidecar/**/__pycache__/
+sidecar/.ruff_cache/
+sidecar/.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Local project state created at runtime
+project.json.bak
+project.json.tmp
+
+# Editor
+.vscode/
+.idea/
+*.swp
