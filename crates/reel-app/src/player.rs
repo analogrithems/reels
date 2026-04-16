@@ -79,7 +79,8 @@ impl AudioClock {
 
 /// Handle to a running player. Dropping it stops and joins both threads.
 pub struct PlayerHandle {
-    tx: Sender<Cmd>,
+    tx_video: Sender<Cmd>,
+    tx_audio: Sender<Cmd>,
     video_thread: Option<JoinHandle<()>>,
     audio_thread: Option<JoinHandle<()>>,
 }
@@ -88,23 +89,33 @@ impl PlayerHandle {
     /// Hand out a clone of the command sender so it can be captured by UI
     /// callbacks without borrowing the whole handle.
     pub fn cmd_sender(&self) -> PlayerCmdSender {
-        PlayerCmdSender(self.tx.clone())
+        PlayerCmdSender {
+            tx_video: self.tx_video.clone(),
+            tx_audio: self.tx_audio.clone(),
+        }
     }
 }
 
-/// Cloneable sender into the player command channel.
+/// Cloneable sender that fans out each command to both the video and audio
+/// threads. A single `crossbeam_channel` with two cloned receivers would
+/// deliver each message to only one thread, which is not what we want.
 #[derive(Clone)]
-pub struct PlayerCmdSender(Sender<Cmd>);
+pub struct PlayerCmdSender {
+    tx_video: Sender<Cmd>,
+    tx_audio: Sender<Cmd>,
+}
 
 impl PlayerCmdSender {
     pub fn send(&self, cmd: Cmd) {
-        let _ = self.0.send(cmd);
+        let _ = self.tx_video.send(cmd.clone());
+        let _ = self.tx_audio.send(cmd);
     }
 }
 
 impl Drop for PlayerHandle {
     fn drop(&mut self) {
-        let _ = self.tx.send(Cmd::Stop);
+        let _ = self.tx_video.send(Cmd::Stop);
+        let _ = self.tx_audio.send(Cmd::Stop);
         if let Some(t) = self.video_thread.take() {
             let _ = t.join();
         }
@@ -119,8 +130,8 @@ pub fn spawn_player(window: &AppWindow) -> Result<PlayerHandle> {
     // Initialize ffmpeg once.
     ffmpeg::init().context("ffmpeg::init")?;
 
-    let (tx, rx_video) = crossbeam_channel::unbounded::<Cmd>();
-    let rx_audio = rx_video.clone();
+    let (tx_video, rx_video) = crossbeam_channel::unbounded::<Cmd>();
+    let (tx_audio, rx_audio) = crossbeam_channel::unbounded::<Cmd>();
 
     let clock = AudioClock::new();
 
@@ -140,7 +151,8 @@ pub fn spawn_player(window: &AppWindow) -> Result<PlayerHandle> {
         .spawn(move || audio_loop(rx_audio, clock_a, producer, consumer))?;
 
     Ok(PlayerHandle {
-        tx,
+        tx_video,
+        tx_audio,
         video_thread: Some(video_thread),
         audio_thread: Some(audio_thread),
     })
@@ -165,30 +177,55 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
 
         if let Some(c) = cmd {
             match c {
-                Cmd::Open(p) => match VideoCtx::open(&p) {
-                    Ok(c) => {
-                        let dur = c.duration_ms;
-                        ctx = Some(c);
-                        clock.set(0);
-                        let wk = weak.clone();
-                        on_ui(wk, move |w| {
-                            w.set_duration_ms(dur as f32);
+                Cmd::Open(p) => {
+                    // Drop any prior source and disable transport immediately
+                    // so Play cannot be issued against a half-opened file.
+                    ctx = None;
+                    playing = false;
+                    clock.set_playing(false);
+                    clock.set(0);
+                    {
+                        let disp = p.display().to_string();
+                        on_ui(weak.clone(), move |w| {
+                            w.set_media_ready(false);
+                            w.set_is_playing(false);
+                            w.set_duration_ms(0.0);
                             w.set_playhead_ms(0.0);
-                            w.set_status_text(format!("Opened ({dur} ms)").into());
+                            w.set_status_text(format!("Loading {disp}…").into());
                         });
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "video open failed");
-                        let wk = weak.clone();
-                        on_ui(wk, move |w| {
-                            w.set_status_text(format!("Open failed: {e}").into());
-                        });
+                    match try_open_video(&p) {
+                        Ok(new_ctx) => {
+                            let dur = new_ctx.duration_ms;
+                            ctx = Some(new_ctx);
+                            on_ui(weak.clone(), move |w| {
+                                w.set_duration_ms(dur as f32);
+                                w.set_playhead_ms(0.0);
+                                w.set_status_text(format!("Ready ({dur} ms)").into());
+                                w.set_media_ready(true);
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "video open failed");
+                            on_ui(weak.clone(), move |w| {
+                                w.set_media_ready(false);
+                                w.set_status_text(format!("Open failed: {e}").into());
+                            });
+                        }
                     }
-                },
+                }
                 Cmd::Play => {
-                    playing = true;
-                    clock.set_playing(true);
-                    on_ui(weak.clone(), |w| w.set_is_playing(true));
+                    // Only start playback if a source is loaded. The UI
+                    // disables the Play button in this state, but we still
+                    // defend against stray commands (e.g. keyboard shortcuts,
+                    // tests, scripts).
+                    if ctx.is_some() {
+                        playing = true;
+                        clock.set_playing(true);
+                        on_ui(weak.clone(), |w| w.set_is_playing(true));
+                    } else {
+                        tracing::debug!("Play ignored: no media loaded");
+                    }
                 }
                 Cmd::Pause => {
                     playing = false;
@@ -197,16 +234,18 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                 }
                 Cmd::Seek { pts_ms } => {
                     if let Some(c) = ctx.as_mut() {
-                        if let Err(e) = c.seek(pts_ms) {
-                            tracing::warn!(error = %e, pts_ms, "video seek failed");
-                        } else {
-                            clock.set(pts_ms);
-                            // Present one frame immediately on seek, paused or not.
-                            if let Some(frame) = c.next_presentable_frame() {
-                                present(&weak, frame);
+                        match c.seek(pts_ms) {
+                            Ok(()) => {
+                                clock.set(pts_ms);
+                                if let Some(frame) = c.next_presentable_frame() {
+                                    present(&weak, frame);
+                                }
+                                let pts_f = pts_ms as f32;
+                                on_ui(weak.clone(), move |w| w.set_playhead_ms(pts_f));
                             }
-                            let pts_f = pts_ms as f32;
-                            on_ui(weak.clone(), move |w| w.set_playhead_ms(pts_f));
+                            Err(e) => {
+                                tracing::warn!(error = %e, pts_ms, "video seek failed");
+                            }
                         }
                     }
                 }
@@ -243,6 +282,30 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                 }
             }
         }
+    }
+}
+
+/// Panic-safe wrapper around [`VideoCtx::open`].
+///
+/// `ffmpeg_next` error paths are normally `Result`-based, but a malformed or
+/// partial container has in the past been observed to trip internal asserts
+/// in some codecs. `catch_unwind` turns any such panic into a surfaced error
+/// instead of a UI-thread crash.
+fn try_open_video(path: &Path) -> Result<VideoCtx> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| VideoCtx::open(path))) {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::anyhow!("panic while opening {}", path.display())),
+    }
+}
+
+/// Panic-safe wrapper around [`AudioCtx::open`]. See [`try_open_video`].
+fn try_open_audio(path: &Path) -> Result<AudioCtx> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| AudioCtx::open(path))) {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::anyhow!(
+            "panic while opening audio {}",
+            path.display()
+        )),
     }
 }
 
@@ -348,23 +411,54 @@ impl VideoCtx {
     }
 
     fn frame_to_rgba(&mut self, src: &mut ffmpeg::frame::Video) -> VideoFrame {
-        let mut dst = ffmpeg::frame::Video::empty();
-        dst.set_format(ffmpeg::format::Pixel::RGBA);
-        dst.set_width(self.width);
-        dst.set_height(self.height);
-        let _ = self.scaler.run(src, &mut dst);
-        let stride = dst.stride(0);
-        let expected = (self.width as usize) * 4;
-        let mut rgba = Vec::with_capacity((self.width * self.height * 4) as usize);
-        let plane = dst.data(0);
-        for row in 0..self.height as usize {
-            let start = row * stride;
-            rgba.extend_from_slice(&plane[start..start + expected]);
-        }
         let pts = src.pts().unwrap_or(0);
         let pts_ms = (pts as f64 * f64::from(self.time_base.numerator())
             / f64::from(self.time_base.denominator())
             * 1000.0) as u64;
+
+        let empty = VideoFrame {
+            pts_ms,
+            width: self.width,
+            height: self.height,
+            rgba: vec![0u8; (self.width as usize) * (self.height as usize) * 4],
+        };
+
+        let mut dst = ffmpeg::frame::Video::empty();
+        dst.set_format(ffmpeg::format::Pixel::RGBA);
+        dst.set_width(self.width);
+        dst.set_height(self.height);
+        if let Err(e) = self.scaler.run(src, &mut dst) {
+            tracing::warn!(error = %e, "scaler run failed; presenting black frame");
+            return empty;
+        }
+
+        let stride = dst.stride(0);
+        let width_bytes = (self.width as usize) * 4;
+        if stride < width_bytes {
+            tracing::warn!(
+                stride,
+                width_bytes,
+                "scaler stride < row width; presenting black frame"
+            );
+            return empty;
+        }
+
+        let plane = dst.data(0);
+        let required = stride * (self.height as usize).saturating_sub(1) + width_bytes;
+        if plane.len() < required {
+            tracing::warn!(
+                plane_len = plane.len(),
+                required,
+                "scaler output too small; presenting black frame"
+            );
+            return empty;
+        }
+
+        let mut rgba = Vec::with_capacity(width_bytes * self.height as usize);
+        for row in 0..self.height as usize {
+            let start = row * stride;
+            rgba.extend_from_slice(&plane[start..start + width_bytes]);
+        }
         VideoFrame {
             pts_ms,
             width: self.width,
@@ -445,18 +539,23 @@ where
 
         if let Some(c) = cmd {
             match c {
-                Cmd::Open(p) => match AudioCtx::open(&p) {
-                    Ok(a) => actx = Some(a),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "audio open failed; continuing muted");
-                        actx = None;
+                Cmd::Open(p) => {
+                    actx = None;
+                    playing = false;
+                    match try_open_audio(&p) {
+                        Ok(a) => actx = Some(a),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "audio open failed; continuing muted");
+                        }
                     }
-                },
-                Cmd::Play => playing = true,
+                }
+                Cmd::Play => playing = actx.is_some(),
                 Cmd::Pause => playing = false,
                 Cmd::Seek { pts_ms } => {
                     if let Some(a) = actx.as_mut() {
-                        let _ = a.seek(pts_ms);
+                        if let Err(e) = a.seek(pts_ms) {
+                            tracing::warn!(error = %e, pts_ms, "audio seek failed");
+                        }
                     }
                     // Nudge the audio callback with one silence sample so the
                     // listener hears the seek effect immediately instead of

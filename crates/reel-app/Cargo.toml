@@ -20,6 +20,7 @@ crossbeam-channel.workspace = true
 ffmpeg-next.workspace       = true
 cpal.workspace              = true
 ringbuf.workspace           = true
+rfd.workspace               = true
 
 [build-dependencies]
 slint-build.workspace = true

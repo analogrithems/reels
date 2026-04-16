@@ -30,6 +30,7 @@ parking_lot         = "0.12"
 crossbeam-channel   = "0.5"
 uuid                = { version = "1", features = ["serde", "v4"] }
 ringbuf             = "0.4"
+rfd                 = "0.15"
 
 # Dev
 assert_matches      = "1.5"

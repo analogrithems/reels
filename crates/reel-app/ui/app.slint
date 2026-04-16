@@ -10,6 +10,10 @@ export component AppWindow inherits Window {
     in property <float> duration-ms: 0;
     in property <float> playhead-ms: 0;
     in property <bool> is-playing: false;
+    // True only after a file has been successfully opened by the video
+    // thread. Gates the Play button and the timeline slider so users cannot
+    // issue transport commands against an empty / failed source.
+    in property <bool> media-ready: false;
     in property <string> status-text: "Ready";
 
     // Callbacks fired to Rust
@@ -61,9 +65,11 @@ export component AppWindow inherits Window {
                 }
                 Button {
                     text: root.is-playing ? "Pause" : "Play";
+                    enabled: root.media-ready;
                     clicked => { root.play-pause(); }
                 }
                 Slider {
+                    enabled: root.media-ready;
                     minimum: 0;
                     maximum: max(root.duration-ms, 1);
                     value: root.playhead-ms;
