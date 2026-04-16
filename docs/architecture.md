@@ -55,3 +55,48 @@ Rules:
 - `reel_core::logging::spawn_logged_child` — the sidecar process launcher.
 - `reel_core::media::decoder::{DecodeCmd, DecodedFrame}` — stable types the future AI-swap round-trip (save frame → Python → reload) will interop against.
 - `sidecar/facefusion_bridge.py` — line-delimited JSON stdio contract documented in `sidecar/README.md`.
+
+## FaceFusion bridge (Phase 3)
+
+```text
+  reel-cli / reel-app                 sidecar/ (uv-managed Python)
+  ┌────────────────────┐   stdin      ┌───────────────────────────┐
+  │ SidecarClient      │ ───── JSON ─►│ facefusion_bridge.py      │
+  │ - swap_frame()     │              │   ops: ping / swap /      │
+  │ - ping()           │◄──── JSON ── │        shutdown           │
+  │ - reader thread    │   stdout     │   transforms:             │
+  │ - pending by `id`  │              │     identity, invert      │
+  └─────────┬──────────┘              └──────────┬────────────────┘
+            │                                    │
+            │  tempfile<id>.rgba  (raw RGBA8)    │
+            └────────────────────────────────────┘
+                           ▲       ▲
+                    Rust writes   Python writes
+                    in_path       out_path
+```
+
+Contract (line-delimited JSON):
+
+```
+→ {"id": N, "op": "swap",
+   "in_path": "…/in-N.rgba",
+   "width": W, "height": H,
+   "params": {"model": "identity" | "invert", …}}
+← {"id": N, "status": "ok", "out_path": "…/in-N.rgba.out"}
+← {"id": N, "status": "err", "reason": "…"}
+```
+
+Pixels travel via tempfiles (owned by the client's `tempfile::TempDir`) rather
+than inline base64 to keep the JSON small. The reader thread de-multiplexes
+responses back to their original caller by `id`, so the client is safe to
+call from multiple threads.
+
+Test hooks on `params`:
+
+- `sleep_ms: N` — delay the response (exercises `SidecarError::Timeout`).
+- `crash: true` — `sys.exit(1)` before responding (exercises `SidecarError::Crashed`).
+
+Real FaceFusion model integration is **not** in scope for this phase: the
+bridge is proven end-to-end with identity + invert placeholders. Dropping in
+the real model should require no Rust changes — only a new entry in the
+Python `TRANSFORMS` table and a model download step in `uv sync`.

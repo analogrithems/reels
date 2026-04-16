@@ -1,9 +1,11 @@
 //! Media engine: probe, metadata types, and (later) frame decode loops.
 
 pub mod decoder;
+pub mod frame;
 pub mod metadata;
 pub mod probe;
 
+pub use frame::grab_frame;
 pub use metadata::{AudioStreamInfo, MediaMetadata, VideoStreamInfo};
 pub use probe::FfmpegProbe;
 

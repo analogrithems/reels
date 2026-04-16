@@ -31,10 +31,11 @@ crossbeam-channel   = "0.5"
 uuid                = { version = "1", features = ["serde", "v4"] }
 ringbuf             = "0.4"
 rfd                 = "0.15"
+image               = { version = "0.25", default-features = false, features = ["png"] }
+tempfile            = "3"
 
 # Dev
 assert_matches      = "1.5"
-tempfile            = "3"
 insta               = { version = "1", features = ["json"] }
 mockall             = "0.12"
 pretty_assertions   = "1"

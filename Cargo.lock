@@ -4216,8 +4216,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "image",
  "reel-core",
  "serde_json",
+ "tempfile",
  "tracing",
 ]
 

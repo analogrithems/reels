@@ -119,6 +119,35 @@ pub fn spawn_logged_child(mut cmd: Command, target: &'static str) -> std::io::Re
     Ok(child)
 }
 
+/// Spawn a child process for IPC use: `stdin`/`stdout` are piped and returned
+/// to the caller (used by [`crate::sidecar::SidecarClient`] for line-delimited
+/// JSON); `stderr` is forwarded into `tracing` at `WARN` under `target`.
+///
+/// Unlike [`spawn_logged_child`], the child's `stdout` is **not** consumed by
+/// this helper — the caller owns the read side.
+pub fn spawn_child_with_logged_stderr(
+    mut cmd: Command,
+    target: &'static str,
+) -> std::io::Result<Child> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+
+    if let Some(stderr) = child.stderr.take() {
+        let reader = BufReader::new(stderr);
+        std::thread::Builder::new()
+            .name(format!("{target}-stderr"))
+            .spawn(move || {
+                for line in reader.lines().map_while(Result::ok) {
+                    tracing::warn!(target: "reel_core::sidecar", sidecar = target, line = %line);
+                }
+            })?;
+    }
+
+    Ok(child)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

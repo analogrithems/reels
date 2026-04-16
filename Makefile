@@ -32,6 +32,7 @@ lint:
 
 test:
 	cargo test --workspace --all-features
+	cd sidecar && uv run pytest -q
 
 run:
 	cargo run -p reel-app
