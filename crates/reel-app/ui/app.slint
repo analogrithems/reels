@@ -20,7 +20,7 @@ export component AppWindow inherits Window {
     in-out property <float> playhead-ms: 0;
     in property <bool> is-playing: false;
     in property <bool> media-ready: false;
-    /// Transient messages (export, errors, undo feedback). Empty when idle — readiness is shown in the footer.
+    /// Transient messages (export, errors, undo feedback). Shown in the bottom strip; codec/path/save need **View → Show Status**.
     in property <string> status-text: "";
 
     in property <bool> close-enabled: false;
@@ -77,7 +77,7 @@ export component AppWindow inherits Window {
     in property <string> footer-path-line: "";
     in property <string> footer-save-line: "";
     in property <bool> footer-unsaved: false;
-    /// True when a project / media is loaded — footer shows codecs, paths, save state (see `sync_footer`).
+    /// True when a project / media is loaded — codec/path/save lines are filled when **View → Show Status** is on (see `sync_footer`).
     in property <bool> footer-visible: false;
     callback footer-refresh();
 
@@ -194,10 +194,6 @@ export component AppWindow inherits Window {
         if (!root.controls-overlay-always-visible) {
             transport-chrome-hide.restart();
         }
-    }
-
-    function transport-overlay-opacity() -> float {
-        return root.controls-overlay-always-visible ? 1.0 : root.transport-chrome-opacity;
     }
 
     MenuBar {
@@ -491,7 +487,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    FocusScope {
+    main-view-focus := FocusScope {
         vertical-stretch: 1;
         width: 100%;
         focus-on-click: true;
@@ -677,29 +673,41 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // `moved` only fires while a button is held — use `pointer-event` for hover / trackpad glide.
+            // Full-viewport hit target for waking the transport chrome. Keep keyboard focus on `main-view-focus`
+            // so Space / shortcuts work (TouchArea can take focus on click otherwise).
             TouchArea {
                 width: 100%;
                 height: 100%;
-                // `moved` only runs while a button is held; any pointer event covers hover + drag + touch.
                 pointer-event(_) => {
                     wake-transport-chrome();
+                }
+                clicked => {
+                    main-view-focus.focus();
                 }
             }
 
             // Compact floating transport: ≤150px tall and ≤42% of preview height (well under half the viewport).
-            if root.media-ready && transport-overlay-opacity() > 0.001: Rectangle {
+            // Opacity is applied only to the backdrop — not the interactive root — so Slint hit-testing stays correct.
+            if root.media-ready && (root.controls-overlay-always-visible || root.transport-chrome-opacity > 0.001): Rectangle {
                 property <length> chrome-max-h: min(150px, parent.height * 42 / 100);
                 x: 20px;
                 y: parent.height - self.height - 14px;
                 width: parent.width - 40px;
                 height: chrome-max-h;
-                opacity: transport-overlay-opacity();
                 clip: true;
                 border-radius: 10px;
-                background: #1c1c20e8;
-                // Do not wrap in a parent TouchArea — it would steal clicks from play / transport / sliders.
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    border-radius: 10px;
+                    background: #1c1c20e8;
+                    opacity: root.controls-overlay-always-visible ? 1.0 : root.transport-chrome-opacity;
+                }
                 VerticalBox {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
                         padding-left: 16px;
                         padding-right: 16px;
                         padding-top: 8px;
@@ -728,6 +736,7 @@ export component AppWindow inherits Window {
                                     maximum: 100;
                                     value: root.volume-percent;
                                     changed(v) => {
+                                        main-view-focus.focus();
                                         root.volume-percent = v;
                                         root.volume-changed(v);
                                         wake-transport-chrome();
@@ -745,6 +754,7 @@ export component AppWindow inherits Window {
                                 rw-ta := TouchArea {
                                     enabled: root.media-ready;
                                     clicked => {
+                                        main-view-focus.focus();
                                         root.transport-rewind();
                                         wake-transport-chrome();
                                     }
@@ -759,6 +769,7 @@ export component AppWindow inherits Window {
                                 play-ta := TouchArea {
                                     enabled: root.media-ready;
                                     clicked => {
+                                        main-view-focus.focus();
                                         root.play-pause();
                                         wake-transport-chrome();
                                     }
@@ -797,6 +808,7 @@ export component AppWindow inherits Window {
                                 ff-ta := TouchArea {
                                     enabled: root.media-ready;
                                     clicked => {
+                                        main-view-focus.focus();
                                         root.transport-forward();
                                         wake-transport-chrome();
                                     }
@@ -848,6 +860,7 @@ export component AppWindow inherits Window {
                                 step: 0;
                                 value <=> root.playhead-ms;
                                 changed(v) => {
+                                    main-view-focus.focus();
                                     root.seek-timeline(v);
                                     wake-transport-chrome();
                                 }
@@ -867,46 +880,12 @@ export component AppWindow inherits Window {
             }
         }
 
+        // Single strip below the preview: export progress, transient status, or codec/path/save when View → Show Status.
         Rectangle {
-            background: #1a1a20;
+            background: #1c1c22;
             vertical-stretch: 0;
-            VerticalBox {
-                padding: 6px;
-                spacing: 4px;
-                Text {
-                    text: "Timeline";
-                    color: #888;
-                    font-size: 11px;
-                }
-                Rectangle {
-                    visible: root.video-track-lanes != "";
-                    height: lanes-text.preferred-height;
-                    lanes-text := Text {
-                        text: root.video-track-lanes;
-                        color: #8a8a95;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                    TouchArea {
-                        enabled: root.trim-enabled;
-                        double-clicked => {
-                            root.edit-trim-clip();
-                        }
-                    }
-                }
-                Text {
-                    text: root.audio-track-lanes;
-                    color: #7a9a8a;
-                    font-size: 10px;
-                    wrap: word-wrap;
-                    visible: root.audio-track-lanes != "";
-                }
-            }
-        }
-
-        Rectangle {
-            background: #2a2a30;
-            vertical-stretch: 0;
+            visible: root.export-in-progress || root.status-text != "" || (root.footer-visible && root.view-show-status);
+            clip: true;
             VerticalBox {
                 padding: 0;
                 spacing: 0;
@@ -937,55 +916,49 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                 }
-            }
-        }
-
-        Rectangle {
-            background: #1c1c22;
-            min-height: root.footer-visible ? 30px : 0px;
-            visible: root.footer-visible;
-            vertical-stretch: 0;
-            clip: true;
-            HorizontalBox {
-                padding-top: 6px;
-                padding-bottom: 6px;
-                padding-left: 10px;
-                padding-right: 10px;
-                spacing: 12px;
-                alignment: center;
-                Text {
-                    text: root.footer-codec-line;
-                    color: #b8b8c2;
-                    font-size: 10px;
-                    wrap: no-wrap;
-                    horizontal-stretch: 0;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    width: 1px;
-                    height: 12px;
-                    background: #4a4a58;
-                }
-                Text {
-                    text: root.footer-path-line;
-                    color: #7a8490;
-                    font-size: 9px;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    width: 1px;
-                    height: 12px;
-                    background: #4a4a58;
-                }
-                Text {
-                    text: root.footer-save-line;
-                    color: root.footer-unsaved ? #e0a030 : #6aab7a;
-                    font-size: 10px;
-                    wrap: no-wrap;
-                    horizontal-stretch: 0;
-                    vertical-alignment: center;
+                HorizontalBox {
+                    visible: root.status-text == "" && root.footer-visible && root.view-show-status;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 12px;
+                    alignment: center;
+                    min-height: 30px;
+                    Text {
+                        text: root.footer-codec-line;
+                        color: #b8b8c2;
+                        font-size: 10px;
+                        wrap: no-wrap;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 1px;
+                        height: 12px;
+                        background: #4a4a58;
+                    }
+                    Text {
+                        text: root.footer-path-line;
+                        color: #7a8490;
+                        font-size: 9px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 1px;
+                        height: 12px;
+                        background: #4a4a58;
+                    }
+                    Text {
+                        text: root.footer-save-line;
+                        color: root.footer-unsaved ? #e0a030 : #6aab7a;
+                        font-size: 10px;
+                        wrap: no-wrap;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
@@ -994,7 +967,7 @@ export component AppWindow inherits Window {
 
         footer-sync-timer := Timer {
             interval: 350ms;
-            running: root.footer-visible && root.is-playing;
+            running: root.footer-visible && root.view-show-status && root.is-playing;
             triggered => {
                 root.footer-refresh();
             }

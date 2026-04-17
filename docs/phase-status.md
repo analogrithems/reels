@@ -106,7 +106,7 @@ Implementation tracking for **menu- and timeline-visible** features described in
 
 - [x] **File → Open Recent** (**U4**) — MRU **projects** and **media**; **Clear Recent**; persistence + prune on missing file (per-entry remove optional / not shipped)
 - [x] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**) — per-clip, **Ctrl+R** / **Ctrl+Shift+R**; preview post-scaler + ffmpeg `-vf` on export
-- [x] **Trim Clip…** (**U2**) — **Edit → Trim Clip…** or **double-click** the video track-lane strip above the timeline; per-clip begin/end in source seconds, inline validation, undoable (see **`docs/FEATURES.md`**, **`docs/KEYBOARD.md`**)
+- [x] **Trim Clip…** (**U2**) — **Edit → Trim Clip…**; per-clip begin/end in source seconds, inline validation, undoable (see **`docs/FEATURES.md`**, **`docs/KEYBOARD.md`**)
 - [ ] **Timeline** — **two markers** on the seek bar (in/out range) for working / export scope *(open)*
 - [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
 - [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)

@@ -28,6 +28,8 @@ Click the **video or timeline area** so the main view has focus for playback and
 | Action | Windows / Linux | macOS |
 |--------|-----------------|-------|
 | Toggle **Loop Playback** | **Ctrl+L** (works without media ready) | **⌘L** |
+| **Show Status** (codec / path / save line) | *(menu only — no default shortcut)* | same |
+| **Always Show Controls** (floating transport) | *(menu only — no default shortcut)* | same |
 | **Zoom In** | **Ctrl+=** (works without media ready) | **⌘=** |
 | **Zoom Out** | **Ctrl+-** (works without media ready) | **⌘-** |
 | **Zoom to Fit** | **Ctrl+0** (works without media ready) | **⌘0** |
@@ -52,7 +54,7 @@ Same actions as **Edit → Undo / Redo** when those menu items are enabled.
 | Split clip at playhead | **Ctrl+B** (when enabled) | **⌘B** |
 | Rotate 90° right | **Ctrl+R** (when the playhead is on a primary-track clip) | **⌘R** |
 | Rotate 90° left | **Ctrl+Shift+R** | **⌘⇧R** |
-| **Trim Clip…** | **Edit → Trim Clip…**, or **double-click** the video track-lane strip above the timeline *(when trim is enabled — playhead on a primary-track clip)*; *no default shortcut* | same |
+| **Trim Clip…** | **Edit → Trim Clip…** *(when trim is enabled — playhead on a primary-track clip)*; *no default shortcut* | same |
 
 Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**. **Trim Clip…** opens a sheet for begin/end in source-file seconds; click outside the sheet card or **Cancel** to dismiss. Rotate/Flip apply to the clip under the playhead and persist in the project; **Flip Horizontal / Flip Vertical** are in the **Edit** menu without keyboard shortcuts.
 

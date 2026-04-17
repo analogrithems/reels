@@ -433,6 +433,8 @@ fn main() -> Result<()> {
     window.set_loop_playback(app_prefs.borrow().playback_loop);
     window.set_preview_zoom_percent(app_prefs.borrow().preview_zoom_percent);
     window.set_preview_zoom_actual(app_prefs.borrow().preview_zoom_actual);
+    window.set_view_show_status(app_prefs.borrow().show_footer_status);
+    window.set_controls_overlay_always_visible(app_prefs.borrow().controls_overlay_always_visible);
     window.set_window_fullscreen(false);
     let playback_signed_milli = Arc::new(AtomicI32::new(1000));
 
@@ -517,6 +519,34 @@ fn main() -> Result<()> {
             w.set_loop_playback(new);
             loop_flag.store(new, Ordering::Relaxed);
             app_prefs.borrow_mut().playback_loop = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_toggle_show_status(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let new = !w.get_view_show_status();
+            w.set_view_show_status(new);
+            app_prefs.borrow_mut().show_footer_status = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_toggle_controls_always_visible(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let new = !w.get_controls_overlay_always_visible();
+            w.set_controls_overlay_always_visible(new);
+            app_prefs.borrow_mut().controls_overlay_always_visible = new;
             app_prefs.borrow().save();
         });
     }
