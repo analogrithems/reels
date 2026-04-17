@@ -29,7 +29,7 @@
 
 ### Export
 
-- **Export…** (**Ctrl+E** / **⌘E** when **media ready**) remux/transcode the **primary video track** (all clips in order, respecting each clip’s in/out points) to MP4 / WebM / MKV via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list (`export_concat_timeline` in `reel_core`). Export runs **off the UI thread**; status shows **Exporting…** then success or error. Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
+- **Export…** (**Ctrl+E** / **⌘E** when **media ready** and no export is running) remux/transcode the **primary video track** (all clips in order, respecting each clip’s in/out points) to MP4 / WebM / MKV via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list (`export_concat_timeline` in `reel_core`). Export runs **off the UI thread**; status shows **Exporting…** then success or error. **File → Cancel Export** or **Esc** requests cancellation (ffmpeg is interrupted; status shows **Export cancelled.**). Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
 
 ### Effects (experimental)
 

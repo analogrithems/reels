@@ -18,7 +18,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**largely complete**
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** (core) | Stretch: keyboard shortcuts → **U4** |
 | **U2** | Project editing depth (tracks, trim) | **In progress** | Autosave + insert/split **done**; **U2-a** partial (multi-lane labels + **move clip to next track**); trim **open** |
-| **U3** | Export UX (presets, progress) | **Not started** | Remux today is **File → Export** without presets UI |
+| **U3** | Export UX (presets, progress) | **In progress** | **Cancel** (**Esc** / **File → Cancel Export**) + blocking export thread; presets/progress UI still **open** |
 | **U4** | Polish (a11y, shortcuts, icons) | **In progress** (partial) | Transport + **Ctrl+Shift+↓/↑** clip moves; a11y / icons **open** |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; full pipelines **open** |
 

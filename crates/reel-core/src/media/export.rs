@@ -219,7 +219,11 @@ fn append_format_args(cmd: &mut Command, format: WebExportFormat) {
     }
 }
 
-fn run_ffmpeg(mut cmd: Command, output: &Path, cancel: Option<&AtomicBool>) -> Result<(), ExportError> {
+fn run_ffmpeg(
+    mut cmd: Command,
+    output: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ExportError> {
     let mut child = cmd.spawn().map_err(|e| ExportError {
         message: format!("failed to spawn ffmpeg: {e} (is ffmpeg on PATH? brew install ffmpeg@7)"),
     })?;
