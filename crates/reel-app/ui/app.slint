@@ -26,6 +26,8 @@ export component AppWindow inherits Window {
     in property <bool> save-enabled: false;
     in property <bool> undo-enabled: false;
     in property <bool> redo-enabled: false;
+    in property <bool> move-clip-down-enabled: false;
+    in property <bool> move-clip-up-enabled: false;
 
     /// Multi-track summary + preview rule (see session.timeline_summary_line).
     in property <string> timeline-info: "";
@@ -45,6 +47,8 @@ export component AppWindow inherits Window {
 
     callback edit-undo();
     callback edit-redo();
+    callback edit-move-clip-down();
+    callback edit-move-clip-up();
 
     callback effect-face-swap();
     callback effect-face-enhance();
@@ -57,6 +61,7 @@ export component AppWindow inherits Window {
 
     callback help-overview();
     callback help-features();
+    callback help-keyboard();
     callback help-media-formats();
     callback help-cli();
     callback help-external-ai();
@@ -123,6 +128,17 @@ export component AppWindow inherits Window {
                 enabled: root.redo-enabled;
                 activated => { root.edit-redo(); }
             }
+            MenuSeparator { }
+            MenuItem {
+                title: "Move Clip to Track Below";
+                enabled: root.move-clip-down-enabled;
+                activated => { root.edit-move-clip-down(); }
+            }
+            MenuItem {
+                title: "Move Clip to Track Above";
+                enabled: root.move-clip-up-enabled;
+                activated => { root.edit-move-clip-up(); }
+            }
         }
         Menu {
             title: "Effects";
@@ -173,6 +189,10 @@ export component AppWindow inherits Window {
                 activated => { root.help-features(); }
             }
             MenuItem {
+                title: "Keyboard shortcuts";
+                activated => { root.help-keyboard(); }
+            }
+            MenuItem {
                 title: "Media formats & tracks";
                 activated => { root.help-media-formats(); }
             }
@@ -204,8 +224,32 @@ export component AppWindow inherits Window {
         width: 100%;
         focus-on-click: true;
         key-pressed(event) => {
-            if (!root.media-ready) {
+            // File: Open / Save work without media (e.g. empty window — Open a project).
+            if (event.text == Key.O && event.modifiers.control && !event.modifiers.shift) {
+                root.file-open();
+                accept
+            } else if (event.text == Key.S && event.modifiers.control && !event.modifiers.shift) {
+                if (root.save-enabled) {
+                    root.file-save();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (event.text == Key.W && event.modifiers.control && !event.modifiers.shift) {
+                if (root.close-enabled) {
+                    root.file-close();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (!root.media-ready) {
                 reject
+            } else if (event.text == Key.I && event.modifiers.control && !event.modifiers.shift) {
+                root.file-insert-video();
+                accept
+            } else if (event.text == Key.E && event.modifiers.control && !event.modifiers.shift) {
+                root.file-export();
+                accept
             } else if (event.text == Key.Space) {
                 root.play-pause();
                 accept
@@ -221,6 +265,35 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.End) {
                 root.seek-timeline(root.duration-ms);
                 accept
+            } else if (event.text == Key.Z && event.modifiers.control && event.modifiers.shift) {
+                if (root.redo-enabled) {
+                    root.edit-redo();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (event.text == Key.Z && event.modifiers.control && !event.modifiers.shift) {
+                if (root.undo-enabled) {
+                    root.edit-undo();
+                    accept
+                } else {
+                    reject
+                }
+            // Ctrl+Shift+Arrow: move clip (⌘⇧ on macOS — Slint maps Command to `control`).
+            } else if (event.text == Key.DownArrow && event.modifiers.control && event.modifiers.shift) {
+                if (root.move-clip-down-enabled) {
+                    root.edit-move-clip-down();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (event.text == Key.UpArrow && event.modifiers.control && event.modifiers.shift) {
+                if (root.move-clip-up-enabled) {
+                    root.edit-move-clip-up();
+                    accept
+                } else {
+                    reject
+                }
             } else {
                 reject
             }

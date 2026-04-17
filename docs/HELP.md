@@ -23,6 +23,7 @@
 Open **Help** in the menu bar for bundled copies of:
 
 - **Features & roadmap** — what works today vs planned.
+- **Keyboard shortcuts** — focus, playback, and multi-track clip moves (`docs/KEYBOARD.md`).
 - **Media formats & tracks** — containers, codecs, subtitles (or lack thereof).
 - **CLI** — `reel-cli probe` / `swap`.
 - **External AI & tools** — decode → tempfile RGBA → JSON bridge to child processes (`docs/EXTERNAL_AI.md`).

@@ -5,6 +5,7 @@
 pub enum HelpDoc {
     Overview,
     Features,
+    Keyboard,
     MediaFormats,
     Cli,
     ExternalAi,
@@ -18,6 +19,7 @@ impl HelpDoc {
         match self {
             HelpDoc::Overview => "Reel — Overview",
             HelpDoc::Features => "Reel — Features & roadmap",
+            HelpDoc::Keyboard => "Reel — Keyboard shortcuts",
             HelpDoc::MediaFormats => "Reel — Media formats & tracks",
             HelpDoc::Cli => "Reel — CLI (reel-cli)",
             HelpDoc::ExternalAi => "Reel — External AI & tools",
@@ -36,6 +38,12 @@ impl HelpDoc {
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
                     "/../../docs/FEATURES.md"
+                ))
+            }
+            HelpDoc::Keyboard => {
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/KEYBOARD.md"
                 ))
             }
             HelpDoc::MediaFormats => {
@@ -96,6 +104,7 @@ mod tests {
         for doc in [
             HelpDoc::Overview,
             HelpDoc::Features,
+            HelpDoc::Keyboard,
             HelpDoc::MediaFormats,
             HelpDoc::Cli,
             HelpDoc::ExternalAi,

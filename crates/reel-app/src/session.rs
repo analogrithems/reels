@@ -91,6 +91,16 @@ fn video_track_row_lines(p: &Project) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn video_lane_indices(project: &Project) -> Vec<usize> {
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.kind == TrackKind::Video)
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// Owns the working [`Project`], last-saved snapshot, and undo/redo stacks.
 #[derive(Debug, Clone, Default)]
 pub struct EditSession {
@@ -179,17 +189,10 @@ impl EditSession {
         if self.project.is_none() {
             anyhow::bail!("no project — open a file first");
         }
-        let idxs: Vec<usize> = self
+        let idxs = self
             .project
             .as_ref()
-            .map(|p| {
-                p.tracks
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| t.kind == TrackKind::Video)
-                    .map(|(i, _)| i)
-                    .collect()
-            })
+            .map(video_lane_indices)
             .unwrap_or_default();
         if idxs.len() < 2 {
             anyhow::bail!("add a second video track first (File → New Video Track)");
@@ -214,10 +217,60 @@ impl EditSession {
                 .context("clip not on primary track")?;
             primary.clip_ids.remove(pos);
         }
-        proj
-            .tracks
+        proj.tracks
             .get_mut(below_idx)
             .context("second video track")?
+            .clip_ids
+            .push(clip_id);
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Take the **first** clip on the **second** video track and **append** it to the end of the
+    /// primary video track (inverse of moving down when the playhead targets the first clip on
+    /// the lane below). Undoable.
+    ///
+    /// Secondary lanes are not in the preview timeline; this uses explicit lane order instead of
+    /// playhead position on the lower track.
+    pub fn move_first_clip_from_second_video_track_to_primary(&mut self) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        let idxs = self
+            .project
+            .as_ref()
+            .map(video_lane_indices)
+            .unwrap_or_default();
+        if idxs.len() < 2 {
+            anyhow::bail!("add a second video track first (File → New Video Track)");
+        }
+        let (primary_idx, below_idx) = (idxs[0], idxs[1]);
+        let clip_id = {
+            let below = self
+                .project
+                .as_ref()
+                .expect("checked")
+                .tracks
+                .get(below_idx)
+                .context("second video track")?;
+            below
+                .clip_ids
+                .first()
+                .copied()
+                .context("no clips on the track below")?
+        };
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        proj.tracks
+            .get_mut(below_idx)
+            .context("second video track")?
+            .clip_ids
+            .remove(0);
+        proj.tracks
+            .get_mut(primary_idx)
+            .context("primary video track")?
             .clip_ids
             .push(clip_id);
         proj.touch();
@@ -463,6 +516,18 @@ impl EditSession {
     pub fn close_enabled(&self) -> bool {
         self.has_media()
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_project_for_tests(p: Project) -> Self {
+        Self {
+            current_media: None,
+            project: Some(p),
+            saved_baseline: None,
+            undo: vec![],
+            redo: vec![],
+            dirty: true,
+        }
+    }
 }
 
 /// Map a save/export file extension to [`reel_core::WebExportFormat`].
@@ -659,6 +724,52 @@ mod tests {
     fn timeline_end_sums_durations() {
         let p = two_clip_project();
         assert!((timeline_end_ms_for_tests(&p).unwrap() - 5000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn move_playhead_clip_to_secondary_lane() {
+        let mut p = two_clip_project();
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Video,
+            clip_ids: vec![],
+            extensions: Default::default(),
+        });
+        let mut s = EditSession::from_project_for_tests(p);
+        let id_first = s.project().unwrap().clips[0].id;
+        s.move_playhead_clip_to_next_video_track(500.0).unwrap();
+        let p = s.project().unwrap();
+        let vtracks: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .collect();
+        assert_eq!(vtracks[0].clip_ids.len(), 1);
+        assert_eq!(vtracks[1].clip_ids.len(), 1);
+        assert_eq!(vtracks[1].clip_ids[0], id_first);
+    }
+
+    #[test]
+    fn move_first_clip_from_second_track_roundtrip() {
+        let mut p = two_clip_project();
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Video,
+            clip_ids: vec![],
+            extensions: Default::default(),
+        });
+        let mut s = EditSession::from_project_for_tests(p);
+        s.move_playhead_clip_to_next_video_track(500.0).unwrap();
+        s.move_first_clip_from_second_video_track_to_primary()
+            .unwrap();
+        let p = s.project().unwrap();
+        let vtracks: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .collect();
+        assert_eq!(vtracks[0].clip_ids.len(), 2);
+        assert!(vtracks[1].clip_ids.is_empty());
     }
 
     #[test]

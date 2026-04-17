@@ -8,7 +8,7 @@ This document is the **product / UI roadmap** for **`reel-app`** (Slint). Engine
 
 ## Executive summary
 
-Reel’s UI work is grouped into **U1–U5**: shell & help (**largely complete**), **deep editing** (multi-track, trim—**in progress**), **export UX** (presets & progress—**not started**), **polish** (shortcuts, a11y—**not started**), and **AI/effects** (**MVP shipped**, full pipelines **open**). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
+Reel’s UI work is grouped into **U1–U5**: shell & help (**largely complete**), **deep editing** (multi-track, trim—**in progress**), **export UX** (presets & progress—**not started**), **polish** (shortcuts, a11y—**partial**: transport + clip-move keys), and **AI/effects** (**MVP shipped**, full pipelines **open**). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
 
 ---
 
@@ -17,9 +17,9 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**largely complete**
 | Phase | Theme | Status | Notes |
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** (core) | Stretch: keyboard shortcuts → **U4** |
-| **U2** | Project editing depth (tracks, trim) | **In progress** | Autosave + insert/split **done**; **U2-a** partial (**New Video Track** + summary + per-lane labels); trim **open** |
+| **U2** | Project editing depth (tracks, trim) | **In progress** | Autosave + insert/split **done**; **U2-a** partial (multi-lane labels + **move clip to next track**); trim **open** |
 | **U3** | Export UX (presets, progress) | **Not started** | Remux today is **File → Export** without presets UI |
-| **U4** | Polish (a11y, shortcuts, icons) | **Not started** | Shortcuts often land after core editing (**U2**) is stable enough to bind keys to |
+| **U4** | Polish (a11y, shortcuts, icons) | **In progress** (partial) | Transport + **Ctrl+Shift+↓/↑** clip moves; a11y / icons **open** |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; full pipelines **open** |
 
 ---
@@ -72,7 +72,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Edit:** Undo / redo (project snapshots).
 - **Window:** Always on top; Fit / Fill / Center viewport.
 - **Effects:** Menu hooks to sidecar (see **U5**).
-- **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, media formats, CLI, external AI & tools, developers, agents, UI phases).
+- **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, **keyboard shortcuts**, media formats, CLI, external AI & tools, developers, agents, UI phases).
 - **Timeline:** `Slider` scrub → same seek as transport.
 - **Tests:** Session, project I/O, shell, effects resolve path; reel-core export fixture tests.
 
@@ -89,7 +89,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 **Exit criteria (not all met)**
 
 - [x] Non-destructive **project file** workflow with undo/redo and autosave (path-backed).
-- [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** + timeline strip summary + **per-lane labels** (clip count / duration); not a full per-lane visual editor (waveforms, drag-between-tracks) yet.
+- [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** + timeline strip summary + **per-lane labels** (clip count / duration); **Move Clip to Track Below / Above** (Edit menu) move between primary and second video lane (below = playhead on primary clip; above = first clip on second lane to end of primary). Not a full per-lane visual editor (waveforms, drag) yet.
 - [ ] User can **trim** or **split** clips for edit intent beyond insert+split-at-playhead (e.g. trim handles, ripple).
 
 **Done**
@@ -98,17 +98,17 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Insert Video** with **split-at-playhead** when the playhead lies inside a clip.
 - **Save**, **Revert**, **Undo / Redo** (with explicit Save clearing stacks).
 - **Debounced autosave** to the on-disk project path (Slint timer; **preserves** undo vs explicit Save); flush on **Close** when possible.
-- **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; remaining: richer per-lane visuals (waveforms, thumbnails), moves between tracks, trim.
+- **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Move Clip to Track Below / Above** (Edit menu) shuffle clips between primary and second video lane (see **FEATURES** for exact rules). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; secondary lanes are still **not** in the decode graph. Remaining: richer per-lane visuals (waveforms, thumbnails), drag moves, trim.
 
 **Suggested sub-milestones (order may vary)**
 
-1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; remaining: richer per-lane visuals, clip moves between tracks.
+1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; **move clip to next video track** (menu) **done**; remaining: richer per-lane visuals, draggable moves, preview/mix for secondary lanes.
 2. **U2-b — Audio in timeline:** Expose **Audio** `TrackKind` in UI; mix or switch preview path.
 3. **U2-c — Trim / ripple:** In/out handles or numeric trim; ripple optional.
 
 **Not yet**
 
-- **Multi-track** video beyond an empty secondary lane (no clip moves between tracks) and audible **audio tracks** in the UI; secondary lanes are not yet in the decode graph.
+- **Multi-track** video: clips can be **moved to the next video track** via the Edit menu; there is still no **mix** or preview from secondary lanes, and audible **audio tracks** in the UI are **not** exposed yet.
 - **Trim, ripple, roll, blade**, slip/slide; multi-cam.
 - **Subtitles / captions** timeline (see **FEATURES** roadmap—may become **U6** or fold into U2/U3).
 - Optional: adopt **`ProjectStore`** from `reel-core` inside the app (library already implements debounced atomic writes).
@@ -137,13 +137,13 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 ---
 
-## Phase U4 — Polish 📋
+## Phase U4 — Polish 🚧
 
 **Goal:** Production-quality feel on supported platforms.
 
 **Exit criteria (draft)**
 
-- [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **Space** (play/pause), **← / →** (±1 s seek), **Home** / **End** (sequence start/end) when the main view is focused.
+- [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **Ctrl+O** / **Ctrl+S** / **Ctrl+W** (open / save / close when enabled), **Ctrl+I** / **Ctrl+E** (insert / export when **media-ready**), **Space** (play/pause), **← / →** (±1 s seek), **Home** / **End** (sequence start/end), **Ctrl+Z** / **Ctrl+Shift+Z** (undo/redo when enabled), **Ctrl+Shift+↓/↑** (move clip between primary and second video lane when enabled; **⌘⇧↓/↑** on macOS). Transport and edit shortcuts expect the main view focused; **Open** works from an empty window; **Insert**/**Export** need decode ready.
 - [ ] **Accessibility** audit pass on main window + dialogs (labels, focus order—scope TBD).
 
 **Scope**

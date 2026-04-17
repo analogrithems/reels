@@ -20,7 +20,7 @@ This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, *
 | Probe, decode, multi-stream, subtitle, or export codec behavior | **`docs/MEDIA_FORMATS.md`** + often **`docs/FEATURES.md`**. |
 | New **`reel-cli`** subcommand or important flag | **`docs/CLI.md`** + **`docs/FEATURES.md`** if user-visible. |
 | **Sidecar protocol**, new `op`/`params` semantics, or handoff to non-Python tools | **`docs/EXTERNAL_AI.md`**, **`docs/architecture.md`**, and **`crates/reel-core/src/sidecar.rs`** doc comments as needed. |
-| New **bundled Help** document or menu entry | **`crates/reel-app/src/shell.rs`** (`HelpDoc` + `include_str!`), **`ui/app.slint`** (Help menu), **`main.rs`** callbacks, and **`docs/README.md`**. |
+| New **bundled Help** document or menu entry | **`crates/reel-app/src/shell.rs`** (`HelpDoc` + `include_str!`), **`ui/app.slint`** (Help menu), **`main.rs`** callbacks, and **`docs/README.md`** (and the new `docs/*.md` file, e.g. **`KEYBOARD.md`**). |
 | Phase / milestone shift | **`docs/phases-ui.md`** (UI roadmap) and **`docs/phase-status.md`** (engineering checklist)—keep both consistent with **`docs/FEATURES.md`**. |
 | Roadmap **priority** or **sub-milestone** (U2-a … U5-c) changes | **`docs/phases-ui.md`** — **Suggested next focus**, exit criteria, checkboxes. |
 

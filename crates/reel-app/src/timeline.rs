@@ -227,14 +227,8 @@ mod tests {
             clip_ids: vec![p.clips[0].id, p.clips[1].id],
             extensions: Default::default(),
         });
-        assert_eq!(
-            primary_clip_id_at_seq_ms(&p, 500.0),
-            Some(p.clips[0].id)
-        );
-        assert_eq!(
-            primary_clip_id_at_seq_ms(&p, 2500.0),
-            Some(p.clips[1].id)
-        );
+        assert_eq!(primary_clip_id_at_seq_ms(&p, 500.0), Some(p.clips[0].id));
+        assert_eq!(primary_clip_id_at_seq_ms(&p, 2500.0), Some(p.clips[1].id));
         assert_eq!(primary_clip_id_at_seq_ms(&p, 999_999.0), None);
     }
 

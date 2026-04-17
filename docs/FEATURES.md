@@ -6,10 +6,10 @@
 
 ### Playback & transport
 
-- Open a media file via **File → Open** (native dialog).
-- **Play / Pause**; timeline **Slider** scrub (seeks video + audio). **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence). **Home** / **End** jump to the **start** or **end** of the sequence. The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
+- Open a media file via **File → Open** (native dialog) or **Ctrl+O** (**⌘O** on macOS). The shortcut is handled before media is ready so you can open from an empty window after the main view has focus (click the window once if keys do nothing).
+- **Play / Pause**; timeline **Slider** scrub (seeks video + audio). **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence). **Home** / **End** jump to the **start** or **end** of the sequence. **Ctrl+Z** / **Ctrl+Shift+Z** invoke **Undo** / **Redo** when enabled (**⌘Z** / **⌘⇧Z** on macOS). **Ctrl+Shift+↓** / **Ctrl+Shift+↑** invoke **Move Clip to Track Below / Above** when those Edit actions are enabled (on **macOS**, Slint uses **⌘** for the `control` modifier, so **⌘⇧↓ / ⌘⇧↑**). A **shortcut table** is in **Help → Keyboard shortcuts** (bundled from `docs/KEYBOARD.md`). The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
 - **AudioClock**: audio drives timing; video follows (may drop frames when behind).
-- **Close** clears the project and stops playback.
+- **Close** clears the project and stops playback (**Ctrl+W** / **⌘W** when enabled).
 - Startup: optional **`REEL_OPEN_PATH`** env var auto-opens one file (dev/testing).
 
 ### Viewport
@@ -19,16 +19,16 @@
 
 ### Project & timeline (minimal)
 
-- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** appends an extra empty lane (not yet mixed into preview); the timeline strip shows a **summary line** plus **one label per video lane** (clip count and lane duration). Insert/split still targets the **primary** lane only.
-- **Insert Video…** at playhead: probes the file, appends or inserts a clip on the **primary** (first) video track. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts.
-- **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter).
+- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** appends an extra empty lane (not yet mixed into preview); the timeline strip shows a **summary line** plus **one label per video lane** (clip count and lane duration). Insert/split still targets the **primary** lane only. **Edit → Move Clip to Track Below** moves the clip under the playhead from the primary lane to the **next** video track (requires a second video track and the playhead on a clip, not in a gap). **Edit → Move Clip to Track Above** takes the **first** clip on the **second** video track and appends it to the **end** of the primary track (the lower lane is not in the preview timeline, so lane order is used instead of playhead-on-secondary). Undo/redo applies; if the primary lane becomes empty, preview stops until you add clips or undo.
+- **Insert Video…** at playhead: probes the file, appends or inserts a clip on the **primary** (first) video track. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts. **Ctrl+I** (**⌘I**) when **media ready**.
+- **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter). **Ctrl+S** (**⌘S** on macOS) when **Save** is enabled (same as the menu).
 - **Revert** restores the last explicit save baseline, or re-probes the original opened media file if never saved.
 - **Undo / Redo** (document snapshots): insert and related edits; **explicit Save** clears undo/redo stacks.
 - **Autosave**: after a project has been saved once (on-disk path set), edits trigger a **debounced** write to that path (~900 ms after activity). Autosave **does not** clear undo/redo. **Close** attempts a final autosave when a path exists.
 
 ### Export
 
-- **Export…** remux/transcode the **primary video track** (all clips in order, respecting each clip’s in/out points) to MP4 / WebM / MKV via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list (`export_concat_timeline` in `reel_core`). Export runs **off the UI thread**; status shows **Exporting…** then success or error. Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
+- **Export…** (**Ctrl+E** / **⌘E** when **media ready**) remux/transcode the **primary video track** (all clips in order, respecting each clip’s in/out points) to MP4 / WebM / MKV via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list (`export_concat_timeline` in `reel_core`). Export runs **off the UI thread**; status shows **Exporting…** then success or error. Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
 
 ### Effects (experimental)
 
@@ -48,7 +48,7 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 
 ### Editing / timeline
 
-- **Multi-track** video (multiple `TrackKind::Video` lanes) and **separate audio tracks** in the UI: you can add empty video tracks; preview and insert/split still use the **first** video track until deeper editing lands.
+- **Multi-track** video (multiple `TrackKind::Video` lanes) and **separate audio tracks** in the UI: you can add video tracks and **move clips** from the primary lane to the next lane; preview and insert/split still use the **first** video track only (secondary lanes are not mixed into playback yet).
 - **Trim / ripple / roll** at playhead; blade tool; slip/slide.
 - **Subtitles / captions** import, edit, and burn-in export.
 - **Keyframes** and motion/effect parameters per clip.
@@ -62,7 +62,7 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 
 ### UX / platform
 
-- **Keyboard shortcuts** (menu parity with common editors).
+- **Keyboard shortcuts** (full menu parity with common editors): core transport + clip lane moves are partly covered (see **Playback** above).
 - **Accessibility** pass, icons, density.
 - **macOS app bundle** / notarization story.
 

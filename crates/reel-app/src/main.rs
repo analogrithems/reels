@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use reel_core::export_concat_timeline;
-use session::{export_format_for_path, EditSession};
+use session::{export_format_for_path, video_lane_indices, EditSession};
 use slint::ComponentHandle;
 
 use crate::project_io::save_project;
@@ -101,9 +101,25 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         if let Some(clips) = timeline::clips_from_project(p) {
             let d = timeline::sequence_duration_ms(&clips);
             window.set_duration_ms(d.max(1.0) as f32);
+        } else {
+            window.set_duration_ms(0.0);
         }
+        let ph = window.get_playhead_ms() as f64;
+        let idxs = video_lane_indices(p);
+        window.set_move_clip_down_enabled(
+            idxs.len() >= 2 && timeline::primary_clip_id_at_seq_ms(p, ph).is_some(),
+        );
+        window.set_move_clip_up_enabled(
+            idxs.len() >= 2
+                && p.tracks
+                    .get(idxs[1])
+                    .map(|t| !t.clip_ids.is_empty())
+                    .unwrap_or(false),
+        );
     } else {
         window.set_duration_ms(0.0);
+        window.set_move_clip_down_enabled(false);
+        window.set_move_clip_up_enabled(false);
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
@@ -111,10 +127,14 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
 }
 
 fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSession) {
-    if let Some(p) = session.project() {
-        if let Some(sync) = timeline::timeline_sync_from_project(p) {
-            sender.send(player::Cmd::LoadTimeline { sync });
-        }
+    let Some(p) = session.project() else {
+        sender.send(player::Cmd::Close);
+        return;
+    };
+    if let Some(sync) = timeline::timeline_sync_from_project(p) {
+        sender.send(player::Cmd::LoadTimeline { sync });
+    } else {
+        sender.send(player::Cmd::Close);
     }
 }
 
@@ -150,6 +170,8 @@ fn main() -> Result<()> {
     window.set_timecode("0:00.000 / 0:00.000".into());
     window.set_timeline_info("".into());
     window.set_video_track_lanes("".into());
+    window.set_move_clip_down_enabled(false);
+    window.set_move_clip_up_enabled(false);
     window.set_video_fit_mode(0);
     window.set_stay_on_top(false);
 
@@ -485,6 +507,72 @@ fn main() -> Result<()> {
     }
 
     {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        window.on_edit_move_clip_down(move || {
+            let playhead_ms = weak
+                .upgrade()
+                .map(|w| w.get_playhead_ms() as f64)
+                .unwrap_or(0.0);
+            let r = session
+                .borrow_mut()
+                .move_playhead_clip_to_next_video_track(playhead_ms);
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        let dur = w.get_duration_ms();
+                        let ph = w.get_playhead_ms().min(dur);
+                        w.set_playhead_ms(ph);
+                        w.set_timecode(timecode::format_pair(ph, dur).into());
+                        sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
+                        w.set_status_text("Moved clip to track below".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        window.on_edit_move_clip_up(move || {
+            let r = session
+                .borrow_mut()
+                .move_first_clip_from_second_video_track_to_primary();
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        let dur = w.get_duration_ms();
+                        let ph = w.get_playhead_ms().min(dur);
+                        w.set_playhead_ms(ph);
+                        w.set_timecode(timecode::format_pair(ph, dur).into());
+                        sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
+                        w.set_status_text("Moved clip from track below to primary".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
         let weak = window.as_weak();
         window.on_win_fit(move || {
             if let Some(w) = weak.upgrade() {
@@ -526,6 +614,9 @@ fn main() -> Result<()> {
     }
     {
         window.on_help_features(move || show_help_window(shell::HelpDoc::Features));
+    }
+    {
+        window.on_help_keyboard(move || show_help_window(shell::HelpDoc::Keyboard));
     }
     {
         window.on_help_media_formats(move || show_help_window(shell::HelpDoc::MediaFormats));
