@@ -4272,6 +4272,7 @@ dependencies = [
  "i-slint-backend-testing",
  "image",
  "parking_lot",
+ "pulldown-cmark",
  "reel-core",
  "rfd",
  "ringbuf",

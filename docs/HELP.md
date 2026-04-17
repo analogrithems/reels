@@ -24,7 +24,7 @@
 
 Open **Help** in the menu bar for bundled copies of:
 
-- **About Reel…** — version line and short credits (the **Knot Reels** logo appears at the top of every Help window and as the window icon).
+- **About Reel…** — version line and short credits (the **Knot Reels** logo appears at the top of every Help window). The main editing window is video-only (no logo strip). **Note:** macOS does not draw per-window title-bar icons in the menu bar; the **Dock** icon for a shipped `.app` uses the bundle’s icon (`make macos-app`).
 - **Features & roadmap** — what works today vs planned.
 - **Keyboard shortcuts** — focus, playback, and multi-track clip moves (`docs/KEYBOARD.md`).
 - **Media formats & tracks** — containers, codecs, subtitles (or lack thereof).

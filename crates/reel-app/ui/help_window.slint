@@ -3,12 +3,12 @@ import { HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
 export component HelpWindow inherits Window {
     preferred-width: 560px;
     preferred-height: 640px;
-    icon: @image-url("../../../assets/icons/knotreels.png");
+    icon: @image-url("assets/knotreels.png");
 
     in property <string> help-title: "Reel — Help";
     title: root.help-title;
 
-    in property <string> body-text: "";
+    in property <styled-text> body-text: @markdown("");
 
     VerticalBox {
         padding-left: 12px;
@@ -17,11 +17,13 @@ export component HelpWindow inherits Window {
         padding-bottom: 0;
         spacing: 10px;
         HorizontalBox {
+            min-height: 100px;
+            vertical-stretch: 0;
             alignment: center;
             Image {
-                width: 80px;
-                height: 80px;
-                source: @image-url("../../../assets/icons/knotreels.png");
+                width: 300px;
+                height: 165px;
+                source: @image-url("assets/knotreels.png");
                 image-fit: contain;
             }
         }
@@ -31,9 +33,8 @@ export component HelpWindow inherits Window {
             width: 100%;
             VerticalBox {
                 padding-bottom: 12px;
-                Text {
+                StyledText {
                     text: root.body-text;
-                    wrap: word-wrap;
                     width: 100%;
                 }
             }

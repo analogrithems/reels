@@ -1,4 +1,4 @@
-.PHONY: setup build lint test run run-cli clean ci check-tools fixtures fmt
+.PHONY: setup build lint test run run-cli macos-app macos-app-release clean ci check-tools fixtures fmt
 
 SHELL := /bin/bash
 
@@ -40,6 +40,13 @@ run:
 
 run-cli:
 	REEL_LOG_SESSION_DIR="$(CURDIR)" cargo run -p reel-cli -- $(ARGS)
+
+# macOS: bare `target/*/reel` shows a generic executable icon in Finder. Build a .app with AppIcon.icns for the real Dock/Finder icon.
+macos-app:
+	./scripts/macos/build_app_bundle.sh debug
+
+macos-app-release:
+	./scripts/macos/build_app_bundle.sh release
 
 fixtures:
 	bash scripts/generate_fixtures.sh

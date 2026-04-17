@@ -6,8 +6,8 @@ export { HelpWindow }
 export component AppWindow inherits Window {
     preferred-width: 1280px;
     preferred-height: 720px;
-    title: "Reel";
-    icon: @image-url("../../../assets/icons/knotreels.png");
+    title: "Reels";
+    // Logo / window icon: Help window only; macOS Dock uses Reel.app bundle (see `make macos-app`).
 
     // Video fit: 0 = contain (fit), 1 = cover (fill)
     in-out property <int> video-fit-mode: 0;
@@ -967,9 +967,9 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Single strip below the preview: export progress, transient status, or codec/path/save when View → Show Status.
+        // Below the preview (only when export, status line, or View → Show Status footer): same black as video so no extra grey band.
         Rectangle {
-            background: #1c1c22;
+            background: #000;
             vertical-stretch: 0;
             visible: root.export-in-progress || root.status-text != "" || (root.footer-visible && root.view-show-status);
             clip: true;

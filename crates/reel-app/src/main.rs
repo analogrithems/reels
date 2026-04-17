@@ -10,6 +10,7 @@ mod project_io;
 mod recent;
 mod session;
 mod shell;
+mod help_markdown;
 mod timecode;
 mod timeline;
 mod ui_bridge;
@@ -659,10 +660,11 @@ fn open_path_from_ui(
 
 fn show_help_window(doc: shell::HelpDoc) {
     let (title, body) = shell::help_bundle(doc);
+    let body = help_markdown::markdown_to_styled(body);
     match HelpWindow::new() {
         Ok(h) => {
             h.set_help_title(title.into());
-            h.set_body_text(body.into());
+            h.set_body_text(body);
             if let Err(e) = h.show() {
                 tracing::warn!(error = %e, "help window show failed");
             }

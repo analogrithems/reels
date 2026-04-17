@@ -40,6 +40,7 @@ make run      # desktop app (reel)
 | `make test` | Rust tests + `uv run pytest` in sidecar. |
 | `make lint` | `cargo fmt --check`, `clippy -D warnings`, `ruff`. |
 | `make run` | `cargo run -p reel-app`; session log `reels.session.*.log` is written under the **directory you ran `make` from** (`REEL_LOG_SESSION_DIR`). |
+| `make macos-app` / `make macos-app-release` | **macOS only:** builds `target/Reel.app` with `AppIcon.icns` from `crates/reel-app/ui/assets/knotreels.png`. Finder shows a generic icon for loose binaries under `target/`; use **`open target/Reel.app`** for the real Dock/Finder icon. |
 | `make run-cli ARGS='probe …'` | Run `reel-cli`; same session log directory rule as `make run`. |
 | `make ci` | Lint + test (CI parity). |
 

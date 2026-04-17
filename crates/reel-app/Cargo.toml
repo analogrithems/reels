@@ -23,6 +23,7 @@ ringbuf.workspace           = true
 rfd.workspace               = true
 serde.workspace           = true
 serde_json.workspace      = true
+pulldown-cmark            = "0.13"
 dirs.workspace            = true
 uuid.workspace              = true
 image.workspace             = true
