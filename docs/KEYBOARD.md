@@ -1,6 +1,6 @@
 # Reel — keyboard shortcuts (desktop)
 
-Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** exits **fullscreen** when the window is fullscreen; otherwise **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **File → Cancel Export**). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
+Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** exits **fullscreen** when the window is fullscreen; otherwise **Esc** closes the **Trim Clip…** sheet if it is open; otherwise **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **File → Cancel Export**). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
 
 ## Help
 
@@ -52,8 +52,9 @@ Same actions as **Edit → Undo / Redo** when those menu items are enabled.
 | Split clip at playhead | **Ctrl+B** (when enabled) | **⌘B** |
 | Rotate 90° right | **Ctrl+R** (when the playhead is on a primary-track clip) | **⌘R** |
 | Rotate 90° left | **Ctrl+Shift+R** | **⌘⇧R** |
+| **Trim Clip…** | **Edit → Trim Clip…**, or **double-click** the video track-lane strip above the timeline *(when trim is enabled — playhead on a primary-track clip)*; *no default shortcut* | same |
 
-Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**. Rotate/Flip apply to the clip under the playhead and persist in the project; **Flip Horizontal / Flip Vertical** are in the **Edit** menu without keyboard shortcuts.
+Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**. **Trim Clip…** opens a sheet for begin/end in source-file seconds; click outside the sheet card or **Cancel** to dismiss. Rotate/Flip apply to the clip under the playhead and persist in the project; **Flip Horizontal / Flip Vertical** are in the **Edit** menu without keyboard shortcuts.
 
 ## Multi-track editing
 

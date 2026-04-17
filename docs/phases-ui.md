@@ -8,7 +8,7 @@ This document is the **product / UI roadmap** for **`reel-app`** (Slint). Engine
 
 ## Executive summary
 
-Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core scope), **deep editing** (multi-track, **per-clip rotate/flip** **shipped**; **trim**, seek-bar **in/out markers**, and **trim sheet** still **in progress**), **export UX** (cancel + **%** + **strip** + **3-container preset sheet** shipped; **rich transcode catalog** (H.264/VP9/AV1 tiers)—**open**), **polish** (**File → Open Recent** **done**; shortcuts, a11y, **View** chrome—**partial**), and **AI/effects** (**MVP shipped**; **upscaling** on roadmap). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
+Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core scope), **deep editing** (multi-track, **per-clip rotate/flip** **shipped**; **Trim Clip…** numeric sheet **shipped**; seek-bar **in/out markers**, **ripple**, and **on-timeline trim handles** still **open**), **export UX** (cancel + **%** + **strip** + **3-container preset sheet** shipped; **rich transcode catalog** (H.264/VP9/AV1 tiers)—**open**), **polish** (**File → Open Recent** **done**; shortcuts, a11y, **View** chrome—**partial**), and **AI/effects** (**MVP shipped**; **upscaling** on roadmap). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
 
 ---
 
@@ -36,7 +36,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
   Parking lot (not phase-numbered yet): subtitles, keyframes, motion, **AI video upscale** — see FEATURES roadmap
 ```
 
-- **U2** unlocks *meaningful* **U4** shortcuts (trim, blade, track ops) once those actions exist.
+- **U2** unlocks *meaningful* **U4** shortcuts (blade, **Trim Clip…**, rotate, track moves) once those actions exist; further **U2** work adds more shortcut targets (e.g. ripple trim, **U2-e**).
 - **U3** can proceed in parallel with U2 if contributors avoid conflicting `Export` UI refactors.
 - **U5** shares **`SidecarClient`** / **`grab_frame`** with the rest of the app; timeline-integrated effects depend on **U2** clip model richness.
 
@@ -47,7 +47,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | UI phase | Primary place in **`docs/FEATURES.md`** |
 |----------|----------------------------------------|
 | U1 | Currently supported: Playback, Viewport, Help |
-| U2 | Project & timeline (partial) + Roadmap: **QuickTime-style** Edit — **rotate/flip** in **Currently supported**; **markers**, trim sheet, **audio** remove/replace/overlay, **resize** still roadmap |
+| U2 | Project & timeline (partial) + Roadmap: **QuickTime-style** Edit — **rotate/flip** and **Trim Clip…** in **Currently supported**; seek-bar **in/out markers**, **audio** remove/replace/overlay, **resize**, **ripple** still roadmap |
 | U3 | Roadmap: **Export presets** (web/mobile from `SUPPORTED_FORMATS.md`), batch, progress UI |
 | U4 | **Currently supported:** **File → Open Recent**; **View** (loop, zoom, fullscreen) + partial shortcuts — see **Viewport** / **Playback** in **`FEATURES.md`**. **Roadmap:** a11y, bundle, optional zoom pan / toolbar fullscreen |
 | U5 | Currently supported: Effects + Roadmap: Export & effects (real models) |
@@ -116,11 +116,23 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 **Goal:** Editing that matches a “real” NLE more closely while keeping the data model honest.
 
+**Cross-links:** User-visible behavior and limits → **`docs/FEATURES.md`** (**Project & timeline**). Edit shortcuts (including **Trim Clip…** — menu / double-click only) → **`docs/KEYBOARD.md`**.
+
+### U2 — progress snapshot (rolling)
+
+| Area | Shipped | Still open |
+|------|---------|------------|
+| **Tracks / lanes** | Primary-track video concat **preview**; **New Video / Audio Track**; per-lane **strip labels**; **Move Clip** between primary ↔ second **video** lane | Preview/mix from **secondary video** lanes; **multiple audio lanes** mixed; draggable moves |
+| **Audio** | **First** audio lane **concat** drives preview when it has clips (else embedded video audio); silence-pad after audio ends | **U2-e** remove/replace/overlay + per-lane **gain**; multi-lane **mix** |
+| **Trim** | **Blade**; **Trim Clip…** numeric sheet (**Edit** menu + **double-click** video lane strip) | Timeline **in/out handles**, **ripple**, seek-bar **in/out markers** for working range |
+| **Transform** | Per-clip **rotate / flip** (preview + export **`-vf`**) | — |
+| **Resize** | — | **U2-f** **Edit → Resize Video…** |
+
 **Exit criteria (not all met)**
 
 - [x] Non-destructive **project file** workflow with undo/redo and autosave (path-backed).
-- [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** / **New Audio Track** + timeline strip summary + **per-lane labels** for video and audio (clip count / duration); **Move Clip to Track Below / Above** (Edit menu) move between primary and second **video** lane (below = playhead on primary clip; above = first clip on second lane to end of primary). Audio lanes are **not** in preview yet. Not a full per-lane visual editor (waveforms, drag) yet.
-- [ ] User can **trim** clips (in/out handles, ripple, etc.). *Progress:* **split without importing** via **Edit → Split Clip at Playhead** / **Ctrl+B** (blade at playhead on the primary track).
+- [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** / **New Audio Track** + timeline strip summary + **per-lane labels** for video and audio (clip count / duration); **Move Clip to Track Below / Above** (Edit menu) move between primary and second **video** lane (below = playhead on primary clip; above = first clip on second lane to end of primary). **First** audio lane drives **preview sound** when it has clips (else embedded primary-track audio); additional audio lanes have **no** mix yet. Secondary **video** lanes are still **not** in the preview decode graph. Not a full per-lane visual editor (waveforms, drag) yet.
+- [ ] User can **trim** in the NLE sense (handles, ripple, range on the scrub bar). *Shipped:* **blade** (**Split at Playhead** / **Ctrl+B**); **per-clip numeric trim** (**Trim Clip…** — **`docs/FEATURES.md`**). *Still open:* timeline **in/out handles**, **ripple**, seek-bar **in/out markers** for export/trim scope.
 
 **Done**
 
@@ -130,14 +142,15 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 - **Save**, **Revert**, **Undo / Redo** (with explicit Save clearing stacks).
 - **Debounced autosave** to the on-disk project path (Slint timer; **preserves** undo vs explicit Save); flush on **Close** when possible.
 - **Per-clip orientation** (**Edit → Rotate 90°** / **Flip**): stored in the project; preview after the scaler; export uses ffmpeg **`-vf`** when any primary-track clip is non-identity (mixed orientations in one export remain a limitation—see **`docs/FEATURES.md`**).
-- **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Move Clip to Track Below / Above** (Edit menu) shuffle clips between primary and second video lane (see **FEATURES** for exact rules). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; secondary lanes are still **not** in the decode graph. Remaining: richer per-lane visuals (waveforms, thumbnails), drag moves, trim.
+- **Trim Clip…** (**U2-c / U2-d**): sheet with begin/end in **source-file seconds**, inline validation, undoable; see **`docs/FEATURES.md`** and **`docs/KEYBOARD.md`**.
+- **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Move Clip to Track Below / Above** (Edit menu) shuffle clips between primary and second video lane (see **FEATURES** for exact rules). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; secondary lanes are still **not** in the decode graph. Remaining: richer per-lane visuals (waveforms, thumbnails), draggable moves, **on-timeline** trim handles (numeric **Trim Clip…** shipped).
 - **U2-b (partial):** **New Audio Track** appends an empty `TrackKind::Audio` lane (undoable); **Insert Audio…** places clips on that lane; strip lists **each audio lane** (clip count, summed duration). When the **first** audio lane has clips, **playback uses that concat** for sound (else embedded audio from primary video files); silence after audio if video runs longer.
 
 **Suggested sub-milestones (order may vary)**
 
 1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; **move clip to next video track** (menu) **done**; remaining: richer per-lane visuals, draggable moves, preview/mix for secondary lanes.
 2. **U2-b — Audio in timeline:** **Partial:** **New Audio Track**, **Insert Audio…**, first-lane **concat preview** (switch from embedded video audio when the lane has clips; silence-pad if audio ends early); **open:** multiple audio lanes, mix, levels, trim-on-lane.
-3. **U2-c — Trim / ripple:** In/out handles or numeric trim; ripple optional.
+3. **U2-c — Trim / ripple:** **Numeric trim** via **Trim Clip…** **shipped**; still open: **in/out handles** on the timeline, **ripple**, seek-bar **range markers** tied to trim/export scope.
 4. **U2-d — QuickTime-style Edit menu:** **Rotate 90° Left** / **Rotate 90° Right** / **Flip Horizontal** / **Flip Vertical** — **shipped** (per-clip orientation persists in the project; applied in preview post-scaler and in ffmpeg export via `-vf`). **Trim Clip…** sheet — **shipped** (**Edit → Trim Clip…** or **double-click** the video track-lane strip above the slider; numeric begin/end in source-file seconds, inline validation, undoable). Still open: **two seek-bar markers** (in/out) to define a **clip range** for operations and export (same spirit as QuickTime’s selection).
 5. **U2-e — Audio (Edit menu):** **Remove** embedded audio from the current clip/selection; **Replace** with an audio file; **Overlay** additional audio with **independent volume** vs the source (builds on **U2-b** mixing/export).
 6. **U2-f — Resize:** **Edit → Resize Video…** (target resolution / scale). **AI-assisted upsampling** to higher resolution is **not** in this milestone—see **U5** / parking lot.
@@ -264,7 +277,7 @@ Priorities change; this is **guidance for contributors**, not a commitment.
 3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome). (**Open Recent**, **View** loop/zoom/fullscreen, timeline scrub reliability — shipped.)
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 
-Revisit when **trim UI** or **export presets** land.
+Revisit when **seek-bar range markers**, **ripple trim**, or **export presets** land.
 
 ---
 

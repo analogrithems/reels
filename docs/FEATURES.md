@@ -16,7 +16,7 @@
 
 - **View → Loop Playback** — when on, preview **restarts from the beginning** when playback reaches the **end of the primary-track sequence** (same concat as export’s primary video track). The setting is stored in **`prefs.json`** and restored on launch. Shortcut **Ctrl+L** (**⌘L** on macOS); works even before media is loaded.
 - **View → Zoom In** / **Zoom Out** (25% steps, **25%–400%** of the **fit** size for the current **Window → Fit** or **Fill** mode), **Zoom to Fit** (contain + 100% scale — same reset as **Window → Fit**), and **Actual Size** (decoded frame drawn at **1:1** logical pixels). Zoom prefs are saved in **`prefs.json`**. Shortcuts **Ctrl+=** / **Ctrl+-** / **Ctrl+0** (**⌘** on macOS for the same keys); zoom shortcuts work without media. When zoomed in, overflow is **clipped** (no pan yet).
-- **View → Enter Fullscreen** / **Exit Fullscreen** — toggles platform fullscreen; **Esc** exits fullscreen (and still dismisses export UI when not fullscreen — see **Keyboard shortcuts**).
+- **View → Enter Fullscreen** / **Exit Fullscreen** — toggles platform fullscreen; **Esc** exits fullscreen (and when not fullscreen dismisses the **Trim Clip…** sheet, export preset sheet, or in-progress export — see **Keyboard shortcuts**).
 - **Window → Fit / Fill / Center** (Slint `image-fit`: contain vs cover) — each action also resets preview zoom to **100%** and turns off **Actual Size**, matching **View → Zoom to Fit** semantics for scale.
 - **Always on Top**.
 

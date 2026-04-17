@@ -486,6 +486,9 @@ export component AppWindow inherits Window {
                 if (root.window-fullscreen) {
                     root.view-exit-fullscreen();
                     accept
+                } else if (root.trim-sheet-visible) {
+                    root.trim-cancel();
+                    accept
                 } else if (root.export-preset-dialog-visible) {
                     root.export-preset-cancel();
                     accept

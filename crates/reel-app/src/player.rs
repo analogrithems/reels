@@ -301,6 +301,8 @@ fn video_loop(
                         on_ui(weak.clone(), |w| w.set_is_playing(true));
                     } else {
                         tracing::debug!("Play ignored: no media loaded");
+                        // `main` may have toggled `is_playing` before sending; keep UI consistent.
+                        on_ui(weak.clone(), |w| w.set_is_playing(false));
                     }
                 }
                 Cmd::Pause => {
