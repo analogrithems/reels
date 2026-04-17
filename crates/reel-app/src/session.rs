@@ -7,6 +7,7 @@ use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
 
 use crate::project_io::project_from_media_path;
+use crate::timecode;
 
 const MAX_UNDO: usize = 48;
 
@@ -62,6 +63,34 @@ pub(crate) fn insert_plan_for_playhead_ms(
     Some(InsertPlan::AtIndex(track.clip_ids.len()))
 }
 
+fn video_track_row_lines(p: &Project) -> Vec<String> {
+    let vtracks: Vec<&Track> = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video)
+        .collect();
+    vtracks
+        .iter()
+        .enumerate()
+        .map(|(idx, t)| {
+            let lane = if idx == 0 { "primary" } else { "secondary" };
+            let n = t.clip_ids.len();
+            let dur_ms: f64 = t
+                .clip_ids
+                .iter()
+                .filter_map(|id| p.clips.iter().find(|c| c.id == *id))
+                .map(|c| (c.out_point - c.in_point) * 1000.0)
+                .sum();
+            let clip_word = if n == 1 { "clip" } else { "clips" };
+            format!(
+                "V{} · {lane} · {n} {clip_word} · {}",
+                idx + 1,
+                timecode::format_ms_alone(dur_ms as f32)
+            )
+        })
+        .collect()
+}
+
 /// Owns the working [`Project`], last-saved snapshot, and undo/redo stacks.
 #[derive(Debug, Clone, Default)]
 pub struct EditSession {
@@ -114,6 +143,14 @@ impl EditSession {
         )
     }
 
+    /// One label per **video** track (primary first), for per-lane rows in the timeline UI.
+    pub fn video_track_row_labels(&self) -> Vec<String> {
+        self.project
+            .as_ref()
+            .map(video_track_row_lines)
+            .unwrap_or_default()
+    }
+
     /// Append an empty **video** track (for multi-track projects). Undoable.
     pub fn add_video_track(&mut self) -> anyhow::Result<()> {
         if self.project.is_none() {
@@ -127,6 +164,62 @@ impl EditSession {
             clip_ids: Vec::new(),
             extensions: Default::default(),
         });
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Move the clip under `playhead_ms` on the **primary** video track to the **next** video
+    /// track (second lane). Undoable.
+    pub fn move_playhead_clip_to_next_video_track(
+        &mut self,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        let idxs: Vec<usize> = self
+            .project
+            .as_ref()
+            .map(|p| {
+                p.tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.kind == TrackKind::Video)
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if idxs.len() < 2 {
+            anyhow::bail!("add a second video track first (File → New Video Track)");
+        }
+        let clip_id = {
+            let p = self.project.as_ref().expect("checked");
+            crate::timeline::primary_clip_id_at_seq_ms(p, playhead_ms)
+                .context("playhead not on a clip — seek into the clip you want to move")?
+        };
+        let (primary_idx, below_idx) = (idxs[0], idxs[1]);
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        {
+            let primary = proj
+                .tracks
+                .get_mut(primary_idx)
+                .context("primary video track")?;
+            let pos = primary
+                .clip_ids
+                .iter()
+                .position(|id| *id == clip_id)
+                .context("clip not on primary track")?;
+            primary.clip_ids.remove(pos);
+        }
+        proj
+            .tracks
+            .get_mut(below_idx)
+            .context("second video track")?
+            .clip_ids
+            .push(clip_id);
         proj.touch();
         self.redo.clear();
         self.recompute_dirty();
@@ -569,6 +662,15 @@ mod tests {
     }
 
     #[test]
+    fn video_track_row_lines_primary_two_clips() {
+        let p = two_clip_project();
+        let rows = video_track_row_lines(&p);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].starts_with("V1 · primary · 2 clips"));
+        assert!(rows[0].contains("0:05.000"));
+    }
+
+    #[test]
     fn add_video_track_appends_empty_lane() {
         let f = tiny_fixture();
         if !f.is_file() {
@@ -586,6 +688,10 @@ mod tests {
             1
         );
         s.add_video_track().unwrap();
+        let rows = s.video_track_row_labels();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains("primary"));
+        assert!(rows[1].contains("secondary") && rows[1].contains("0 clips"));
         let p = s.project().unwrap();
         let v: Vec<_> = p
             .tracks

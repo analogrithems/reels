@@ -19,7 +19,7 @@
 
 ### Project & timeline (minimal)
 
-- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** appends an extra empty lane (not yet mixed into preview); the timeline strip summarizes counts and the preview mode.
+- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** appends an extra empty lane (not yet mixed into preview); the timeline strip shows a **summary line** plus **one label per video lane** (clip count and lane duration). Insert/split still targets the **primary** lane only.
 - **Insert Video…** at playhead: probes the file, appends or inserts a clip on the **primary** (first) video track. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts.
 - **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter).
 - **Revert** restores the last explicit save baseline, or re-probes the original opened media file if never saved.

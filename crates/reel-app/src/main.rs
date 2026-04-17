@@ -96,6 +96,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     window.set_undo_enabled(session.undo_enabled());
     window.set_redo_enabled(session.redo_enabled());
     window.set_timeline_info(session.timeline_summary_line().into());
+    window.set_video_track_lanes(session.video_track_row_labels().join("\n").into());
     if let Some(p) = session.project() {
         if let Some(clips) = timeline::clips_from_project(p) {
             let d = timeline::sequence_duration_ms(&clips);
@@ -148,6 +149,7 @@ fn main() -> Result<()> {
     window.set_media_ready(false);
     window.set_timecode("0:00.000 / 0:00.000".into());
     window.set_timeline_info("".into());
+    window.set_video_track_lanes("".into());
     window.set_video_fit_mode(0);
     window.set_stay_on_top(false);
 

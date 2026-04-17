@@ -17,7 +17,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**largely complete**
 | Phase | Theme | Status | Notes |
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** (core) | Stretch: keyboard shortcuts → **U4** |
-| **U2** | Project editing depth (tracks, trim) | **In progress** | Autosave + insert/split **done**; **U2-a** partial (**New Video Track** + timeline summary); trim **open** |
+| **U2** | Project editing depth (tracks, trim) | **In progress** | Autosave + insert/split **done**; **U2-a** partial (**New Video Track** + summary + per-lane labels); trim **open** |
 | **U3** | Export UX (presets, progress) | **Not started** | Remux today is **File → Export** without presets UI |
 | **U4** | Polish (a11y, shortcuts, icons) | **Not started** | Shortcuts often land after core editing (**U2**) is stable enough to bind keys to |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; full pipelines **open** |
@@ -89,7 +89,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 **Exit criteria (not all met)**
 
 - [x] Non-destructive **project file** workflow with undo/redo and autosave (path-backed).
-- [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** + timeline strip summary; not a full per-lane visual editor yet.
+- [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** + timeline strip summary + **per-lane labels** (clip count / duration); not a full per-lane visual editor (waveforms, drag-between-tracks) yet.
 - [ ] User can **trim** or **split** clips for edit intent beyond insert+split-at-playhead (e.g. trim handles, ripple).
 
 **Done**
@@ -98,11 +98,11 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Insert Video** with **split-at-playhead** when the playhead lies inside a clip.
 - **Save**, **Revert**, **Undo / Redo** (with explicit Save clearing stacks).
 - **Debounced autosave** to the on-disk project path (Slint timer; **preserves** undo vs explicit Save); flush on **Close** when possible.
-- **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the primary lane. **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; remaining: per-lane row UI, moves between tracks, richer trim.
+- **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; remaining: richer per-lane visuals (waveforms, thumbnails), moves between tracks, trim.
 
 **Suggested sub-milestones (order may vary)**
 
-1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary **done**; remaining: per-lane visuals, clip moves between tracks.
+1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; remaining: richer per-lane visuals, clip moves between tracks.
 2. **U2-b — Audio in timeline:** Expose **Audio** `TrackKind` in UI; mix or switch preview path.
 3. **U2-c — Trim / ripple:** In/out handles or numeric trim; ripple optional.
 

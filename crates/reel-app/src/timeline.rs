@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use reel_core::{Project, TrackKind};
+use uuid::Uuid;
 
 /// Epsilon for float boundaries (matches session insert math).
 const SEQ_MS_EPS: f64 = 1e-3;
@@ -155,6 +156,39 @@ pub(crate) fn resolve_for_project(p: &Project, sequence_ms: f64) -> Option<(Path
     resolve_sequence_media_ms(&clips, sequence_ms)
 }
 
+/// Clip on the **primary** (first) video track that contains `sequence_ms` in sequence time,
+/// or `None` if the playhead is in a gap or past the end (with the same edge rules as playback).
+pub(crate) fn primary_clip_id_at_seq_ms(p: &Project, sequence_ms: f64) -> Option<Uuid> {
+    let track = p.tracks.iter().find(|t| t.kind == TrackKind::Video)?;
+    let seq = sequence_ms.max(0.0);
+    let mut spans: Vec<(Uuid, f64, f64)> = Vec::new();
+    let mut t_ms = 0.0_f64;
+    for cid in &track.clip_ids {
+        let c = p.clips.iter().find(|x| x.id == *cid)?;
+        let dur_ms = (c.out_point - c.in_point) * 1000.0;
+        if dur_ms <= SEQ_MS_EPS {
+            continue;
+        }
+        let start = t_ms;
+        let end = t_ms + dur_ms;
+        spans.push((*cid, start, end));
+        t_ms = end;
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let last_i = spans.len() - 1;
+    for (i, &(id, start, end)) in spans.iter().enumerate() {
+        let is_last = i == last_i;
+        if seq + SEQ_MS_EPS >= start
+            && (seq < end - SEQ_MS_EPS || (is_last && seq <= end + SEQ_MS_EPS))
+        {
+            return Some(id);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +211,31 @@ mod tests {
             out_point: dur,
             extensions: Default::default(),
         }
+    }
+
+    #[test]
+    fn primary_clip_id_mid_first_clip() {
+        let a = clip(1, "/a.mp4", 2.0);
+        let b = clip(2, "/b.mp4", 3.0);
+        let tid = Uuid::from_u128(99);
+        let mut p = Project::new("t");
+        p.clips.push(a);
+        p.clips.push(b);
+        p.tracks.push(Track {
+            id: tid,
+            kind: TrackKind::Video,
+            clip_ids: vec![p.clips[0].id, p.clips[1].id],
+            extensions: Default::default(),
+        });
+        assert_eq!(
+            primary_clip_id_at_seq_ms(&p, 500.0),
+            Some(p.clips[0].id)
+        );
+        assert_eq!(
+            primary_clip_id_at_seq_ms(&p, 2500.0),
+            Some(p.clips[1].id)
+        );
+        assert_eq!(primary_clip_id_at_seq_ms(&p, 999_999.0), None);
     }
 
     #[test]

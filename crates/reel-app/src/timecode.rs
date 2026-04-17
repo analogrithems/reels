@@ -7,6 +7,11 @@ pub(crate) fn format_pair(playhead_ms: f32, duration_ms: f32) -> String {
     format!("{} / {}", fmt_ms(playhead_ms), fmt_ms(duration_ms))
 }
 
+/// Single time value as `M:SS.mmm` (shared with per-track lane labels).
+pub(crate) fn format_ms_alone(ms: f32) -> String {
+    fmt_ms(ms)
+}
+
 fn fmt_ms(ms: f32) -> String {
     let t = ms.round().clamp(0.0, u64::MAX as f32) as u64;
     let frac = (t % 1000) as u32;
