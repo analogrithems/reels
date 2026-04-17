@@ -60,7 +60,8 @@ fn main() -> Result<()> {
                     w.set_is_playing(false);
                     w.set_media_ready(false);
                 }
-                match session.borrow_mut().open_media(path.clone()) {
+                let open_result = session.borrow_mut().open_media(path.clone());
+                match open_result {
                     Ok(()) => {
                         if let Some(w) = weak.upgrade() {
                             sync_menu(&w, &session.borrow());
@@ -98,23 +99,26 @@ fn main() -> Result<()> {
         let p = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
-        window.on_file_revert(move || match session.borrow_mut().revert_to_saved() {
-            Ok(()) => {
-                p.send(player::Cmd::Pause);
-                if let Some(pb) = session.borrow().playback_path() {
-                    p.send(player::Cmd::Open(pb));
+        window.on_file_revert(move || {
+            let revert_result = session.borrow_mut().revert_to_saved();
+            match revert_result {
+                Ok(()) => {
+                    p.send(player::Cmd::Pause);
+                    if let Some(pb) = session.borrow().playback_path() {
+                        p.send(player::Cmd::Open(pb));
+                    }
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu(&w, &session.borrow());
+                        let n = session
+                            .borrow()
+                            .project()
+                            .map(|pr| pr.clips.len())
+                            .unwrap_or(0);
+                        w.set_status_text(format!("Reverted ({n} clips in timeline)").into());
+                    }
                 }
-                if let Some(w) = weak.upgrade() {
-                    sync_menu(&w, &session.borrow());
-                    let n = session
-                        .borrow()
-                        .project()
-                        .map(|pr| pr.clips.len())
-                        .unwrap_or(0);
-                    w.set_status_text(format!("Reverted ({n} clips in timeline)").into());
-                }
+                Err(e) => tracing::warn!(error = %e, "revert"),
             }
-            Err(e) => tracing::warn!(error = %e, "revert"),
         });
     }
 
@@ -164,7 +168,14 @@ fn main() -> Result<()> {
         window.on_file_insert_video(move || match prompt_insert_dialog() {
             Some(insert_path) => {
                 let before_pb = session.borrow().playback_path();
-                match session.borrow_mut().insert_clip(insert_path) {
+                let playhead_ms = weak
+                    .upgrade()
+                    .map(|w| w.get_playhead_ms() as f64)
+                    .unwrap_or(0.0);
+                let insert_result = session
+                    .borrow_mut()
+                    .insert_clip_at_playhead(insert_path, playhead_ms);
+                match insert_result {
                     Ok(()) => {
                         if let Some(w) = weak.upgrade() {
                             let n = session
@@ -173,7 +184,9 @@ fn main() -> Result<()> {
                                 .map(|pr| pr.clips.len())
                                 .unwrap_or(0);
                             sync_menu(&w, &session.borrow());
-                            w.set_status_text(format!("Inserted clip ({n} in timeline)").into());
+                            w.set_status_text(
+                                format!("Inserted @ {playhead_ms:.0} ms ({n} clips)").into(),
+                            );
                         }
                         let after_pb = session.borrow().playback_path();
                         if after_pb != before_pb {
@@ -372,7 +385,8 @@ fn main() -> Result<()> {
 
     if let Some(path) = startup_auto_open_path() {
         tracing::info!(?path, "auto-opening from REEL_OPEN_PATH");
-        match session.borrow_mut().open_media(path.clone()) {
+        let startup_open = session.borrow_mut().open_media(path.clone());
+        match startup_open {
             Ok(()) => {
                 sync_menu(&window, &session.borrow());
                 player.cmd_sender().send(player::Cmd::Open(path));

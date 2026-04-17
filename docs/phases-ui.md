@@ -18,7 +18,8 @@ Reel’s shell is still early. Work is grouped so each phase ships a testable sl
 - [x] In-memory `Project`: open builds one clip + video track; **Insert Video** probes and appends a clip.
 - [x] **Save** writes the live `Project` JSON; **Revert** restores last saved snapshot or re-probes the opened file.
 - [x] **Undo / redo** use project snapshots (insert/remove clip); player reloads if the first clip’s source path changes.
-- [ ] Playhead-as-cursor for insert position; multi-track / audio; `ProjectStore` autosave for editor documents.
+- [x] **Insert at playhead**: timeline index from concatenated clip durations + current `playhead_ms` from the UI; **inside a clip** the clip is split and the new take is inserted between the two parts.
+- [ ] Multi-track / audio; `ProjectStore` autosave for editor documents; trim-only / ripple edits at playhead.
 
 ## Phase U3 — Export UX
 

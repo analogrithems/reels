@@ -9,9 +9,12 @@ Supported ops:
                 transform from `params.model` (default "identity"), writes
                 to `<in_path>.out`, returns `{status: "ok", out_path: …}`.
 
-Transforms here are placeholders for the real FaceFusion model:
-- `identity` — copy in → out, byte-for-byte
-- `invert`   — flip R/G/B, leave A alone (visible-change sanity test)
+Transforms (`params.model`):
+- `identity` / `face_enhance` — copy in → out (enhance is stub until GFPGAN-style path lands)
+- `invert` — flip R/G/B, leave A alone (visible-change sanity test)
+- `facefusion` — optional import from `FACE_FUSION_ROOT` checkout; otherwise identity + log
+- `rvm_chroma` — **stub** chroma-style matte (green spill removal + alpha), not the full
+  Robust Video Matting network — used for TDD and offline preview until ONNX RVM is wired
 
 Test hooks on `params`:
 - `sleep_ms: int` — delay the swap response, for client-timeout tests
@@ -21,8 +24,10 @@ Test hooks on `params`:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 

@@ -13,7 +13,7 @@ Use **File → Open** to choose a video. **Play** / **Pause** control playback. 
 | Revert         | Reload the file from disk (discards unsaved edits). |
 | New Window     | Start another Reel process.                      |
 | Save           | Save the current project (`.reel` JSON).         |
-| Insert Video   | Append another clip to the timeline (probed from disk). |
+| Insert Video   | Insert a clip at the **playhead** on the main video track. If the playhead is **inside** a clip, that clip is split and the new clip is placed between the two parts. |
 | Export         | Write the current media to another format.       |
 
 ## Edit
