@@ -37,7 +37,7 @@ use slint::{ComponentHandle, Image, SharedPixelBuffer, Weak};
 use crate::timecode::apply_playhead_transport;
 use crate::timeline::TimelineSync;
 use crate::ui_bridge::on_ui;
-use crate::AppWindow;
+use crate::{reset_tools_popup_ui, AppWindow};
 use reel_core::project::ClipOrientation;
 
 #[derive(Clone)]
@@ -311,6 +311,7 @@ fn video_loop(
                             w.set_media_ready(false);
                             w.set_is_playing(false);
                             w.set_status_text("".into());
+                            reset_tools_popup_ui(&w);
                         });
                     }
                     match try_open_video(&s0.path) {
@@ -327,6 +328,7 @@ fn video_loop(
                                 w.set_status_text("".into());
                                 w.set_media_ready(true);
                                 apply_playhead_transport(&w, 0.0);
+                                reset_tools_popup_ui(&w);
                             });
                         }
                         Err(e) => {
@@ -335,6 +337,7 @@ fn video_loop(
                             on_ui(weak.clone(), move |w| {
                                 w.set_media_ready(false);
                                 w.set_status_text(format!("Open failed: {e}").into());
+                                reset_tools_popup_ui(&w);
                             });
                         }
                     }
@@ -382,6 +385,7 @@ fn video_loop(
                         w.set_time_elapsed("0:00.0".into());
                         w.set_time_total("0:00.0".into());
                         w.set_playhead_ms(0.0);
+                        reset_tools_popup_ui(&w);
                     });
                 }
                 Cmd::Stop => return,

@@ -49,6 +49,9 @@ mod tests {
             }),
             audio: None,
             audio_disabled: false,
+            video_stream_count: 1,
+            audio_stream_count: 0,
+            subtitle_stream_count: 0,
         }
     }
 

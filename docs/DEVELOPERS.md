@@ -26,7 +26,7 @@ make run      # desktop app (reel)
 | Path | Role |
 |------|------|
 | `crates/reel-core/` | Media probe, `Project` model, export, sidecar client, logging, optional `ProjectStore`. |
-| `crates/reel-app/` | Slint UI, player threads, session, autosave debouncer, effects. |
+| `crates/reel-app/` | Slint UI, player threads, session, autosave debouncer, effects. **`src/lib.rs`** is the library (`reel_app`); **`src/main.rs`** is the thin `reel` binary calling `reel_app::run()`. Integration tests (`tests/*.rs`, e.g. visual golden PNG) link the library. |
 | `crates/reel-cli/` | `probe` and `swap` commands. |
 | `sidecar/` | `facefusion_bridge.py`, `uv` project, pytest. |
 | `docs/` | User + developer documentation (bundled into Help). |

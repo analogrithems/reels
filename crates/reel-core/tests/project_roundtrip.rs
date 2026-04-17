@@ -34,6 +34,9 @@ fn sample_project() -> Project {
                 }),
                 audio: None,
                 audio_disabled: true, // exercise the graceful-degradation branch
+                video_stream_count: 1,
+                audio_stream_count: 0,
+                subtitle_stream_count: 0,
             },
             in_point: 1.0,
             out_point: 10.0,

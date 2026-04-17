@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 description       = "Reel desktop app (Slint UI)"
 
+[lib]
+name = "reel_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "reel"
 path = "src/main.rs"
@@ -34,3 +38,5 @@ slint-build.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 i-slint-backend-testing.workspace = true
+# Integration tests (`tests/*.rs`) import `slint::` directly (visual golden harness).
+slint.workspace = true

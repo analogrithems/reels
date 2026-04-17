@@ -8,7 +8,35 @@ This document is the **product / UI roadmap** for **`reel-app`** (Slint). Engine
 
 ## Executive summary
 
-Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core scope), **deep editing** (multi-track, **per-clip rotate/flip** **shipped**; **Trim Clip…** numeric sheet **shipped**; seek-bar **in/out markers**, **ripple**, and **on-timeline trim handles** still **open**), **export UX** (cancel + **%** + **strip** + **3-container preset sheet** shipped; **rich transcode catalog** (H.264/VP9/AV1 tiers)—**open**), **polish** (**File → Open Recent** **done**; shortcuts, a11y, **View** chrome—**partial**), and **AI/effects** (**MVP shipped**; **upscaling** on roadmap). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
+Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core scope), **deep editing** (multi-track, **per-clip rotate/flip** **shipped**; **Trim Clip…** numeric sheet **shipped**; seek-bar **in/out markers** + **range-scoped export** **shipped**; **ripple** and **on-timeline trim handles** still **open**), **export UX** (cancel + **%** + **strip** + **3-container preset sheet** shipped; **rich transcode catalog** (H.264/VP9/AV1 tiers)—**open**), **polish** (**File → Open Recent** **done**; shortcuts, a11y, **View** chrome—**partial**), and **AI/effects** (**MVP shipped**; **upscaling** on roadmap). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
+
+A **v0 UI mock** (Next.js reference + a **Slint implementation guide**) defines a **target layout and component split**—dark **Theme** tokens, **floating QuickTime-style** preview controls (auto-hide, optional drag), **multi-row timeline** with per-track actions, **export progress** placement, **status footer** pattern, and an optional **full-window trim mode**. That spec is **not** a commitment to ship every control in one release; it is the **north star** for evolving **`reel-app`** through **U2–U4**. See **Design reference (v0 mock → Slint)** below.
+
+---
+
+## Design reference (v0 mock → Slint)
+
+**Design bundle (repo):** `assets/Knotreels.v0.ui/` — v0 mock UI (reference implementation, shared components, public assets). **Slint guide (entry point for implementation):** `assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`.
+
+**What it specifies (summary):**
+
+- **Visual system:** Dark, macOS-adjacent **Theme** global (backgrounds, text, borders, accents including **yellow** trim handles, per-track **clip** colors for video/audio/subtitle).
+- **Shell layout:** **Export progress** region at the top when exporting; **video preview** uses remaining height; **floating** transport/scrub/volume/speed strip **over** the preview (~**60%** width, **auto-hide** after idle, **draggable** position); **timeline** below with **padded** track rows, **+ Video** / **+ Audio** (and **subtitle** tracks **off by default**, enabled via **View**); **status footer** (codec summary · project path · saved/dirty).
+- **Component boundaries (Slint):** Suggested modules such as `VideoPreview` (with embedded floating controls), `TransportBar`, multi-track `Timeline`, `StatusFooter`, `ExportProgress`, and optional **`TrimMode`** (dedicated trim UI vs. main editor) plus Rust callbacks (`seek`, track add, clip select, trim apply, export, etc.).
+- **Interaction details:** Track labels with **dismiss** on hover, **playhead** line with glow, **J/K/L**-style shuttle hooks in the prompt—map to **U4** shortcuts where we adopt them.
+
+**Phase mapping (where convergence is tracked):**
+
+| v0 area | Primary UI phase | Notes |
+|--------|-------------------|--------|
+| Theme tokens, typography, icon density | **U4** | Aligns with “icons, density, typography pass”; tokens can land incrementally. |
+| Floating preview controls (width, auto-hide, drag, scrub row) | **U4** (with **U2** seek/playhead) | Partially shipped today; v0 doc is the **target** chrome. |
+| Multi-row timeline, **+** track affordances, filmstrip/waveform richness | **U2** | Extends current lanes/labels toward full **NLE** row model. |
+| Export progress **placement** (top bar vs. strip-only) | **U3** | Determinate **%** + strip **shipped**; optional **layout** match to v0. |
+| **Trim mode** full-window flow vs. **Trim Clip…** sheet | **U2** | Complements numeric trim and future **on-timeline** handles. |
+| Subtitle tracks (hidden by default) | **Parking lot** / **FEATURES** until scheduled | Treat as **U6** or fold into **U2** when picked up. |
+
+**Maintenance:** If the v0 bundle moves or is regenerated, keep **this path** and the **summary** in sync; do not paste the full prompt into `phases-ui.md`.
 
 ---
 
@@ -17,9 +45,9 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | Phase | Theme | Status | Notes |
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
-| **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); **seek-bar range markers** **shipped** (I/O keys + Edit menu); **range-scoped export** **shipped** (markers slice ffmpeg concat); multi-lane **partial**; **planned:** **audio** remove/replace/overlay+gain, **resize**, timeline in/out handles + ripple |
-| **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 remux / MP4 H.264+AAC / WebM / MKV preset sheet** **done** (MP4 H.264+AAC is the guaranteed transcode path when remux fails); **planned:** VP9/AV1 WebM, HEVC MP4, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
-| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **QuickTime-style** floating **volume + transport + scrub + times** over the **video** (auto-hide ~5 s idle); stepped speeds — see **U4** body |
+| **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); **seek-bar range markers** **shipped** (I/O keys + Edit menu); **range-scoped export** **shipped** (markers slice ffmpeg concat); multi-lane **partial**; **planned:** **audio** remove/replace/overlay+gain, **resize**, timeline in/out handles + ripple; **visual target:** multi-row timeline + track **+** affordances per **v0 Slint guide** |
+| **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 remux / MP4 H.264+AAC / WebM / MKV preset sheet** **done** (MP4 H.264+AAC is the guaranteed transcode path when remux fails); optional **layout** match to v0 **top** export bar — **open**; **planned:** VP9/AV1 WebM, HEVC MP4, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
+| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **QuickTime-style** floating **volume + transport + scrub + times** over the **video** (auto-hide ~5 s idle); stepped speeds — **converge** with **v0** (**Theme** tokens, **~60%** bar, optional **drag**) — see **U4** body |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
 
 ---
@@ -47,9 +75,9 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | UI phase | Primary place in **`docs/FEATURES.md`** |
 |----------|----------------------------------------|
 | U1 | Currently supported: Playback, Viewport, Help |
-| U2 | Project & timeline (partial) + Roadmap: **QuickTime-style** Edit — **rotate/flip** and **Trim Clip…** in **Currently supported**; seek-bar **in/out markers**, **audio** remove/replace/overlay, **resize**, **ripple** still roadmap |
-| U3 | Roadmap: **Export presets** (web/mobile from `SUPPORTED_FORMATS.md`), batch, progress UI |
-| U4 | **Currently supported:** **File → Open Recent**; **View** (loop, zoom, fullscreen) + partial shortcuts — see **Viewport** / **Playback** in **`FEATURES.md`**. **Roadmap:** a11y, bundle, optional zoom pan / toolbar fullscreen |
+| U2 | Project & timeline (partial) + **Currently supported:** seek-bar **in/out markers** + **range-scoped export**; **QuickTime-style** **rotate/flip** and **Trim Clip…**; **Roadmap:** **audio** remove/replace/overlay, **resize**, **ripple**, on-timeline trim handles; **v0 mock** tracks richer **timeline rows** + optional **trim mode** (see **`assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`**) |
+| U3 | Roadmap: **Export presets** (web/mobile from `SUPPORTED_FORMATS.md`), batch, progress UI; **v0** optional **top** progress bar vs. today’s strip |
+| U4 | **Currently supported:** **File → Open Recent**; **View** (loop, zoom, fullscreen) + partial shortcuts — see **Viewport** / **Playback** in **`FEATURES.md`**. **Roadmap:** a11y, bundle, optional zoom pan / toolbar fullscreen; **Theme** + floating bar **parity** with **v0** |
 | U5 | Currently supported: Effects + Roadmap: Export & effects (real models) |
 
 When you ship something, **move or add bullets in `FEATURES.md`** and adjust the **Status** column in the table above.
@@ -118,13 +146,17 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 **Cross-links:** User-visible behavior and limits → **`docs/FEATURES.md`** (**Project & timeline**). Edit shortcuts (including **Trim Clip…** — menu / double-click only) → **`docs/KEYBOARD.md`**.
 
+**Design target:** The **v0 Slint implementation guide** (`assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`) describes a **multi-row timeline** (video / audio / subtitle lanes), per-track **add** actions, **filmstrip**-style clips and **waveforms**, **yellow** in/out trim handles, and an optional **full-window Trim mode**—use it when extending lanes and trim UX beyond what ships today.
+
+**Deferred (explicit):** Timeline **audio waveform** / peak visualization (drawn under or inside audio lanes) ships **after** name-based filmstrip chips, footer alignment, and other v0 shell work—it needs peak samples or a decode pass and is tracked as **last among** timeline polish items (see `crates/reel-app/ui/app.slint` near the AUDIO lanes).
+
 ### U2 — progress snapshot (rolling)
 
 | Area | Shipped | Still open |
 |------|---------|------------|
-| **Tracks / lanes** | Primary-track video concat **preview**; **New Video / Audio Track**; per-lane **strip labels**; **Move Clip** between primary ↔ second **video** lane | Preview/mix from **secondary video** lanes; **multiple audio lanes** mixed; draggable moves |
+| **Tracks / lanes** | Primary-track video concat **preview**; **New Video / Audio Track**; per-lane **filmstrip name chips** (duration-weighted) + **Move Clip** between primary ↔ second **video** lane | Preview/mix from **secondary video** lanes; **multiple audio lanes** mixed; **waveforms** (deferred); draggable moves |
 | **Audio** | **First** audio lane **concat** drives preview when it has clips (else embedded video audio); silence-pad after audio ends | **U2-e** remove/replace/overlay + per-lane **gain**; multi-lane **mix** |
-| **Trim** | **Blade**; **Trim Clip…** numeric sheet (**Edit** menu + **double-click** video lane strip) | Timeline **in/out handles**, **ripple**, seek-bar **in/out markers** for working range |
+| **Trim** | **Blade**; **Trim Clip…** numeric sheet (**Edit** menu + **double-click** video lane strip); seek-bar **In/Out markers** + **range-scoped export** | Timeline **in/out handles**, **ripple** (markers on seek bar are **not** draggable handles yet) |
 | **Transform** | Per-clip **rotate / flip** (preview + export **`-vf`**) | — |
 | **Resize** | — | **U2-f** **Edit → Resize Video…** |
 
@@ -179,6 +211,10 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 - **Export** runs **off the UI thread**; **File → Export…** opens a **preset sheet** (**MP4 remux**, **MP4 — H.264 + AAC** transcode, **WebM VP8+Opus**, **MKV remux**), then a filtered save dialog; status line shows **Exporting…**, then **Exporting… N%**, with the **strip** filling left→right, then result (see **`docs/FEATURES.md`**). The **MP4 H.264+AAC** preset is the guaranteed MP4-side fallback when remux `-c copy` rejects a mix of codecs.
 
+**Optional chrome (v0 alignment)**
+
+- The v0 mock adds a **dedicated export progress bar** at the **top** of the window while exporting. Today’s **determinate %** + **thin strip** already meet core **U3** exit criteria; a **top bar** is **optional** polish if we want pixel-parity with the mock.
+
 **Not started (UI)**
 
 - **Rich preset catalog extensions**: **VP9 / AV1** WebM, **HEVC + AAC** MP4 (mobile tier), resolution / bitrate fields per **`SUPPORTED_FORMATS.md`** roadmap.
@@ -214,7 +250,7 @@ These were **not** planned as named U4 deliverables; they improve everyday previ
 - **Preview playback speed (0.25×–2× forward and reverse):** **Volume**, **rewind**, **play/pause**, and **fast-forward** in a **floating bar** over the **bottom of the video**; **elapsed** / **total** (**tenths of a second**) flank the **scrub bar** on the second row of that bar. The bar **hides after ~5 s** without pointer movement over the **viewport**; movement or click **shows** it again. **Rewind** / **fast-forward** increase speed on **repeated clicks**; **export** is unchanged.
 - **Transport:** Icon-style **play** / **pause** with **rewind** and **fast-forward** adjacent; status text lives in the **thin bar** below the timeline (not duplicated under the video).
 
-Treat these as **nice-to-have polish** overlapping **U4** (transport feel) that does **not** close remaining **U4** items (a11y audit, optional zoom pan / toolbar fullscreen, etc.).
+Treat these as **nice-to-have polish** overlapping **U4** (transport feel) that does **not** close remaining **U4** items (a11y audit, optional zoom pan / toolbar fullscreen, etc.). The **v0** guide expands this into a **two-row** floating panel (transport + scrub), **draggable** placement, and optional **tools** chevron—implement incrementally; see **Design reference (v0 mock → Slint)**.
 
 **Scope**
 
@@ -222,7 +258,8 @@ Treat these as **nice-to-have polish** overlapping **U4** (transport feel) that 
 - Keyboard **shortcuts** (including menu parity).
 - **View** chrome: loop, zoom ladder, fullscreen.
 - **Accessibility** review.
-- **Icons**, density, typography pass.
+- **Icons**, density, typography pass; introduce or align **`Theme`** globals and **system-font** sizing with **`assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`** (dark palette, monospace timecode).
+- **Floating preview bar:** converge on the v0 spec where practical (**~60%** width, **auto-hide**, optional **drag** handle and tools affordance)—without blocking a11y or shortcuts work.
 - Optional: **macOS app bundle**, notarization, Linux packaging stories.
 
 ---
@@ -262,7 +299,7 @@ Treat these as **nice-to-have polish** overlapping **U4** (transport feel) that 
 Items live in **`docs/FEATURES.md`** until we carve **U6+**:
 
 - **Keyframes**, motion paths, per-clip effect parameters.
-- Rich **subtitle** authoring and burn-in beyond ffmpeg one-off.
+- Rich **subtitle** authoring and burn-in beyond ffmpeg one-off. The **v0** mock includes **subtitle** timeline rows **hidden by default** (enable via **View**); schedule alongside timeline model work (**U2**) when we pick this up.
 - **Collaboration** / cloud project (no roadmap commitment).
 - **AI video upscale** (distinct from **U2-f** pixel resize—see **U5** “Not yet”).
 
@@ -277,7 +314,7 @@ Priorities change; this is **guidance for contributors**, not a commitment.
 3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome). (**Open Recent**, **View** loop/zoom/fullscreen, timeline scrub reliability — shipped.)
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 
-Revisit when **seek-bar range markers**, **ripple trim**, or **export presets** land.
+Revisit when **on-timeline trim handles**, **ripple trim**, or major **export preset** catalog additions land.
 
 ---
 
@@ -285,7 +322,8 @@ Revisit when **seek-bar range markers**, **ripple trim**, or **export presets** 
 
 | Document | Audience | Contents |
 |----------|----------|----------|
-| **`phases-ui.md`** (this file) | Product / UI roadmap | U1–U5, status, exit criteria, sequencing, **logging standards** |
+| **`phases-ui.md`** (this file) | Product / UI roadmap | U1–U5, status, exit criteria, sequencing, **logging standards**, **v0 design reference** |
+| **`assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`** | Slint UI **target** spec (from v0) | Theme, layout diagram, suggested components/callbacks—**not** a phase gate on its own |
 | **`phase-status.md`** | Engineering history | Phases 0–4 (infra, player, sidecar), doc milestones; **Phase 1** includes completed **status-footer** follow-on (probe metadata in UI) |
 | **`FEATURES.md`** | What ships today + backlog | Actionable feature bullets; keep in sync when U* moves |
 | **`CONTRIBUTING.md`** | New contributors | Workflow, links here and to **Suggested next focus** |

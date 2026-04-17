@@ -1,12 +1,129 @@
 import { HelpWindow } from "help_window.slint";
+import { Theme } from "theme.slint";
 import { Button, ComboBox, HorizontalBox, LineEdit, Slider, VerticalBox } from "std-widgets.slint";
 
 export { HelpWindow }
+
+/// One segment in a filmstrip row (file name + proportional width from clip duration).
+export struct TlChip {
+    label: string,
+    width-weight: float,
+    chip-idx: int,
+    is-video: bool,
+}
+
+/// Single timeline lane: label column + chip strip (or empty state).
+/// v0 mock: trash appears on row hover (`group/track`); gated by `delete-enabled` (e.g. last video lane).
+component FilmstripLane inherits VerticalBox {
+    in property <string> lane-label;
+    in property <[TlChip]> chips;
+    in property <bool> delete-enabled: true;
+    callback track-delete();
+    spacing: 6px;
+    lane-hover := TouchArea {
+        width: 100%;
+        HorizontalBox {
+        spacing: 8px;
+        alignment: start;
+        VerticalBox {
+            min-width: 40px;
+            alignment: start;
+            HorizontalBox {
+                spacing: 4px;
+                alignment: start;
+                Text {
+                    text: root.lane-label;
+                    color: Theme.text-tertiary;
+                    font-size: 10px;
+                    font-weight: 600;
+                    vertical-alignment: top;
+                    horizontal-stretch: 1;
+                }
+                if lane-hover.has-hover && root.delete-enabled: del-ta := TouchArea {
+                    width: 24px;
+                    height: 24px;
+                    clicked => {
+                        root.track-delete();
+                    }
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        border-radius: 4px;
+                        background: del-ta.has-hover ? #ffffff18 : transparent;
+                        Path {
+                            width: 12px;
+                            height: 12px;
+                            x: (parent.width - 12px) / 2;
+                            y: (parent.height - 12px) / 2;
+                            fill: #a0a0a0;
+                            // Lucide `Trash2`-style bin (~12px).
+                            commands: "M 5 4 L 6 4 L 7 2 L 13 2 L 14 4 L 17 4 L 17 6 L 4 6 Z M 6 7 L 7 19 L 13 19 L 14 7";
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            min-height: 42px;
+            background: Theme.background-secondary;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            clip: true;
+            if root.chips.length == 0: Text {
+                text: "Empty lane";
+                color: Theme.text-tertiary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if root.chips.length > 0: HorizontalBox {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                spacing: 4px;
+                padding: 4px;
+                alignment: start;
+                for item in root.chips: Rectangle {
+                    horizontal-stretch: item.width-weight;
+                    min-width: 52px;
+                    height: 34px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: item.is-video ? #3d6ab0 : #3d8aa8;
+                    // Slight variation by index (no `mod` in Slint — branch on low indices).
+                    background: item.is-video
+                        ? (item.chip-idx == 0 ? #4a90d9 : (item.chip-idx == 1 ? #5e9ee0 : #4a90d9))
+                        : (item.chip-idx == 0 ? #5ac8fa : (item.chip-idx == 1 ? #6dd5ff : #5ac8fa));
+                    clip: true;
+                    HorizontalBox {
+                        padding-left: 6px;
+                        padding-right: 4px;
+                        alignment: center;
+                        Text {
+                            text: item.label;
+                            color: #ffffffee;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+        }
+        }
+    }
+}
 
 export component AppWindow inherits Window {
     preferred-width: 1280px;
     preferred-height: 720px;
     title: "Reels";
+    background: Theme.background-primary;
     // Logo / window icon: Help window only; macOS Dock uses Reel.app bundle (see `make macos-app`).
 
     // Video fit: 0 = contain (fit), 1 = cover (fill)
@@ -21,7 +138,7 @@ export component AppWindow inherits Window {
     in-out property <float> playhead-ms: 0;
     in property <bool> is-playing: false;
     in property <bool> media-ready: false;
-    /// Transient messages (export, errors, undo feedback). Shown in the bottom strip; codec/path/save need **View → Show Status**.
+    /// Transient messages (export, errors, undo feedback). The bottom strip is shown only when **View → Show Status** is on; then codec/path/save lines appear when a project is loaded.
     in property <string> status-text: "";
 
     in property <bool> close-enabled: false;
@@ -64,6 +181,26 @@ export component AppWindow inherits Window {
     in property <string> video-track-lanes: "";
     /// One line per audio track lane, newline-separated (see session.audio_track_row_labels).
     in property <string> audio-track-lanes: "";
+    /// Filmstrip chips per lane (up to four lanes each; widths from clip durations).
+    in property <[TlChip]> tl_vrow0: [];
+    in property <[TlChip]> tl_vrow1: [];
+    in property <[TlChip]> tl_vrow2: [];
+    in property <[TlChip]> tl_vrow3: [];
+    in property <[TlChip]> tl_arow0: [];
+    in property <[TlChip]> tl_arow1: [];
+    in property <[TlChip]> tl_arow2: [];
+    in property <[TlChip]> tl_arow3: [];
+    in property <int> tl_video_track_count: 0;
+    in property <int> tl_audio_track_count: 0;
+    /// Subtitle lanes from container probe (single-media mode only).
+    in property <int> tl_subtitle_track_count: 0;
+    /// Project-backed video/audio track counts (for delete affordances). Display counts may be higher when showing container streams.
+    in property <int> tl_video_project_track_count: 0;
+    in property <int> tl_audio_project_track_count: 0;
+    in property <[TlChip]> tl_srow0: [];
+    in property <[TlChip]> tl_srow1: [];
+    in property <[TlChip]> tl_srow2: [];
+    in property <[TlChip]> tl_srow3: [];
     /// Elapsed sequence time (left of timeline scrubber); `M:SS.t` / `H:MM:SS.t`.
     in property <string> time-elapsed: "0:00.0";
     /// Total sequence duration (right of scrubber); same format as `time-elapsed`.
@@ -101,6 +238,9 @@ export component AppWindow inherits Window {
     callback file-insert-audio();
     callback file-new-video-track();
     callback file-new-audio-track();
+    /// Remove timeline lane by index (`0` = V1 / A1). Video: requires a spare lane; audio: any lane.
+    callback delete-video-track(int);
+    callback delete-audio-track(int);
     callback file-export();
     callback export-cancel();
     callback export-preset-cancel();
@@ -198,11 +338,18 @@ export component AppWindow inherits Window {
     callback transport-forward();
     callback transport-rewind();
 
+    /// Tools menu above the double-chevron control (v0 mock — Magic Wand…Effects submenu).
+    /// Default **closed** (v0); Rust also resets on media load/close so state does not carry over.
+    in-out property <bool> tools-popup-open: false;
+    in-out property <bool> tools-effects-submenu-open: false;
+
     transport-chrome-hide := Timer {
         interval: 5s;
         triggered => {
             if (!root.controls-overlay-always-visible) {
                 root.transport-chrome-opacity = 0.0;
+                root.tools-popup-open = false;
+                root.tools-effects-submenu-open = false;
             }
         }
     }
@@ -697,7 +844,7 @@ export component AppWindow inherits Window {
         padding: 0px;
 
         Rectangle {
-            background: #000;
+            background: Theme.surface-preview;
             vertical-stretch: 1;
             width: 100%;
             min-height: 200px;
@@ -731,8 +878,14 @@ export component AppWindow inherits Window {
             TouchArea {
                 width: 100%;
                 height: 100%;
-                pointer-event(_) => {
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.move || event.kind == PointerEventKind.down) {
+                        wake-transport-chrome();
+                    }
+                }
+                scroll-event(event) => {
                     wake-transport-chrome();
+                    return reject;
                 }
                 clicked => {
                     main-view-focus.focus();
@@ -742,18 +895,19 @@ export component AppWindow inherits Window {
             // Compact floating transport: ≤150px tall and ≤42% of preview height (well under half the viewport).
             // Opacity is applied only to the backdrop — not the interactive root — so Slint hit-testing stays correct.
             if root.media-ready && (root.controls-overlay-always-visible || root.transport-chrome-opacity > 0.001): Rectangle {
-                property <length> chrome-max-h: min(150px, parent.height * 42 / 100);
-                x: 20px;
-                y: parent.height - self.height - 14px;
-                width: parent.width - 40px;
+                property <length> chrome-max-h: min(168px, parent.height * 46 / 100);
+                // v0 mock: ~60% width, centered, ~10% from bottom (QuickTime-style overlay).
+                width: min(parent.width * 60 / 100, 640px);
                 height: chrome-max-h;
-                clip: true;
-                border-radius: 10px;
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - parent.height * 10 / 100;
+                clip: false;
+                border-radius: 16px;
                 Rectangle {
                     width: 100%;
                     height: 100%;
-                    border-radius: 10px;
-                    background: #1c1c20e8;
+                    border-radius: 16px;
+                    background: Theme.chrome-backdrop;
                     opacity: root.controls-overlay-always-visible ? 1.0 : root.transport-chrome-opacity;
                 }
                 VerticalBox {
@@ -761,155 +915,302 @@ export component AppWindow inherits Window {
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        padding-top: 8px;
-                        padding-bottom: 8px;
-                        spacing: 6px;
-                        alignment: center;
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 14px;
+                    padding-bottom: 12px;
+                    spacing: 10px;
+                    alignment: center;
+                    // Row 1 — matches v0: `justify-between` (grip+skip back | step+play+step | skip fwd+speed+…+tools).
+                    // Reference: `assets/Knotreels.v0.ui/app/page.tsx` + https://v0-video-editing-app-ui.vercel.app/
+                    HorizontalBox {
+                        width: 100%;
+                        alignment: space-between;
+                        min-height: 48px;
+                        max-height: 54px;
+                        // Left: drag handle + skip to start
                         HorizontalBox {
-                            spacing: 0px;
+                            spacing: 8px;
                             alignment: center;
-                            min-height: 52px;
-                            max-height: 58px;
-                            HorizontalBox {
-                                spacing: 6px;
-                                alignment: center;
+                            Path {
+                                width: 14px;
+                                height: 14px;
+                                y: (parent.height - 14px) / 2;
+                                fill: #ffffff66;
+                                // Lucide-style horizontal grip (drag handle — visual only).
+                                commands: "M 2 5 L 12 5 M 2 9 L 12 9";
+                            }
+                            skip-start-ta := TouchArea {
+                                enabled: root.media-ready;
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.seek-timeline(0.0);
+                                    wake-transport-chrome();
+                                }
                                 Path {
-                                    width: 16px;
-                                    height: 14px;
-                                    y: (parent.height - 14px) / 2;
-                                    fill: #ffffff;
-                                    commands: "M 1 4 L 1 10 L 5 10 L 10 13 L 10 1 L 5 4 L 1 4";
+                                    width: 18px;
+                                    height: 18px;
+                                    y: (parent.height - 18px) / 2;
+                                    fill: #ffffffb3;
+                                    commands: "M 4 4 L 4 14 M 7 4 L 12 9 L 7 14 Z";
                                 }
-                                Slider {
-                                    width: 88px;
-                                    height: 14px;
-                                    minimum: 0;
-                                    maximum: 100;
-                                    value: root.volume-percent;
-                                    changed(v) => {
-                                        main-view-focus.focus();
-                                        root.volume-percent = v;
-                                        root.volume-changed(v);
-                                        wake-transport-chrome();
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                min-width: 14px;
-                                height: 1px;
-                            }
-                            HorizontalBox {
-                                spacing: 28px;
-                                alignment: center;
-                                rw-ta := TouchArea {
-                                    enabled: root.media-ready;
-                                    clicked => {
-                                        main-view-focus.focus();
-                                        root.transport-rewind();
-                                        wake-transport-chrome();
-                                    }
-                                    Path {
-                                        width: 22px;
-                                        height: 18px;
-                                        y: (parent.height - 18px) / 2;
-                                        fill: #ffffff;
-                                        commands: "M 11 2 L 11 16 L 3 9 Z M 21 2 L 21 16 L 13 9 Z";
-                                    }
-                                }
-                                play-ta := TouchArea {
-                                    enabled: root.media-ready;
-                                    clicked => {
-                                        main-view-focus.focus();
-                                        root.play-pause();
-                                        wake-transport-chrome();
-                                    }
-                                    Rectangle {
-                                        width: 32px;
-                                        height: 32px;
-                                        border-radius: 16px;
-                                        background: play-ta.pressed ? #ffffff33 : #ffffff22;
-                                        clip: true;
-                                        if root.is-playing: HorizontalBox {
-                                            alignment: center;
-                                            spacing: 4px;
-                                            Rectangle {
-                                                width: 4px;
-                                                height: 12px;
-                                                border-radius: 1px;
-                                                background: #ffffff;
-                                            }
-                                            Rectangle {
-                                                width: 4px;
-                                                height: 12px;
-                                                border-radius: 1px;
-                                                background: #ffffff;
-                                            }
-                                        }
-                                        if !root.is-playing: Path {
-                                            x: (parent.width - 12px) / 2 + 1px;
-                                            y: (parent.height - 14px) / 2;
-                                            width: 12px;
-                                            height: 14px;
-                                            fill: #ffffff;
-                                            commands: "M 0 0 L 12 7 L 0 14 Z";
-                                        }
-                                    }
-                                }
-                                ff-ta := TouchArea {
-                                    enabled: root.media-ready;
-                                    clicked => {
-                                        main-view-focus.focus();
-                                        root.transport-forward();
-                                        wake-transport-chrome();
-                                    }
-                                    Path {
-                                        width: 22px;
-                                        height: 18px;
-                                        y: (parent.height - 18px) / 2;
-                                        fill: #ffffff;
-                                        commands: "M 1 2 L 1 16 L 9 9 Z M 11 2 L 11 16 L 19 9 Z";
-                                    }
-                                }
-                            }
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                min-width: 14px;
-                                height: 1px;
-                            }
-                            Text {
-                                text: root.transport-rate-label;
-                                color: #ffffff;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                                horizontal-alignment: right;
-                                min-width: 44px;
                             }
                         }
+                        // Center: single-arrow step back + play + step forward (not multi-triangle rewind/ff).
                         HorizontalBox {
-                            padding-left: 4px;
-                            padding-right: 4px;
                             spacing: 12px;
                             alignment: center;
-                            min-height: 34px;
-                            max-height: 40px;
+                            rw-ta := TouchArea {
+                                enabled: root.media-ready;
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.transport-rewind();
+                                    wake-transport-chrome();
+                                }
+                                Path {
+                                    width: 16px;
+                                    height: 16px;
+                                    y: (parent.height - 16px) / 2;
+                                    fill: #ffffffb3;
+                                    commands: "M 10 4 L 4 8 L 10 12 Z";
+                                }
+                            }
+                            play-ta := TouchArea {
+                                enabled: root.media-ready;
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.play-pause();
+                                    wake-transport-chrome();
+                                }
+                                Rectangle {
+                                    width: 40px;
+                                    height: 40px;
+                                    border-radius: 20px;
+                                    background: play-ta.pressed ? #ffffff33 : #ffffff22;
+                                    clip: true;
+                                    if root.is-playing: HorizontalBox {
+                                        alignment: center;
+                                        spacing: 4px;
+                                        Rectangle {
+                                            width: 4px;
+                                            height: 14px;
+                                            border-radius: 1px;
+                                            background: #ffffff;
+                                        }
+                                        Rectangle {
+                                            width: 4px;
+                                            height: 14px;
+                                            border-radius: 1px;
+                                            background: #ffffff;
+                                        }
+                                    }
+                                    if !root.is-playing: Path {
+                                        x: (parent.width - 14px) / 2 + 1px;
+                                        y: (parent.height - 16px) / 2;
+                                        width: 14px;
+                                        height: 16px;
+                                        fill: #ffffff;
+                                        commands: "M 0 0 L 14 8 L 0 16 Z";
+                                    }
+                                }
+                            }
+                            ff-ta := TouchArea {
+                                enabled: root.media-ready;
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.transport-forward();
+                                    wake-transport-chrome();
+                                }
+                                Path {
+                                    width: 16px;
+                                    height: 16px;
+                                    y: (parent.height - 16px) / 2;
+                                    fill: #ffffffb3;
+                                    commands: "M 6 4 L 12 8 L 6 12 Z";
+                                }
+                            }
+                        }
+                        // Right: skip to end | speed | loop | mute | vol | fs | | tools
+                        HorizontalBox {
+                            spacing: 8px;
+                            alignment: center;
+                            skip-end-ta := TouchArea {
+                                enabled: root.media-ready;
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.seek-timeline(root.duration-ms);
+                                    wake-transport-chrome();
+                                }
+                                Path {
+                                    width: 18px;
+                                    height: 18px;
+                                    y: (parent.height - 18px) / 2;
+                                    fill: #ffffffb3;
+                                    commands: "M 14 4 L 14 14 M 11 4 L 6 9 L 11 14 Z";
+                                }
+                            }
+                            Rectangle {
+                                width: 1px;
+                                height: 16px;
+                                background: #ffffff33;
+                            }
+                            speed-hit := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    wake-transport-chrome();
+                                }
+                                HorizontalBox {
+                                    spacing: 2px;
+                                    alignment: center;
+                                    padding-left: 4px;
+                                    padding-right: 2px;
+                                    padding-top: 2px;
+                                    padding-bottom: 2px;
+                                    Text {
+                                        text: root.transport-rate-label;
+                                        color: #ffffffb3;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    Path {
+                                        width: 10px;
+                                        height: 10px;
+                                        fill: #ffffff88;
+                                        commands: "M 2 4 L 5 7 L 8 4";
+                                    }
+                                }
+                            }
+                            loop-ta := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.view-toggle-loop();
+                                    wake-transport-chrome();
+                                }
+                                Rectangle {
+                                    border-radius: 4px;
+                                    background: root.loop-playback ? #0a84ff4d : transparent;
+                                    HorizontalBox {
+                                        padding-left: 4px;
+                                        padding-right: 4px;
+                                        padding-top: 2px;
+                                        padding-bottom: 2px;
+                                        Text {
+                                            text: "↻";
+                                            color: root.loop-playback ? Theme.accent-blue : #ffffffb3;
+                                            font-size: 14px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            mute-ta := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    if (root.volume-percent < 0.5) {
+                                        root.volume-percent = 85.0;
+                                    } else {
+                                        root.volume-percent = 0.0;
+                                    }
+                                    root.volume-changed(root.volume-percent);
+                                    wake-transport-chrome();
+                                }
+                                if root.volume-percent < 0.5: Path {
+                                    width: 14px;
+                                    height: 14px;
+                                    fill: #ffffffb3;
+                                    commands: "M 2 8 L 14 2 M 14 14 L 2 8 M 5 4 L 5 12 M 9 4 L 9 12";
+                                }
+                                if root.volume-percent >= 0.5: Path {
+                                    width: 14px;
+                                    height: 14px;
+                                    fill: #ffffffb3;
+                                    commands: "M 3 6 Q 3 3 6 3 L 8 3 Q 11 3 11 6 L 11 10 Q 11 12 8 12 L 6 12 Q 3 12 3 10 Z";
+                                }
+                            }
+                            Slider {
+                                width: 48px;
+                                height: 14px;
+                                minimum: 0;
+                                maximum: 100;
+                                value: root.volume-percent;
+                                changed(v) => {
+                                    main-view-focus.focus();
+                                    root.volume-percent = v;
+                                    root.volume-changed(v);
+                                    wake-transport-chrome();
+                                }
+                            }
+                            fs-ta := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.view-toggle-fullscreen();
+                                    wake-transport-chrome();
+                                }
+                                Text {
+                                    text: "⛶";
+                                    color: #ffffffb3;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Rectangle {
+                                width: 1px;
+                                height: 16px;
+                                background: #ffffff33;
+                            }
+                            tools-ta := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.tools-popup-open = !root.tools-popup-open;
+                                    if (!root.tools-popup-open) {
+                                        root.tools-effects-submenu-open = false;
+                                    }
+                                    wake-transport-chrome();
+                                }
+                                Rectangle {
+                                    border-radius: 4px;
+                                    background: root.tools-popup-open ? #0a84ff4d : transparent;
+                                    HorizontalBox {
+                                        padding-left: 4px;
+                                        padding-right: 4px;
+                                        padding-top: 2px;
+                                        padding-bottom: 2px;
+                                        spacing: 0px;
+                                        alignment: center;
+                                        // ChevronsRight (v0 `ChevronsRight` ~14px)
+                                        Path {
+                                            width: 14px;
+                                            height: 14px;
+                                            fill: root.tools-popup-open ? Theme.accent-blue : #ffffffb3;
+                                            commands: "M 4 4 L 8 8 L 4 12 M 8 4 L 12 8 L 8 12";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                        HorizontalBox {
+                            padding-left: 0px;
+                            padding-right: 0px;
+                            spacing: 12px;
+                            alignment: center;
+                            min-height: 32px;
+                            max-height: 38px;
                             property <length> scrub-row-w: self.width;
                             Text {
                                 text: root.time-elapsed;
                                 color: #ffffff;
                                 font-size: 11px;
-                                horizontal-alignment: left;
+                                horizontal-alignment: right;
                                 vertical-alignment: center;
-                                width: max(52px, scrub-row-w * 10 / 100);
+                                width: 56px;
                                 overflow: elide;
                             }
                             Rectangle {
                                 // Wrapper so we can overlay In/Out range markers on top of the
                                 // Slider. The markers are purely decorative — they sit at the
                                 // marker's ms position mapped to slider width.
-                                width: scrub-row-w * 76 / 100;
+                                width: max(40px, scrub-row-w - 124px);
                                 height: 14px;
                                 Slider {
                                     width: 100%;
@@ -955,35 +1256,588 @@ export component AppWindow inherits Window {
                             }
                             Text {
                                 text: root.time-total;
-                                color: #ffffff;
+                                color: #ffffff99;
                                 font-size: 11px;
-                                horizontal-alignment: right;
+                                horizontal-alignment: left;
                                 vertical-alignment: center;
-                                width: max(52px, scrub-row-w * 10 / 100);
+                                width: 56px;
                                 overflow: elide;
                             }
                         }
                     }
+                // Tools popup (v0: `ChevronsRight` → panel above; Effects opens Face Swap / Enhance / Remove BG).
+                if root.tools-popup-open: Rectangle {
+                    width: 176px;
+                    x: parent.width - self.width - 24px;
+                    y: -self.height - 10px;
+                    border-radius: 8px;
+                    background: #2d2d2d;
+                    clip: false;
+                    // Effects submenu sits to the left, bottom-aligned with this panel.
+                    if root.tools-effects-submenu-open: Rectangle {
+                        width: 152px;
+                        x: -self.width - 6px;
+                        y: parent.height - self.height;
+                        border-radius: 8px;
+                        background: #2d2d2d;
+                        VerticalBox {
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            padding-left: 0px;
+                            padding-right: 0px;
+                            spacing: 0px;
+                            eff-sub-swap := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.effect-face-swap();
+                                    wake-transport-chrome();
+                                }
+                                Rectangle {
+                                    height: 30px;
+                                    background: eff-sub-swap.has-hover ? Theme.accent-blue : transparent;
+                                    HorizontalBox {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+                                        alignment: center;
+                                        Path {
+                                            width: 14px;
+                                            height: 14px;
+                                            fill: #ffffff;
+                                            commands: "M 8 1 L 10 5 L 6 5 Z M 4 8 L 12 8 M 8 11 L 10 15 L 6 15 Z";
+                                        }
+                                        Text {
+                                            text: "Face Swap";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            eff-sub-enh := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.effect-face-enhance();
+                                    wake-transport-chrome();
+                                }
+                                Rectangle {
+                                    height: 30px;
+                                    background: eff-sub-enh.has-hover ? Theme.accent-blue : transparent;
+                                    HorizontalBox {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+                                        alignment: center;
+                                        Path {
+                                            width: 14px;
+                                            height: 14px;
+                                            fill: #ffffff;
+                                            commands: "M 2 2 L 14 2 L 12 12 L 4 12 Z";
+                                        }
+                                        Text {
+                                            text: "Face Enhance";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            eff-sub-rm := TouchArea {
+                                clicked => {
+                                    main-view-focus.focus();
+                                    root.effect-remove-background();
+                                    wake-transport-chrome();
+                                }
+                                Rectangle {
+                                    height: 30px;
+                                    background: eff-sub-rm.has-hover ? Theme.accent-blue : transparent;
+                                    HorizontalBox {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+                                        alignment: center;
+                                        Path {
+                                            width: 14px;
+                                            height: 14px;
+                                            fill: #ffffff;
+                                            commands: "M 8 2 C 4 2 2 5 2 8 C 2 12 5 14 8 14 C 11 14 14 12 14 8 C 14 4 12 2 8 2 Z M 4 12 L 12 4";
+                                        }
+                                        Text {
+                                            text: "Remove BG";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                height: 1px;
+                                width: 100%;
+                                background: #4a4a4a;
+                            }
+                            Rectangle {
+                                height: 30px;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Path {
+                                        width: 14px;
+                                        height: 14px;
+                                        fill: #6e6e6e;
+                                        commands: "M 4 2 L 8 6 L 4 10 M 8 2 L 12 6 L 8 10 M 12 2 L 16 6 L 12 10";
+                                    }
+                                    Text {
+                                        text: "AI Upscale";
+                                        color: #6e6e6e;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    VerticalBox {
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        padding-left: 0px;
+                        padding-right: 0px;
+                        spacing: 0px;
+                        tp-mw := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                height: 30px;
+                                background: tp-mw.has-hover ? #4a4a4a : transparent;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Path {
+                                        width: 14px;
+                                        height: 14px;
+                                        fill: #ffffff;
+                                        commands: "M 8 2 L 10 6 L 6 6 Z M 5 9 L 11 9 M 8 12 L 9 14 L 7 14 Z";
+                                    }
+                                    Text {
+                                        text: "Magic Wand";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        tp-lasso := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                height: 30px;
+                                background: tp-lasso.has-hover ? #4a4a4a : transparent;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Path {
+                                        width: 14px;
+                                        height: 14px;
+                                        fill: #ffffff;
+                                        commands: "M 3 8 Q 3 3 8 3 Q 13 3 13 8 Q 13 13 8 13 Q 5 13 3 10";
+                                    }
+                                    Text {
+                                        text: "Lasso Select";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        tp-crop := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                height: 30px;
+                                background: tp-crop.has-hover ? #4a4a4a : transparent;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Path {
+                                        width: 14px;
+                                        height: 14px;
+                                        fill: #ffffff;
+                                        commands: "M 4 2 L 12 2 L 12 10 L 4 10 Z M 6 4 L 10 4 L 10 8 L 6 8 Z";
+                                    }
+                                    Text {
+                                        text: "Crop";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            width: 100%;
+                            background: #4a4a4a;
+                        }
+                        tp-con := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                height: 30px;
+                                background: tp-con.has-hover ? #4a4a4a : transparent;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Path {
+                                        width: 14px;
+                                        height: 14px;
+                                        fill: #ffffff;
+                                        commands: "M 2 8 L 12 8 M 4 4 L 8 2 L 12 4 M 4 12 L 8 14 L 12 12";
+                                    }
+                                    Text {
+                                        text: "Contrast";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        tp-light := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                height: 30px;
+                                background: tp-light.has-hover ? #4a4a4a : transparent;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Path {
+                                        width: 14px;
+                                        height: 14px;
+                                        fill: #ffffff;
+                                        commands: "M 8 2 L 10 8 L 8 14 L 6 8 Z M 8 4 A 4 4 0 1 1 8 12 A 4 4 0 1 1 8 4";
+                                    }
+                                    Text {
+                                        text: "Lighting";
+                                        color: #ffffff;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 1px;
+                            width: 100%;
+                            background: #4a4a4a;
+                        }
+                        tp-effects := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                root.tools-effects-submenu-open = !root.tools-effects-submenu-open;
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                height: 30px;
+                                background: tp-effects.has-hover ? #4a4a4a : transparent;
+                                HorizontalBox {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 8px;
+                                    alignment: space-between;
+                                    HorizontalBox {
+                                        spacing: 8px;
+                                        alignment: center;
+                                        Path {
+                                            width: 14px;
+                                            height: 14px;
+                                            fill: #ffffff;
+                                            commands: "M 2 4 L 6 8 L 2 12 M 6 4 L 10 8 L 6 12 M 10 4 L 14 8 L 10 12";
+                                        }
+                                        Text {
+                                            text: "Effects";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Path {
+                                        width: 10px;
+                                        height: 10px;
+                                        fill: #ffffff;
+                                        commands: "M 4 2 L 8 6 L 4 10";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Below the preview (only when export, status line, or View → Show Status footer): same black as video so no extra grey band.
-        Rectangle {
-            background: #000;
+        // Multi-row timeline summary (data from Rust — see `video_track_row_labels` / `audio_track_row_labels`).
+        // Layout aligns with v0 mock: padded strip under the preview, before the status footer.
+        if root.media-ready: Rectangle {
             vertical-stretch: 0;
-            visible: root.export-in-progress || root.status-text != "" || (root.footer-visible && root.view-show-status);
+            width: 100%;
+            background: Theme.surface-timeline;
+            Rectangle {
+                height: 1px;
+                width: 100%;
+                y: 0;
+                background: Theme.border-subtle;
+            }
+            VerticalBox {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 10px;
+                // VIDEO row (v0 mock: uppercase label + trailing add control).
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "VIDEO";
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 1px;
+                    }
+                    track-add-video := TouchArea {
+                        clicked => {
+                            main-view-focus.focus();
+                            root.file-new-video-track();
+                            wake-transport-chrome();
+                        }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            background: track-add-video.has-hover ? Theme.border-default : Theme.background-secondary;
+                            HorizontalBox {
+                                width: 100%;
+                                height: 100%;
+                                alignment: center;
+                                Text {
+                                    text: "+";
+                                    color: Theme.accent-blue;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.tl_video_track_count >= 1: FilmstripLane {
+                    lane-label: "V1";
+                    chips: root.tl_vrow0;
+                    delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
+                    track-delete => {
+                        root.delete-video-track(0);
+                    }
+                }
+                if root.tl_video_track_count >= 2: FilmstripLane {
+                    lane-label: "V2";
+                    chips: root.tl_vrow1;
+                    delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
+                    track-delete => {
+                        root.delete-video-track(1);
+                    }
+                }
+                if root.tl_video_track_count >= 3: FilmstripLane {
+                    lane-label: "V3";
+                    chips: root.tl_vrow2;
+                    delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
+                    track-delete => {
+                        root.delete-video-track(2);
+                    }
+                }
+                if root.tl_video_track_count >= 4: FilmstripLane {
+                    lane-label: "V4";
+                    chips: root.tl_vrow3;
+                    delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
+                    track-delete => {
+                        root.delete-video-track(3);
+                    }
+                }
+                // AUDIO row
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "AUDIO";
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 1px;
+                    }
+                    track-add-audio := TouchArea {
+                        clicked => {
+                            main-view-focus.focus();
+                            root.file-new-audio-track();
+                            wake-transport-chrome();
+                        }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+                            background: track-add-audio.has-hover ? Theme.border-default : Theme.background-secondary;
+                            HorizontalBox {
+                                width: 100%;
+                                height: 100%;
+                                alignment: center;
+                                Text {
+                                    text: "+";
+                                    color: Theme.accent-blue;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Waveform / peak drawing on audio lanes is intentionally last — after clip chips, footer, and other v0 alignment (see **`docs/phases-ui.md`**).
+                if root.tl_audio_track_count >= 1: FilmstripLane {
+                    lane-label: "A1";
+                    chips: root.tl_arow0;
+                    delete-enabled: 0 < root.tl_audio_project_track_count;
+                    track-delete => {
+                        root.delete-audio-track(0);
+                    }
+                }
+                if root.tl_audio_track_count >= 2: FilmstripLane {
+                    lane-label: "A2";
+                    chips: root.tl_arow1;
+                    delete-enabled: 1 < root.tl_audio_project_track_count;
+                    track-delete => {
+                        root.delete-audio-track(1);
+                    }
+                }
+                if root.tl_audio_track_count >= 3: FilmstripLane {
+                    lane-label: "A3";
+                    chips: root.tl_arow2;
+                    delete-enabled: 2 < root.tl_audio_project_track_count;
+                    track-delete => {
+                        root.delete-audio-track(2);
+                    }
+                }
+                if root.tl_audio_track_count >= 4: FilmstripLane {
+                    lane-label: "A4";
+                    chips: root.tl_arow3;
+                    delete-enabled: 3 < root.tl_audio_project_track_count;
+                    track-delete => {
+                        root.delete-audio-track(3);
+                    }
+                }
+                // SUBTITLES — lanes from container probe in single-media mode (no project tracks yet).
+                if root.tl_subtitle_track_count >= 1: HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "SUBTITLES";
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 1px;
+                    }
+                }
+                if root.tl_subtitle_track_count >= 1: FilmstripLane {
+                    lane-label: "S1";
+                    chips: root.tl_srow0;
+                    delete-enabled: false;
+                    track-delete => { }
+                }
+                if root.tl_subtitle_track_count >= 2: FilmstripLane {
+                    lane-label: "S2";
+                    chips: root.tl_srow1;
+                    delete-enabled: false;
+                    track-delete => { }
+                }
+                if root.tl_subtitle_track_count >= 3: FilmstripLane {
+                    lane-label: "S3";
+                    chips: root.tl_srow2;
+                    delete-enabled: false;
+                    track-delete => { }
+                }
+                if root.tl_subtitle_track_count >= 4: FilmstripLane {
+                    lane-label: "S4";
+                    chips: root.tl_srow3;
+                    delete-enabled: false;
+                    track-delete => { }
+                }
+            }
+        }
+
+        // Below the preview: only when **View → Show Status** is on (and there is something to show).
+        // Use `if` (not `visible:`) so the strip takes no layout space when off — preview fills to the window bottom.
+        if root.view-show-status && (root.export-in-progress || root.status-text != "" || root.footer-visible): Rectangle {
+            background: Theme.background-secondary;
+            vertical-stretch: 0;
             clip: true;
+            Rectangle {
+                height: 1px;
+                width: 100%;
+                background: Theme.border-subtle;
+            }
             VerticalBox {
                 padding: 0;
                 spacing: 0;
                 Rectangle {
                     height: root.export-in-progress ? 4px : 0px;
-                    background: #1e1e24;
+                    background: Theme.background-primary;
                     clip: true;
                     Rectangle {
                         height: 4px;
                         width: parent.width * min(1, max(0, root.export-progress));
-                        background: #4a9eff;
+                        background: Theme.accent-blue;
                     }
                 }
                 HorizontalBox {
@@ -997,54 +1851,56 @@ export component AppWindow inherits Window {
                     min-height: 30px;
                     Text {
                         text: root.status-text;
-                        color: #ccc;
+                        color: Theme.text-secondary;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         wrap: word-wrap;
                     }
                 }
                 HorizontalBox {
-                    visible: root.status-text == "" && root.footer-visible && root.view-show-status;
-                    padding-top: 6px;
-                    padding-bottom: 6px;
-                    padding-left: 10px;
-                    padding-right: 10px;
+                    visible: root.status-text == "" && root.footer-visible;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    padding-left: 16px;
+                    padding-right: 16px;
                     spacing: 12px;
-                    alignment: center;
-                    min-height: 30px;
+                    alignment: space-between;
+                    min-height: 34px;
                     Text {
                         text: root.footer-codec-line;
-                        color: #b8b8c2;
-                        font-size: 10px;
+                        color: Theme.text-secondary;
+                        font-size: 11px;
                         wrap: no-wrap;
                         horizontal-stretch: 0;
                         vertical-alignment: center;
-                    }
-                    Rectangle {
-                        width: 1px;
-                        height: 12px;
-                        background: #4a4a58;
                     }
                     Text {
                         text: root.footer-path-line;
-                        color: #7a8490;
-                        font-size: 9px;
+                        color: Theme.text-tertiary;
+                        font-size: 10px;
                         wrap: word-wrap;
                         horizontal-stretch: 1;
+                        horizontal-alignment: center;
                         vertical-alignment: center;
                     }
-                    Rectangle {
-                        width: 1px;
-                        height: 12px;
-                        background: #4a4a58;
-                    }
-                    Text {
-                        text: root.footer-save-line;
-                        color: root.footer-unsaved ? #e0a030 : #6aab7a;
-                        font-size: 10px;
-                        wrap: no-wrap;
+                    HorizontalBox {
+                        spacing: 6px;
+                        alignment: end;
                         horizontal-stretch: 0;
-                        vertical-alignment: center;
+                        Text {
+                            visible: !root.footer-unsaved;
+                            text: "✓";
+                            color: #30d158;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.footer-save-line;
+                            color: root.footer-unsaved ? Theme.accent-orange : #30d158;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            wrap: no-wrap;
+                        }
                     }
                 }
             }

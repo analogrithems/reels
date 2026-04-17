@@ -175,11 +175,42 @@ pub(crate) fn video_lane_indices(project: &Project) -> Vec<usize> {
         .collect()
 }
 
+pub(crate) fn audio_lane_indices(project: &Project) -> Vec<usize> {
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.kind == TrackKind::Audio)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn remove_track_at(proj: &mut Project, track_index: usize) -> anyhow::Result<()> {
+    if track_index >= proj.tracks.len() {
+        anyhow::bail!("invalid track index");
+    }
+    let removed = proj.tracks.remove(track_index);
+    for clip_id in removed.clip_ids {
+        let still_used = proj
+            .tracks
+            .iter()
+            .any(|t| t.clip_ids.contains(&clip_id));
+        if !still_used {
+            proj.clips.retain(|c| c.id != clip_id);
+        }
+    }
+    proj.touch();
+    Ok(())
+}
+
 /// Owns the working [`Project`], last-saved snapshot, and undo/redo stacks.
 #[derive(Debug, Clone, Default)]
 pub struct EditSession {
     /// Primary preview path (first clip on the main video track when possible).
     pub current_media: Option<PathBuf>,
+    /// `true` when the user opened a saved **`.reel` / `.json`** project; `false` for a probed media file.
+    /// Timeline UI uses this to show container **video / audio / subtitle** stream lanes for single media.
+    opened_from_project_document: bool,
     project: Option<Project>,
     /// Snapshot from the last successful **Save**; used by Revert.
     saved_baseline: Option<Project>,
@@ -197,6 +228,11 @@ pub struct EditSession {
 impl EditSession {
     pub fn project(&self) -> Option<&Project> {
         self.project.as_ref()
+    }
+
+    /// When `false`, the session was built from a **single media** open — show stream-based lanes in the timeline strip.
+    pub fn opened_from_project_document(&self) -> bool {
+        self.opened_from_project_document
     }
 
     /// First clip’s source path on the primary video track (same file the player opens at
@@ -299,6 +335,45 @@ impl EditSession {
             extensions: Default::default(),
         });
         proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Remove the **lane**-th video track (`0` = V1 / primary). Undoable.
+    ///
+    /// The last remaining video track cannot be removed.
+    pub fn remove_video_track_lane(&mut self, lane: usize) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        let proj = self.project.as_ref().expect("checked");
+        let vi = video_lane_indices(proj);
+        if vi.len() <= 1 {
+            anyhow::bail!("cannot remove the only video track");
+        }
+        let track_index = *vi
+            .get(lane)
+            .context("no such video track")?;
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        remove_track_at(proj, track_index)?;
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Remove the **lane**-th audio track (`0` = A1). Undoable.
+    pub fn remove_audio_track_lane(&mut self, lane: usize) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        let proj = self.project.as_ref().expect("checked");
+        let ai = audio_lane_indices(proj);
+        let track_index = *ai.get(lane).context("no such audio track")?;
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        remove_track_at(proj, track_index)?;
         self.redo.clear();
         self.recompute_dirty();
         Ok(())
@@ -707,12 +782,14 @@ impl EditSession {
             let p = load_project_file(&path)?;
             self.current_media = primary_video_source_path(&p);
             self.project = Some(p);
+            self.opened_from_project_document = true;
             self.mark_saved_to_path(path);
             self.clear_markers();
             return Ok(());
         }
         let p = crate::project_io::project_from_media_path_with_probe(probe, &path)?;
         self.current_media = Some(path);
+        self.opened_from_project_document = false;
         self.project = Some(p);
         self.saved_baseline = None;
         self.dirty = false;
@@ -724,6 +801,7 @@ impl EditSession {
 
     pub fn clear_media(&mut self) {
         self.current_media = None;
+        self.opened_from_project_document = false;
         self.project = None;
         self.saved_baseline = None;
         self.dirty = false;
@@ -1079,6 +1157,7 @@ impl EditSession {
     pub(crate) fn from_project_for_tests(p: Project) -> Self {
         Self {
             current_media: None,
+            opened_from_project_document: true,
             project: Some(p),
             saved_baseline: None,
             undo: vec![],
@@ -1173,6 +1252,9 @@ pub(crate) mod tests_fake_probe {
                 }),
                 audio: None,
                 audio_disabled: false,
+                video_stream_count: 1,
+                audio_stream_count: 0,
+                subtitle_stream_count: 0,
             })
         }
     }
@@ -1458,6 +1540,9 @@ mod tests {
                 video: None,
                 audio: None,
                 audio_disabled: false,
+                video_stream_count: 0,
+                audio_stream_count: 0,
+                subtitle_stream_count: 0,
             },
             in_point: 0.0,
             out_point: sec,
@@ -1670,6 +1755,67 @@ mod tests {
                 .filter(|t| t.kind == TrackKind::Video)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn remove_video_track_lane_drops_empty_secondary() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        s.add_video_track().unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Video)
+                .count(),
+            2
+        );
+        s.remove_video_track_lane(1).unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Video)
+                .count(),
+            1
+        );
+        assert!(s.remove_video_track_lane(0).is_err());
+    }
+
+    #[test]
+    fn remove_audio_track_lane_clears_lane() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        s.add_audio_track().unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            1
+        );
+        s.remove_audio_track_lane(0).unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
         );
     }
 

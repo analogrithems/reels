@@ -1,5 +1,9 @@
 //! Footer strip: codecs, paths, save state (see **`docs/FEATURES.md`**).
 //! Populated from the [`Project`] and playhead — **does not** depend on decode/`media-ready`.
+//!
+//! Layout matches the v0 mock: **`H.264 | AAC`** (left) · **project path** (center, `~`-shortened) · **saved state** (right).
+
+use std::path::Path;
 
 use reel_core::Project;
 
@@ -8,57 +12,122 @@ use crate::timeline;
 /// Lines for the bottom footer; `None` when there is no project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FooterLines {
+    /// Left column: short video + audio codec names, e.g. `H.264  |  AAC`.
     pub codec_line: String,
+    /// Center: project file path (`~/…` when under the home directory).
     pub path_line: String,
+    /// Right column text only (checkmark drawn in Slint), e.g. `All changes saved`.
     pub save_line: String,
     pub unsaved: bool,
 }
 
+fn path_display_tilde(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if path.starts_with(&home) {
+            if let Ok(rest) = path.strip_prefix(&home) {
+                let s = rest.to_string_lossy();
+                return if s.is_empty() {
+                    "~".into()
+                } else {
+                    format!("~/{}", s.trim_start_matches('/'))
+                };
+            }
+        }
+    }
+    path.display().to_string()
+}
+
+/// Map ffmpeg-style codec names to short labels (mock-style).
+fn short_audio_codec(raw: &str) -> String {
+    let s = raw.to_lowercase();
+    if s.contains("aac") {
+        return "AAC".into();
+    }
+    if s.contains("opus") {
+        return "Opus".into();
+    }
+    if s.contains("mp3") {
+        return "MP3".into();
+    }
+    if s.contains("pcm") {
+        return "PCM".into();
+    }
+    if s == "none" || s.is_empty() {
+        return "—".into();
+    }
+    raw.to_uppercase()
+}
+
+fn short_video_codec(raw: &str) -> String {
+    let s = raw.to_lowercase();
+    if s.contains("hevc") || s.contains("h265") || s.contains("h.265") {
+        return "HEVC".into();
+    }
+    if s.contains("h264") || s.contains("avc") || s.contains("h.264") || s == "libx264" {
+        return "H.264".into();
+    }
+    if s.contains("vp9") {
+        return "VP9".into();
+    }
+    if s.contains("vp8") {
+        return "VP8".into();
+    }
+    if s.contains("av1") {
+        return "AV1".into();
+    }
+    if s.contains("prores") {
+        return "ProRes".into();
+    }
+    if s == "none" || s.is_empty() {
+        return "—".into();
+    }
+    raw.to_uppercase()
+}
+
 pub(crate) fn format_codec_line(p: &Project, seq_ms: f64) -> String {
     let Some(vclip) = timeline::primary_clip_ref_at_seq_ms(p, seq_ms) else {
-        return "No clip at playhead".to_string();
+        return "— | —".to_string();
     };
-    let vcodec = vclip
+    let vraw = vclip
         .metadata
         .video
         .as_ref()
         .map(|x| x.codec.as_str())
         .unwrap_or("—");
+    let vshort = short_video_codec(vraw);
 
     let has_dedicated = timeline::clips_from_first_audio_track(p).is_some();
-    if has_dedicated {
+    let ashort = if has_dedicated {
         if let Some(aid) = timeline::first_audio_clip_id_at_seq_ms(p, seq_ms) {
             let aclip = p.clips.iter().find(|c| c.id == aid);
-            let audio_str = aclip
+            aclip
                 .map(|ac| {
                     if ac.metadata.audio_disabled {
-                        "disabled".to_string()
+                        "—".to_string()
                     } else {
                         ac.metadata
                             .audio
                             .as_ref()
-                            .map(|a| a.codec.clone())
-                            .unwrap_or_else(|| "none".into())
+                            .map(|a| short_audio_codec(&a.codec))
+                            .unwrap_or_else(|| "—".into())
                     }
                 })
-                .unwrap_or_else(|| "—".into());
-            format!("Video: {vcodec} · Audio: {audio_str} (first audio track)")
+                .unwrap_or_else(|| "—".into())
         } else {
-            format!("Video: {vcodec} · Audio: silence (dedicated track — no clip at playhead)")
+            "—".to_string()
         }
+    } else if vclip.metadata.audio_disabled {
+        "—".to_string()
     } else {
-        let audio_str = if vclip.metadata.audio_disabled {
-            "unavailable".to_string()
-        } else {
-            vclip
-                .metadata
-                .audio
-                .as_ref()
-                .map(|a| a.codec.clone())
-                .unwrap_or_else(|| "none".into())
-        };
-        format!("Video: {vcodec} · Audio: {audio_str} (embedded in video file)")
-    }
+        vclip
+            .metadata
+            .audio
+            .as_ref()
+            .map(|a| short_audio_codec(&a.codec))
+            .unwrap_or_else(|| "—".into())
+    };
+
+    format!("{vshort}  |  {ashort}")
 }
 
 /// Build footer content whenever a project is loaded (independent of ffmpeg decode / `media-ready`).
@@ -69,15 +138,9 @@ pub(crate) fn compute_footer_lines(
 ) -> Option<FooterLines> {
     let p = project?;
     let codec_line = format_codec_line(p, playhead_ms);
-    let media_path = timeline::resolve_for_project(p, playhead_ms)
-        .map(|(path, _)| path.display().to_string())
-        .unwrap_or_else(|| "—".into());
-    let proj_line = p
-        .path
-        .as_ref()
-        .map(|x| x.display().to_string())
-        .unwrap_or_else(|| "Not saved to disk".to_string());
-    let path_line = format!("Current clip: {media_path} · Project file: {proj_line}");
+    let path_line = p.path.as_ref().map(|x| path_display_tilde(x)).unwrap_or_else(|| {
+        "Untitled project — use File → Save…".to_string()
+    });
     let save_line = if dirty {
         "Unsaved changes".to_string()
     } else {
@@ -111,19 +174,13 @@ mod tests {
         let p = project_from_media_path(&path).expect("probe fixture");
         let f = compute_footer_lines(Some(&p), 0.0, false).expect("footer");
         assert!(
-            f.codec_line.contains("Video:") && f.codec_line.contains("Audio:"),
-            "codec line: {}",
+            f.codec_line.contains('|'),
+            "codec line should be mock-style `Video | Audio`: {}",
             f.codec_line
         );
         assert!(
-            f.path_line.contains("Current clip:") && f.path_line.contains("Project file:"),
-            "path line: {}",
-            f.path_line
-        );
-        assert!(
-            f.path_line.contains("tiny_h264_aac")
-                || f.path_line.contains(&path.display().to_string()),
-            "path line should name clip: {}",
+            f.path_line.contains("Untitled") || f.path_line.contains('~'),
+            "path line should be project-centric: {}",
             f.path_line
         );
         assert_eq!(f.save_line, "All changes saved");

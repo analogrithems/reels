@@ -1,5 +1,6 @@
 ---
 source: crates/reel-core/tests/project_roundtrip.rs
+assertion_line: 69
 expression: p
 ---
 {
@@ -22,7 +23,10 @@ expression: p
           "rotation": 0
         },
         "audio": null,
-        "audio_disabled": true
+        "audio_disabled": true,
+        "video_stream_count": 1,
+        "audio_stream_count": 0,
+        "subtitle_stream_count": 0
       },
       "in_point": 1.0,
       "out_point": 10.0

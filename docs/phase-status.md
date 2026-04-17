@@ -8,7 +8,7 @@ High-level checklist for **infrastructure, engine, and repo documentation**. For
 
 ## Product UI phases (U1–U5)
 
-Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2-a … U5-c), **parking lot**, **logging standards**, and **suggested next focus** live in **`docs/phases-ui.md`**. This file does not duplicate that roadmap; it tracks **engineering** phases below.
+Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2-a … U5-c), **parking lot**, **logging standards**, **suggested next focus**, and the **v0 → Slint design reference** live in **`docs/phases-ui.md`**. The v0 mock design lives under **`assets/Knotreels.v0.ui/`**; the **Slint implementation prompt** is **`assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`**. This file does not duplicate the product roadmap; it tracks **engineering** phases below.
 
 ---
 
@@ -82,11 +82,11 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 Implementation notes live in **`docs/phases-ui-test.md`**. This row tracks engineering shipments.
 
 - [x] **Strict version pin** — `i-slint-backend-testing = "=1.16.0"` in `[workspace.dependencies]`, consumed by `reel-app` as a dev-dep. Must be bumped in lockstep with `slint`.
-- [x] **Headless harness** — `ui_test_support::init()` (`crates/reel-app/src/main.rs`) wraps `init_integration_test_with_system_time()` behind a `Once`; first smoke test boots `AppWindow`, verifies startup defaults, and round-trips `export-preset-index` across the full 0..=3 range.
+- [x] **Headless harness** — `ui_test_support::init()` (`crates/reel-app/src/lib.rs`) wraps `init_integration_test_with_system_time()` behind a `Once`; first smoke test boots `AppWindow`, verifies startup defaults, and round-trips `export-preset-index` across the full 0..=3 range.
 - [x] **Probe seam** (Phase 1b) — `MediaProbe` threaded through `project_from_media_path_with_probe` + `EditSession::{open_media,insert_clip_at_playhead,insert_audio_clip_at_playhead}_with_probe`; `FakeProbe` test helper in `session.rs` drives a no-ffmpeg Open → Insert scenario (`session::tests::open_and_insert_via_fake_probe_no_ffmpeg`).
 - [ ] **Player engine trait** — abstract `crates/reel-app/src/player.rs` so tests can inject a mock engine (returns static frames, no ffmpeg). Deferred until a UI test actually needs rendered frames or timing behavior.
 - [x] **`Open → Edit → Export` integration test** — three layers shipped: (a) headless UI smoke — `ui_smoke_tests::window_boots_and_round_trips_basic_properties` boots `AppWindow`, drives Open through `FakeProbe`, asserts Slint menu-gate properties, and invokes all three `file-export` preflight branches (sheet opens / status warns / silent); (b) preset-confirm seam — `prepare_export_job(&session, preset_index, &dyn SaveDialogProvider) -> ExportPreflight`, with `StubSaveDialog` covering invalid preset index, empty range, cancelled dialog, wrong extension, happy-path `Spawn`, marker range passthrough, and preset-index → `WebExportFormat` wiring for all four presets; (c) export pipeline — `export_payload_tests::payload_*` covers `export_timeline_payload` for single-clip, range-sliced, out-of-range, first-audio-lane cases. Still deferred: live click through `invoke_export_preset_confirm()` (needs wiring a `SaveDialogProvider` into `install_export_preset_confirm_callback` so tests can swap it) and `ElementHandle::find_by_accessible_label` usage (blocked on adding `accessible-label` to Slint buttons).
-- [ ] **Visual regression harness** — software renderer capture + golden PNG diffing (`UPDATE_EXPECTATIONS` env to regenerate).
+- [x] **Visual regression harness** — `crates/reel-app/tests/ui_visual_golden.rs` uses Slint’s headless `MinimalSoftwareWindow` + `renderer-software`, `take_snapshot()` on `AppWindow` at 400×320, compares RGBA to `tests/golden/app_window_default.png`. Update goldens: `UPDATE_UI_GOLDENS=1 cargo test -p reel-app --test ui_visual_golden`. Separate integration-test process (not `i-slint-backend-testing`). See **`docs/phases-ui-test.md` Phase 3**.
 - [x] **Post-export validation for session-driven exports** — `export_payload_tests::roundtrip_session_to_ffmpeg_to_reprobe_mp4_remux` opens the fixture through `FfmpegProbe`, runs the real `export_concat_timeline`, and re-probes the output (duration > 0, video stream present). Complements `crates/reel-core/tests/export_web_formats.rs` which covers each preset in isolation.
 
 ---
