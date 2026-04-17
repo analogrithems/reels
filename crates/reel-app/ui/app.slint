@@ -932,13 +932,13 @@ export component AppWindow inherits Window {
                         HorizontalBox {
                             spacing: 8px;
                             alignment: center;
-                            Path {
+                            // Lucide `GripHorizontal` (see `assets/Knotreels.v0.ui` / lucide-static).
+                            Image {
                                 width: 14px;
                                 height: 14px;
                                 y: (parent.height - 14px) / 2;
-                                fill: #ffffff66;
-                                // Lucide-style horizontal grip (drag handle — visual only).
-                                commands: "M 2 5 L 12 5 M 2 9 L 12 9";
+                                opacity: 0.4;
+                                source: @image-url("icons/lucide/grip-horizontal.svg");
                             }
                             skip-start-ta := TouchArea {
                                 enabled: root.media-ready;
@@ -947,12 +947,12 @@ export component AppWindow inherits Window {
                                     root.seek-timeline(0.0);
                                     wake-transport-chrome();
                                 }
-                                Path {
+                                Image {
                                     width: 18px;
                                     height: 18px;
                                     y: (parent.height - 18px) / 2;
-                                    fill: #ffffffb3;
-                                    commands: "M 4 4 L 4 14 M 7 4 L 12 9 L 7 14 Z";
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/skip-back.svg");
                                 }
                             }
                         }
@@ -967,12 +967,12 @@ export component AppWindow inherits Window {
                                     root.transport-rewind();
                                     wake-transport-chrome();
                                 }
-                                Path {
+                                Image {
                                     width: 16px;
                                     height: 16px;
                                     y: (parent.height - 16px) / 2;
-                                    fill: #ffffffb3;
-                                    commands: "M 10 4 L 4 8 L 10 12 Z";
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/arrow-left.svg");
                                 }
                             }
                             play-ta := TouchArea {
@@ -988,29 +988,19 @@ export component AppWindow inherits Window {
                                     border-radius: 20px;
                                     background: play-ta.pressed ? #ffffff33 : #ffffff22;
                                     clip: true;
-                                    if root.is-playing: HorizontalBox {
-                                        alignment: center;
-                                        spacing: 4px;
-                                        Rectangle {
-                                            width: 4px;
-                                            height: 14px;
-                                            border-radius: 1px;
-                                            background: #ffffff;
-                                        }
-                                        Rectangle {
-                                            width: 4px;
-                                            height: 14px;
-                                            border-radius: 1px;
-                                            background: #ffffff;
-                                        }
+                                    if root.is-playing: Image {
+                                        width: 20px;
+                                        height: 20px;
+                                        x: (parent.width - 20px) / 2;
+                                        y: (parent.height - 20px) / 2;
+                                        source: @image-url("icons/lucide/pause.svg");
                                     }
-                                    if !root.is-playing: Path {
-                                        x: (parent.width - 14px) / 2 + 1px;
-                                        y: (parent.height - 16px) / 2;
-                                        width: 14px;
-                                        height: 16px;
-                                        fill: #ffffff;
-                                        commands: "M 0 0 L 14 8 L 0 16 Z";
+                                    if !root.is-playing: Image {
+                                        width: 20px;
+                                        height: 20px;
+                                        x: (parent.width - 20px) / 2 + 2px;
+                                        y: (parent.height - 20px) / 2;
+                                        source: @image-url("icons/lucide/play.svg");
                                     }
                                 }
                             }
@@ -1021,12 +1011,12 @@ export component AppWindow inherits Window {
                                     root.transport-forward();
                                     wake-transport-chrome();
                                 }
-                                Path {
+                                Image {
                                     width: 16px;
                                     height: 16px;
                                     y: (parent.height - 16px) / 2;
-                                    fill: #ffffffb3;
-                                    commands: "M 6 4 L 12 8 L 6 12 Z";
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/arrow-right.svg");
                                 }
                             }
                         }
@@ -1041,12 +1031,12 @@ export component AppWindow inherits Window {
                                     root.seek-timeline(root.duration-ms);
                                     wake-transport-chrome();
                                 }
-                                Path {
+                                Image {
                                     width: 18px;
                                     height: 18px;
                                     y: (parent.height - 18px) / 2;
-                                    fill: #ffffffb3;
-                                    commands: "M 14 4 L 14 14 M 11 4 L 6 9 L 11 14 Z";
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/skip-forward.svg");
                                 }
                             }
                             Rectangle {
@@ -1072,11 +1062,11 @@ export component AppWindow inherits Window {
                                         font-size: 11px;
                                         vertical-alignment: center;
                                     }
-                                    Path {
+                                    Image {
                                         width: 10px;
                                         height: 10px;
-                                        fill: #ffffff88;
-                                        commands: "M 2 4 L 5 7 L 8 4";
+                                        opacity: 0.55;
+                                        source: @image-url("icons/lucide/chevron-down.svg");
                                     }
                                 }
                             }
@@ -1094,11 +1084,13 @@ export component AppWindow inherits Window {
                                         padding-right: 4px;
                                         padding-top: 2px;
                                         padding-bottom: 2px;
-                                        Text {
-                                            text: "↻";
-                                            color: root.loop-playback ? Theme.accent-blue : #ffffffb3;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
+                                        alignment: center;
+                                        Image {
+                                            width: 14px;
+                                            height: 14px;
+                                            opacity: root.loop-playback ? 1.0 : 0.7;
+                                            source: @image-url("icons/lucide/repeat.svg");
+                                            colorize: root.loop-playback ? Theme.accent-blue : #00000000;
                                         }
                                     }
                                 }
@@ -1114,17 +1106,17 @@ export component AppWindow inherits Window {
                                     root.volume-changed(root.volume-percent);
                                     wake-transport-chrome();
                                 }
-                                if root.volume-percent < 0.5: Path {
+                                if root.volume-percent < 0.5: Image {
                                     width: 14px;
                                     height: 14px;
-                                    fill: #ffffffb3;
-                                    commands: "M 2 8 L 14 2 M 14 14 L 2 8 M 5 4 L 5 12 M 9 4 L 9 12";
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/volume-x.svg");
                                 }
-                                if root.volume-percent >= 0.5: Path {
+                                if root.volume-percent >= 0.5: Image {
                                     width: 14px;
                                     height: 14px;
-                                    fill: #ffffffb3;
-                                    commands: "M 3 6 Q 3 3 6 3 L 8 3 Q 11 3 11 6 L 11 10 Q 11 12 8 12 L 6 12 Q 3 12 3 10 Z";
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/volume-2.svg");
                                 }
                             }
                             Slider {
@@ -1146,11 +1138,17 @@ export component AppWindow inherits Window {
                                     root.view-toggle-fullscreen();
                                     wake-transport-chrome();
                                 }
-                                Text {
-                                    text: "⛶";
-                                    color: #ffffffb3;
-                                    font-size: 14px;
-                                    vertical-alignment: center;
+                                if root.window-fullscreen: Image {
+                                    width: 14px;
+                                    height: 14px;
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/minimize.svg");
+                                }
+                                if !root.window-fullscreen: Image {
+                                    width: 14px;
+                                    height: 14px;
+                                    opacity: 0.7;
+                                    source: @image-url("icons/lucide/maximize.svg");
                                 }
                             }
                             Rectangle {
@@ -1177,12 +1175,12 @@ export component AppWindow inherits Window {
                                         padding-bottom: 2px;
                                         spacing: 0px;
                                         alignment: center;
-                                        // ChevronsRight (v0 `ChevronsRight` ~14px)
-                                        Path {
+                                        Image {
                                             width: 14px;
                                             height: 14px;
-                                            fill: root.tools-popup-open ? Theme.accent-blue : #ffffffb3;
-                                            commands: "M 4 4 L 8 8 L 4 12 M 8 4 L 12 8 L 8 12";
+                                            opacity: root.tools-popup-open ? 1.0 : 0.7;
+                                            source: @image-url("icons/lucide/chevrons-right.svg");
+                                            colorize: root.tools-popup-open ? Theme.accent-blue : #00000000;
                                         }
                                     }
                                 }
