@@ -1,85 +1,189 @@
-import { Button, Slider, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { HelpWindow } from "help_window.slint";
+import { Button, HorizontalBox, Slider, VerticalBox } from "std-widgets.slint";
+
+export { HelpWindow }
 
 export component AppWindow inherits Window {
     preferred-width: 960px;
     preferred-height: 600px;
     title: "Reel";
 
-    // Inputs from Rust
+    // Video fit: 0 = contain (fit), 1 = cover (fill)
+    in-out property <int> video-fit-mode: 0;
+    in-out property <bool> stay-on-top: false;
+
+    always-on-top: root.stay-on-top;
+
     in property <image> current-frame;
     in property <float> duration-ms: 0;
     in property <float> playhead-ms: 0;
     in property <bool> is-playing: false;
-    // True only after a file has been successfully opened by the video
-    // thread. Gates the Play button and the timeline slider so users cannot
-    // issue transport commands against an empty / failed source.
     in property <bool> media-ready: false;
     in property <string> status-text: "Ready";
 
-    // Callbacks fired to Rust
-    callback open-file();
+    in property <bool> close-enabled: false;
+    in property <bool> revert-enabled: false;
+    in property <bool> save-enabled: false;
+    in property <bool> undo-enabled: false;
+    in property <bool> redo-enabled: false;
+
+    callback file-open();
+    callback file-close();
+    callback file-revert();
+    callback file-new-window();
+    callback file-save();
+    callback file-insert-video();
+    callback file-export();
+
+    callback edit-undo();
+    callback edit-redo();
+
+    callback win-fit();
+    callback win-fill();
+    callback win-center();
+    callback win-toggle-on-top();
+
+    callback help-show();
+
     callback play-pause();
-    callback seek(float /* pts_ms */);
+    callback seek-timeline(float);
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Open…";
+                activated => { root.file-open(); }
+            }
+            MenuItem {
+                title: "Close";
+                enabled: root.close-enabled;
+                activated => { root.file-close(); }
+            }
+            MenuItem {
+                title: "Revert";
+                enabled: root.revert-enabled;
+                activated => { root.file-revert(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "New Window";
+                activated => { root.file-new-window(); }
+            }
+            MenuItem {
+                title: "Save…";
+                enabled: root.save-enabled;
+                activated => { root.file-save(); }
+            }
+            MenuItem {
+                title: "Insert Video…";
+                activated => { root.file-insert-video(); }
+            }
+            MenuItem {
+                title: "Export…";
+                enabled: root.media-ready;
+                activated => { root.file-export(); }
+            }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem {
+                title: "Undo";
+                enabled: root.undo-enabled;
+                activated => { root.edit-undo(); }
+            }
+            MenuItem {
+                title: "Redo";
+                enabled: root.redo-enabled;
+                activated => { root.edit-redo(); }
+            }
+        }
+        Menu {
+            title: "Window";
+            MenuItem {
+                title: "Always on Top";
+                activated => { root.win-toggle-on-top(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Fit";
+                activated => { root.win-fit(); }
+            }
+            MenuItem {
+                title: "Fill";
+                activated => { root.win-fill(); }
+            }
+            MenuItem {
+                title: "Center";
+                activated => { root.win-center(); }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "Reel Help";
+                activated => { root.help-show(); }
+            }
+        }
+    }
 
     VerticalBox {
         spacing: 0px;
         padding: 0px;
 
-        // Video viewport — letterboxed, fills as much of the window as the
-        // layout allows.
         Rectangle {
             background: #000;
             vertical-stretch: 1;
             Image {
                 source: root.current-frame;
-                image-fit: contain;
+                image-fit: root.video-fit-mode == 1 ? cover : contain;
                 width: parent.width;
                 height: parent.height;
             }
         }
 
-        // Timeline stub — full-width strip.
         Rectangle {
-            background: #1e1e22;
-            height: 64px;
-            Text {
-                text: "timeline";
-                color: #666;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        // Transport bar.
-        Rectangle {
-            background: #2a2a30;
-            height: 56px;
-            HorizontalBox {
+            background: #1a1a20;
+            height: 72px;
+            VerticalBox {
                 padding: 8px;
-                spacing: 8px;
-                alignment: center;
-
-                Button {
-                    text: "Open…";
-                    clicked => { root.open-file(); }
-                }
-                Button {
-                    text: root.is-playing ? "Pause" : "Play";
-                    enabled: root.media-ready;
-                    clicked => { root.play-pause(); }
+                spacing: 6px;
+                Text {
+                    text: "Timeline";
+                    color: #888;
+                    font-size: 11px;
                 }
                 Slider {
                     enabled: root.media-ready;
                     minimum: 0;
                     maximum: max(root.duration-ms, 1);
                     value: root.playhead-ms;
-                    changed(v) => { root.seek(v); }
-                    horizontal-stretch: 1;
+                    changed(v) => {
+                        root.seek-timeline(v);
+                    }
+                    height: 28px;
+                }
+            }
+        }
+
+        Rectangle {
+            background: #2a2a30;
+            height: 52px;
+            HorizontalBox {
+                padding: 8px;
+                spacing: 12px;
+                alignment: center;
+
+                Button {
+                    text: root.is-playing ? "Pause" : "Play";
+                    enabled: root.media-ready;
+                    clicked => { root.play-pause(); }
                 }
                 Text {
                     text: root.status-text;
                     color: #ccc;
                     vertical-alignment: center;
+                    horizontal-stretch: 1;
                 }
             }
         }

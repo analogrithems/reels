@@ -40,9 +40,13 @@ use crate::AppWindow;
 #[derive(Debug, Clone)]
 pub enum Cmd {
     Open(PathBuf),
+    /// Drop the current source and reset transport (no decoder teardown of threads).
+    Close,
     Play,
     Pause,
-    Seek { pts_ms: u64 },
+    Seek {
+        pts_ms: u64,
+    },
     Stop,
 }
 
@@ -248,6 +252,19 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                             }
                         }
                     }
+                }
+                Cmd::Close => {
+                    ctx = None;
+                    playing = false;
+                    clock.set_playing(false);
+                    clock.set(0);
+                    on_ui(weak.clone(), |w| {
+                        w.set_media_ready(false);
+                        w.set_is_playing(false);
+                        w.set_duration_ms(0.0);
+                        w.set_playhead_ms(0.0);
+                        w.set_status_text("No media".into());
+                    });
                 }
                 Cmd::Stop => return,
             }
@@ -561,6 +578,10 @@ where
                     // listener hears the seek effect immediately instead of
                     // a brief burst of pre-seek audio.
                     let _ = producer.try_push(0.0);
+                }
+                Cmd::Close => {
+                    actx = None;
+                    playing = false;
                 }
                 Cmd::Stop => return,
             }

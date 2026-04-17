@@ -118,26 +118,23 @@ pub struct SidecarClient {
 }
 
 impl SidecarClient {
-    /// Spawn `<sidecar_dir>/.venv/bin/python <sidecar_dir>/facefusion_bridge.py`.
+    /// Spawn `uv run python facefusion_bridge.py` with [`Command::current_dir`]
+    /// set to `sidecar_dir` so `uv` resolves deps from that tree's `pyproject.toml`.
     ///
-    /// The caller must have already run `uv sync` in `sidecar_dir`.
+    /// Requires `uv` on `PATH` (see `make check-tools`). The environment is
+    /// created/updated by `uv` on demand; [`crate::logging`] still forwards
+    /// stderr into `tracing`.
     pub fn spawn_python(sidecar_dir: &Path) -> Result<Self, SidecarError> {
-        let python = sidecar_dir.join(".venv").join("bin").join("python");
         let bridge = sidecar_dir.join("facefusion_bridge.py");
-        if !python.exists() {
-            return Err(SidecarError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("sidecar venv not found: {}", python.display()),
-            )));
-        }
         if !bridge.exists() {
             return Err(SidecarError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("sidecar bridge not found: {}", bridge.display()),
             )));
         }
-        let mut cmd = Command::new(python);
-        cmd.arg(bridge);
+        let mut cmd = Command::new("uv");
+        cmd.current_dir(sidecar_dir)
+            .args(["run", "python", "facefusion_bridge.py"]);
         Self::spawn_command(cmd)
     }
 

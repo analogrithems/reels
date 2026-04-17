@@ -4205,9 +4205,12 @@ dependencies = [
  "reel-core",
  "rfd",
  "ringbuf",
+ "serde_json",
  "slint",
  "slint-build",
+ "tempfile",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

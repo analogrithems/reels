@@ -12,6 +12,10 @@ uv run pytest -q                          # run unit tests
 uv run python facefusion_bridge.py        # smoke-test the bridge (reads JSON on stdin)
 ```
 
+The Rust `SidecarClient` runs the same `uv run python facefusion_bridge.py` with
+this directory as the process working directory (so `uv` pins deps via
+`pyproject.toml` / lockfile).
+
 ## Protocol
 
 `facefusion_bridge.py` speaks a line-delimited JSON protocol over stdio with

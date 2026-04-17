@@ -1,0 +1,20 @@
+import { ScrollView, VerticalBox } from "std-widgets.slint";
+
+export component HelpWindow inherits Window {
+    preferred-width: 560px;
+    preferred-height: 640px;
+    title: "Reel — Help";
+
+    in property <string> body-text: "";
+
+    ScrollView {
+        VerticalBox {
+            padding: 12px;
+            Text {
+                text: root.body-text;
+                wrap: word-wrap;
+                width: 100%;
+            }
+        }
+    }
+}

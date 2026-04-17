@@ -1,12 +1,17 @@
 //! Serializable project model and the in-memory store that owns it.
+//!
+//! There are no third-party consumers of `project.json` yet — the schema is
+//! allowed to evolve. Prefer explicit fields + [`schema::migrate`] over
+//! open-ended compatibility workarounds until a stable release is declared.
 
 mod autosave;
 mod schema;
 
 pub use autosave::ProjectStore;
-pub use schema::SCHEMA_VERSION;
+pub use schema::{migrate, MigrationError, SCHEMA_VERSION};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Map;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -15,8 +20,8 @@ use crate::media::MediaMetadata;
 /// Kinds of tracks supported by the Phase 0–2 model.
 ///
 /// Richer kinds (subtitle, effect) come later; the enum is non-exhaustive so
-/// adding variants in a future schema version stays backward-compatible when
-/// `deny_unknown_fields` is eventually relaxed.
+/// new variants can be added without breaking serde of older JSON (unknown
+/// values can be rejected until a schema bump adds the variant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum TrackKind {
@@ -26,7 +31,6 @@ pub enum TrackKind {
 
 /// A single clip referenced from a track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Clip {
     pub id: Uuid,
     pub source_path: PathBuf,
@@ -35,20 +39,23 @@ pub struct Clip {
     pub in_point: f64,
     /// Out-point, seconds from the start of the source media.
     pub out_point: f64,
+    /// Future filter graphs, AI params, etc. Unknown keys round-trip here.
+    #[serde(flatten)]
+    pub extensions: Map<String, serde_json::Value>,
 }
 
 /// An ordered list of clip ids that render into one logical channel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Track {
     pub id: Uuid,
     pub kind: TrackKind,
     pub clip_ids: Vec<Uuid>,
+    #[serde(flatten)]
+    pub extensions: Map<String, serde_json::Value>,
 }
 
 /// The root serializable project object. Persisted as `project.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Project {
     /// Current schema version; bump when the on-disk format changes.
     pub schema_version: u32,
@@ -64,6 +71,10 @@ pub struct Project {
     /// ISO-8601 UTC; stored as plain String so we don't drag in chrono.
     pub created_at: String,
     pub modified_at: String,
+    /// App-wide metadata (e.g. default AI settings). Unknown top-level JSON keys
+    /// round-trip here so newer writers can add fields older builds ignore.
+    #[serde(flatten)]
+    pub extensions: Map<String, serde_json::Value>,
 }
 
 impl Project {
@@ -79,6 +90,7 @@ impl Project {
             tracks: Vec::new(),
             created_at: now.clone(),
             modified_at: now,
+            extensions: Map::new(),
         }
     }
 

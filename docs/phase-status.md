@@ -14,7 +14,7 @@
 - [x] `MediaProbe` trait + `FfmpegProbe` real impl (ffmpeg-next 7.1, pinned ffmpeg@7)
 - [x] Unrecognized-audio handling: `WARN` + `audio_disabled: true`, never propagate
 - [x] Three committed fixtures under `crates/reel-core/tests/fixtures/` with `scripts/generate_fixtures.sh`
-- [x] `Project` serde + round-trip + insta snapshot + `deny_unknown_fields` test
+- [x] `Project` serde v2 + round-trip + insta snapshot + `serde(flatten)` extension maps (project / clip / track) + v1→v2 migration
 - [x] `ProjectStore` debounced atomic autosave (`.tmp → rename`) with tests
 - [x] `reel-cli probe <path>` emits metadata JSON (verified end-to-end)
 
@@ -33,7 +33,7 @@
 
 ## Phase 3 — FaceFusion bridge ✅ (placeholder transforms)
 
-- [x] `reel_core::sidecar::SidecarClient` — long-lived Python child, multiplexed by request `id`, reader thread, timeout + crash surfacing
+- [x] `reel_core::sidecar::SidecarClient` — long-lived Python child (`uv run python facefusion_bridge.py` from `sidecar/`), multiplexed by request `id`, reader thread, timeout + crash surfacing
 - [x] `reel_core::logging::spawn_child_with_logged_stderr` — variant that leaves stdin/stdout open for IPC
 - [x] `reel_core::media::grab_frame` — single-frame decode to tightly-packed RGBA8
 - [x] `sidecar/facefusion_bridge.py` — real line loop with `ping` / `swap` / `shutdown`, `identity` + `invert` transforms, `sleep_ms`/`crash` test hooks
@@ -44,8 +44,21 @@
 - [ ] Real FaceFusion model install + new `TRANSFORMS["swap_face"]` entry (deferred; out of scope for this iteration)
 - [ ] UI surface (AI panel) for invoking swap (deferred; CLI-only this phase)
 
+## Phase U1 — Menus, timeline scrub, export tests (see `docs/phases-ui.md`) 🚧
+
+- [x] Slint `MenuBar`: File / Edit / Window / Help (native bar on macOS)
+- [x] File: Open, Close, Revert, New Window, Save (.reel), Insert Video (queued path), Export (ffmpeg)
+- [x] Edit: Undo / redo (session stack; timeline wiring later)
+- [x] Window: Always on top, Fit / Fill / Center (viewport `image-fit`)
+- [x] Help: secondary `HelpWindow` with bundled `docs/HELP.md` text
+- [x] Timeline strip: `Slider` scrubbing → seek
+- [x] `reel-core` ffmpeg CLI export + `target/reel-export-verify/` integration test
+- [x] `reel-app` unit tests: `session`, `shell`, `project_io`
+
 ## Phase 4 — Documentation & polish (not started)
 
 - `docs/architecture.md` ✅ (covers Phases 0–3)
+- `docs/phases-ui.md` ✅ (revised UI roadmap)
+- `docs/HELP.md` ✅ (in-app help source)
 - `docs/USER_GUIDE.md` (pending)
 - Slint UI density pass, icons, app bundle targets (pending)

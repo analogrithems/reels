@@ -25,12 +25,24 @@ fn sidecar_dir() -> PathBuf {
         })
 }
 
+fn uv_on_path() -> bool {
+    std::process::Command::new("uv")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 fn maybe_skip(dir: &Path) -> bool {
-    let python = dir.join(".venv").join("bin").join("python");
-    if !python.exists() {
+    if !uv_on_path() {
+        eprintln!("`uv` not found on PATH — install uv (see Makefile check-tools)");
+        return true;
+    }
+    let bridge = dir.join("facefusion_bridge.py");
+    if !bridge.exists() {
         eprintln!(
-            "sidecar venv missing at {} — run `make setup`",
-            python.display()
+            "sidecar bridge missing at {} — run `make setup` from repo root",
+            bridge.display()
         );
         return true;
     }

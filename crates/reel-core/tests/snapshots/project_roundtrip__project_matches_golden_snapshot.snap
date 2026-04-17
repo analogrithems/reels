@@ -3,7 +3,7 @@ source: crates/reel-core/tests/project_roundtrip.rs
 expression: p
 ---
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "Golden",
   "clips": [
     {

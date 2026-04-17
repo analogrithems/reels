@@ -45,8 +45,9 @@ enum Command {
         #[arg(long, default_value = "identity")]
         model: String,
 
-        /// Path to the sidecar directory (the one containing `.venv` and
-        /// `facefusion_bridge.py`). Defaults to `./sidecar`.
+        /// Path to the sidecar directory (`pyproject.toml`, `facefusion_bridge.py`).
+        /// Spawned via `uv run python facefusion_bridge.py` from this directory.
+        /// Defaults to `./sidecar`.
         #[arg(long)]
         sidecar_dir: Option<PathBuf>,
 

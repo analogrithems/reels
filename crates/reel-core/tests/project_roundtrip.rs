@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use reel_core::media::{MediaMetadata, VideoStreamInfo};
-use reel_core::project::SCHEMA_VERSION;
+use reel_core::project::{migrate, SCHEMA_VERSION};
 use reel_core::{Clip, Project, Track, TrackKind};
+use serde_json::json;
 use uuid::Uuid;
 
 fn sample_project() -> Project {
@@ -36,14 +37,17 @@ fn sample_project() -> Project {
             },
             in_point: 1.0,
             out_point: 10.0,
+            extensions: Default::default(),
         }],
         tracks: vec![Track {
             id: track_id,
             kind: TrackKind::Video,
             clip_ids: vec![clip_id],
+            extensions: Default::default(),
         }],
         created_at: "2026-04-16T12:00:00Z".into(),
         modified_at: "2026-04-16T12:00:00Z".into(),
+        extensions: Default::default(),
     }
 }
 
@@ -62,16 +66,72 @@ fn project_matches_golden_snapshot() {
 }
 
 #[test]
-fn project_rejects_unknown_fields() {
-    let bad = r#"{
-        "schema_version": 1,
+fn project_preserves_unknown_top_level_keys() {
+    let raw = r#"{
+        "schema_version": 2,
         "name": "X",
         "clips": [],
         "tracks": [],
         "created_at": "2026-04-16T00:00:00Z",
         "modified_at": "2026-04-16T00:00:00Z",
-        "extra_typo_field": true
+        "future_filter_defaults": { "facefusion": { "enabled": true } }
     }"#;
-    let r: Result<Project, _> = serde_json::from_str(bad);
-    assert!(r.is_err(), "deny_unknown_fields should reject typos");
+    let p: Project = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        p.extensions.get("future_filter_defaults"),
+        Some(&json!({ "facefusion": { "enabled": true } }))
+    );
+    let s = serde_json::to_string(&p).unwrap();
+    let back: Project = serde_json::from_str(&s).unwrap();
+    assert_eq!(p, back);
+}
+
+#[test]
+fn clip_preserves_extension_keys() {
+    let raw = r#"{
+        "schema_version": 2,
+        "name": "E",
+        "clips": [{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "source_path": "/a.mp4",
+            "metadata": {
+                "path": "/a.mp4",
+                "duration_seconds": 1.0,
+                "container": "mp4",
+                "video": null,
+                "audio": null,
+                "audio_disabled": false
+            },
+            "in_point": 0.0,
+            "out_point": 1.0,
+            "filters": { "rvm": { "strength": 0.9 } }
+        }],
+        "tracks": [],
+        "created_at": "2026-04-16T12:00:00Z",
+        "modified_at": "2026-04-16T12:00:00Z"
+    }"#;
+    let p: Project = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        p.clips[0].extensions.get("filters"),
+        Some(&json!({ "rvm": { "strength": 0.9 } }))
+    );
+}
+
+#[test]
+fn migrate_v1_project_loads_as_v2() {
+    let v1 = r#"{
+        "schema_version": 1,
+        "name": "Legacy",
+        "clips": [],
+        "tracks": [],
+        "created_at": "2026-04-16T00:00:00Z",
+        "modified_at": "2026-04-16T00:00:00Z"
+    }"#;
+    let mut value: serde_json::Value = serde_json::from_str(v1).unwrap();
+    migrate(&mut value).unwrap();
+    assert_eq!(value["schema_version"], SCHEMA_VERSION);
+    let p: Project = serde_json::from_value(value).unwrap();
+    assert_eq!(p.schema_version, SCHEMA_VERSION);
+    assert_eq!(p.name, "Legacy");
+    assert!(p.extensions.is_empty());
 }
