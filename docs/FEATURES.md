@@ -6,8 +6,8 @@
 
 ### Playback & transport
 
-- Open a media file via **File → Open** (native dialog) or **Ctrl+O** (**⌘O** on macOS). The shortcut is handled before media is ready so you can open from an empty window after the main view has focus (click the window once if keys do nothing).
-- **Play / Pause**; timeline **Slider** scrub (seeks video + audio). **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence). **Home** / **End** jump to the **start** or **end** of the sequence. **Ctrl+Z** / **Ctrl+Shift+Z** invoke **Undo** / **Redo** when enabled (**⌘Z** / **⌘⇧Z** on macOS). **Ctrl+B** invokes **Split Clip at Playhead** when enabled (**⌘B** on macOS). **Ctrl+Shift+↓** / **Ctrl+Shift+↑** invoke **Move Clip to Track Below / Above** when those Edit actions are enabled (on **macOS**, Slint uses **⌘** for the `control` modifier, so **⌘⇧↓ / ⌘⇧↑**). A **shortcut table** is in **Help → Keyboard shortcuts** (bundled from `docs/KEYBOARD.md`). The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
+- Open a media file or a saved **`.reel` / `.json` project** via **File → Open** (native dialog) or **Ctrl+O** (**⌘O** on macOS). The dialog lists **Video**, **Reel project**, and **All files** filters. The shortcut is handled before media is ready so you can open from an empty window after the main view has focus (click the window once if keys do nothing). **File → Open Recent** lists the last opened projects and media (stored under the OS app data directory; **Clear Recent** empties the list). Missing paths are removed when picked.
+- **Play / Pause**; timeline **Slider** scrub (seeks video + audio). **Volume** slider on the bottom bar (**0–100%**) applies to **preview audio only** (not exported files); the level is saved to **`prefs.json`** in the app data directory and restored on launch. **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence). **Home** / **End** jump to the **start** or **end** of the sequence. **Ctrl+Z** / **Ctrl+Shift+Z** invoke **Undo** / **Redo** when enabled (**⌘Z** / **⌘⇧Z** on macOS). **Ctrl+B** invokes **Split Clip at Playhead** when enabled (**⌘B** on macOS). **Ctrl+Shift+↓** / **Ctrl+Shift+↑** invoke **Move Clip to Track Below / Above** when those Edit actions are enabled (on **macOS**, Slint uses **⌘** for the `control` modifier, so **⌘⇧↓ / ⌘⇧↑**). A **shortcut table** is in **Help → Keyboard shortcuts** (bundled from `docs/KEYBOARD.md`). The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
 - **AudioClock**: audio drives timing; video follows (may drop frames when behind).
 - **Close** clears the project and stops playback (**Ctrl+W** / **⌘W** when enabled).
 - Startup: optional **`REEL_OPEN_PATH`** env var auto-opens one file (dev/testing).
@@ -16,6 +16,10 @@
 
 - **Window → Fit / Fill / Center** (Slint `image-fit`: contain vs cover).
 - **Always on Top**.
+
+### Status footer (when media is loaded)
+
+Below the transport bar, a **footer** shows **video and audio codec** labels for the **primary-track clip at the playhead** (from probe metadata), the **full path** to that clip and the **project file** path (or **Not saved to disk** if there is no `.reel` path yet), and **All changes saved** vs **Unsaved changes** (matches edit dirty state). If a **first audio track** is in use, the audio line reflects the **dedicated** clip at the playhead when present, otherwise **embedded** audio from the video file; when the playhead is past the dedicated audio run, it indicates **silence**. While **playing**, the footer refreshes periodically so codec/path stay correct across clip boundaries.
 
 ### Project & timeline (minimal)
 
@@ -50,7 +54,7 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 
 ### File & project
 
-- **File → Open Recent** (**Phase U4** in **`docs/phases-ui.md`**) — mixed **Most Recently Used** list: recent **project** files (`.reel` / saved JSON) and recent **media** files (extensions consistent with **File → Open** and **`docs/SUPPORTED_FORMATS.md`**).
+- **Per-entry remove from Open Recent** (optional) — today only **Clear Recent**; no single-row delete.
 
 ### Editing / timeline (QuickTime-style)
 

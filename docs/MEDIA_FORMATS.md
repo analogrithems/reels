@@ -8,7 +8,7 @@ Reel uses **FFmpeg** (via **ffmpeg-next 7.1**; development targets **ffmpeg@7**)
 
 ## Containers (files)
 
-- **In practice:** MP4, MOV, MKV, WebM, and other formats FFmpeg can open are used in tests and daily use.
+- **In practice:** MP4, MOV, MKV, WebM, MPEG (e.g. `.mpg`, `.mpeg`, `.ts`), and other formats FFmpeg can open are used in tests and daily use. The **Open** dialog filter lists common video + audio extensions (see `crates/reel-app/src/media_extensions.rs`).
 - **Probe** reports the FFmpeg **container short name** (e.g. `mov`, `mp4`, `matroska`) in `MediaMetadata.container`.
 - **No explicit allowlist** in code: unsupported files fail at open/probe with an error.
 

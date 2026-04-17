@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use reel_core::{Project, TrackKind};
+use reel_core::{Clip, Project, TrackKind};
 use uuid::Uuid;
 
 /// Epsilon for float boundaries (matches session insert math).
@@ -191,6 +191,44 @@ pub(crate) fn resolve_for_project(p: &Project, sequence_ms: f64) -> Option<(Path
 /// or `None` if the playhead is in a gap or past the end (with the same edge rules as playback).
 pub(crate) fn primary_clip_id_at_seq_ms(p: &Project, sequence_ms: f64) -> Option<Uuid> {
     let track = p.tracks.iter().find(|t| t.kind == TrackKind::Video)?;
+    let seq = sequence_ms.max(0.0);
+    let mut spans: Vec<(Uuid, f64, f64)> = Vec::new();
+    let mut t_ms = 0.0_f64;
+    for cid in &track.clip_ids {
+        let c = p.clips.iter().find(|x| x.id == *cid)?;
+        let dur_ms = (c.out_point - c.in_point) * 1000.0;
+        if dur_ms <= SEQ_MS_EPS {
+            continue;
+        }
+        let start = t_ms;
+        let end = t_ms + dur_ms;
+        spans.push((*cid, start, end));
+        t_ms = end;
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let last_i = spans.len() - 1;
+    for (i, &(id, start, end)) in spans.iter().enumerate() {
+        let is_last = i == last_i;
+        if seq + SEQ_MS_EPS >= start
+            && (seq < end - SEQ_MS_EPS || (is_last && seq <= end + SEQ_MS_EPS))
+        {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Primary video [`Clip`] under the playhead (`sequence_ms` in ms on the concatenated sequence).
+pub(crate) fn primary_clip_ref_at_seq_ms(p: &Project, sequence_ms: f64) -> Option<&Clip> {
+    let id = primary_clip_id_at_seq_ms(p, sequence_ms)?;
+    p.clips.iter().find(|c| c.id == id)
+}
+
+/// First **audio** track: clip id at `sequence_ms`, or `None` in a gap / past end / no audio lane.
+pub(crate) fn first_audio_clip_id_at_seq_ms(p: &Project, sequence_ms: f64) -> Option<Uuid> {
+    let track = p.tracks.iter().find(|t| t.kind == TrackKind::Audio)?;
     let seq = sequence_ms.max(0.0);
     let mut spans: Vec<(Uuid, f64, f64)> = Vec::new();
     let mut t_ms = 0.0_f64;

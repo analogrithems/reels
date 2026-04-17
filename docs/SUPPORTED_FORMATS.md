@@ -82,7 +82,7 @@ A practical **delivery default** for wide compatibility:
 
 ## Other containers & codecs (quick reference)
 
-**Open** dialog includes **`mov`, `mp4`, `mkv`, `m4v`, `webm`, `avi`**; other extensions may work if FFmpeg opens them.
+**File → Open…** offers a **Media (video & audio)** filter listing common extensions (including **MPEG** program stream **`.mpg` / `.mpeg`**, **MPEG‑TS** **`.ts` / `.mts` / `.m2ts`**, and typical audio types). The exact list is maintained in **`crates/reel-app/src/media_extensions.rs`** (`OPEN_MEDIA_EXTENSIONS`). Anything FFmpeg can demux may still be chosen via **All files**.
 
 | Topic | Notes |
 | :-- | :-- |

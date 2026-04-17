@@ -8,7 +8,7 @@ This document is the **product / UI roadmap** for **`reel-app`** (Slint). Engine
 
 ## Executive summary
 
-Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core scope), **deep editing** (multi-track, trim, **QuickTime-style** transforms & clip UI—**in progress / expanding**), **export UX** (cancel + **%** + **strip** + **3-container preset sheet** shipped; **rich transcode catalog** (H.264/VP9/AV1 tiers)—**open**), **polish** (shortcuts, a11y, **fullscreen**—**partial**), and **AI/effects** (**MVP shipped**; **upscaling** on roadmap). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
+Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core scope), **deep editing** (multi-track, trim, **QuickTime-style** transforms & clip UI—**in progress / expanding**), **export UX** (cancel + **%** + **strip** + **3-container preset sheet** shipped; **rich transcode catalog** (H.264/VP9/AV1 tiers)—**open**), **polish** (**File → Open Recent** **done**; shortcuts, a11y, **View** chrome—**partial**), and **AI/effects** (**MVP shipped**; **upscaling** on roadmap). Phases **overlap in time**; the table below is the source of truth for **status**, not strict waterfall ordering.
 
 ---
 
@@ -19,7 +19,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
 | **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; multi-lane **partial**; **planned:** rotate/flip, clip markers, trim-on-double-click, **audio** remove/replace/overlay+gain, **resize** |
 | **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 / WebM / MKV preset sheet** **done**; **planned:** H.264/AAC transcode, VP9/AV1 WebM, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
-| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent**; **View:** **loop**, **zoom**, **fullscreen**; transport + clip-move keys |
+| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View:** **loop**, **zoom**, **fullscreen** **open**; transport + clip-move keys |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
 
 ---
@@ -68,7 +68,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 **Delivered**
 
 - **MenuBar:** File, Edit, Effects, Window, Help.
-- **File:** Open, Close, Revert, New Window, Save (`.reel` JSON), Insert Video (playhead-aware, **split** when inside a clip), Insert Audio (first audio lane; **U2-b**), New Video Track (empty lane; **U2-a**), New Audio Track (empty lane; **U2-b**), Export (ffmpeg **primary-track** concat / trim).
+- **File:** Open (media or **`.reel` / `.json` project**), **Open Recent** (MRU + **Clear Recent**), Close, Revert, New Window, Save (`.reel` JSON), Insert Video (playhead-aware, **split** when inside a clip), Insert Audio (first audio lane; **U2-b**), New Video Track (empty lane; **U2-a**), New Audio Track (empty lane; **U2-b**), Export (ffmpeg **primary-track** concat / trim).
 - **Edit:** Undo / redo (project snapshots).
 - **Window:** Always on top; Fit / Fill / Center viewport.
 - **Effects:** Menu hooks to sidecar (see **U5**).
@@ -79,7 +79,6 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 **Explicitly deferred**
 
 - Global **keyboard shortcuts** (menu accelerators) → **U4**.
-- **File → Open Recent** (MRU projects + media) → **U4** (shell polish; not part of U1 exit criteria).
 
 ---
 
@@ -151,7 +150,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 **Exit criteria (draft)**
 
-- [ ] **File → Open Recent** — MRU list of **recent projects** (e.g. `.reel`) and **recent media** (extensions consistent with **File → Open** / **`docs/SUPPORTED_FORMATS.md`**); optional **Clear Recent** / per-entry remove.
+- [x] **File → Open Recent** — MRU list of **recent projects** (`.reel` / `.json`) and **recent media** (same kinds as **File → Open**); **Clear Recent**; missing files pruned on pick. *Optional:* per-entry remove only (not shipped).
 - [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **F1** (Help overview), **Ctrl+O** / **Ctrl+S** / **Ctrl+W** (open / save / close when enabled), **Ctrl+I** / **Ctrl+Shift+I** / **Ctrl+E** / **Ctrl+Shift+N** / **Ctrl+Shift+A** (insert video / insert audio when enabled / export / new video track / new audio track when **media-ready**), **Ctrl+B** (split at playhead when enabled), **Space** (play/pause), **← / →** (±1 s seek), **Home** / **End** (sequence start/end), **Ctrl+Z** / **Ctrl+Shift+Z** (undo/redo when enabled), **Ctrl+Shift+↓/↑** (move clip between primary and second video lane when enabled; **⌘⇧↓/↑** on macOS). Transport and edit shortcuts expect the main view focused; **Open** works from an empty window; **Insert**/**Export**/**New Video Track**/**New Audio Track** need decode ready.
 - [ ] **View** menu (new or extended): **Loop Playback** — boolean; when enabled, **loop** the current playback scope (sequence or clip—product decision). **Zoom:** **Zoom In**, **Zoom Out** (enabled when zoomed), **Zoom to Fit** (align with current **Window → Fit** behavior), **Actual Size** (1:1 pixels); optional **Zoom to Video** (semantic TBD—may match **Fill** or max dimension). *Today:* **Window → Fit / Fill / Center** exists; roadmap may consolidate viewport zoom under **View**.
 - [ ] **Fullscreen** — a **fullscreen** control on the **playback** chrome (and/or **View → Enter Fullscreen**) using platform-appropriate behavior.
@@ -159,7 +158,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 **Scope**
 
-- **File** menu: **Open Recent** (MRU persistence).
+- **File** menu: **Open Recent** (MRU persistence — `recent.json` under the OS data-local dir).
 - Keyboard **shortcuts** (including menu parity).
 - **View** chrome: loop, zoom ladder, fullscreen.
 - **Accessibility** review.
@@ -215,7 +214,7 @@ Priorities change; this is **guidance for contributors**, not a commitment.
 
 1. **U2-d / U2-e** — **QuickTime-style** Edit (rotate, flip, markers, trim sheet) + **audio** remove/replace/overlay (depends on **U2-b** for mix/export).
 2. **U3** — **Export preset catalog** from **`SUPPORTED_FORMATS.md`** + determinate **progress bar**.
-3. **U4** — **View:** loop, **zoom** ladder, **fullscreen**; **File → Open Recent**.
+3. **U4** — **View:** loop, **zoom** ladder, **fullscreen** (Open Recent MRU is shipped).
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 
 Revisit when **trim UI** or **export presets** land.

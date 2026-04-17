@@ -43,7 +43,28 @@ export component AppWindow inherits Window {
     /// Playhead / duration (see `timecode::format_pair`).
     in property <string> timecode: "0:00.000 / 0:00.000";
 
+    in property <string> recent-line0: "";
+    in property <string> recent-line1: "";
+    in property <string> recent-line2: "";
+    in property <string> recent-line3: "";
+    in property <string> recent-line4: "";
+    in property <string> recent-line5: "";
+    in property <string> recent-line6: "";
+    in property <string> recent-line7: "";
+    in property <string> recent-line8: "";
+    in property <string> recent-line9: "";
+    in property <bool> recent-has-entries: false;
+
+    /// Footer strip when `media-ready` (codecs, paths, save state).
+    in property <string> footer-codec-line: "";
+    in property <string> footer-path-line: "";
+    in property <string> footer-save-line: "";
+    in property <bool> footer-unsaved: false;
+    callback footer-refresh();
+
     callback file-open();
+    callback file-open-recent(int);
+    callback file-clear-recent();
     callback file-close();
     callback file-revert();
     callback file-new-window();
@@ -92,12 +113,75 @@ export component AppWindow inherits Window {
     /// Nudge playhead by delta milliseconds (e.g. ±1000 for arrow keys).
     callback seek-nudge-ms(float);
 
+    /// Master preview volume **0..100** (persisted).
+    in-out property <float> volume-percent: 100.0;
+    callback volume-changed(float);
+
     MenuBar {
         Menu {
             title: "File";
             MenuItem {
                 title: "Open…";
                 activated => { root.file-open(); }
+            }
+            Menu {
+                title: "Open Recent";
+                MenuItem {
+                    title: root.recent-line0;
+                    enabled: root.recent-line0 != "";
+                    activated => { root.file-open-recent(0); }
+                }
+                MenuItem {
+                    title: root.recent-line1;
+                    enabled: root.recent-line1 != "";
+                    activated => { root.file-open-recent(1); }
+                }
+                MenuItem {
+                    title: root.recent-line2;
+                    enabled: root.recent-line2 != "";
+                    activated => { root.file-open-recent(2); }
+                }
+                MenuItem {
+                    title: root.recent-line3;
+                    enabled: root.recent-line3 != "";
+                    activated => { root.file-open-recent(3); }
+                }
+                MenuItem {
+                    title: root.recent-line4;
+                    enabled: root.recent-line4 != "";
+                    activated => { root.file-open-recent(4); }
+                }
+                MenuItem {
+                    title: root.recent-line5;
+                    enabled: root.recent-line5 != "";
+                    activated => { root.file-open-recent(5); }
+                }
+                MenuItem {
+                    title: root.recent-line6;
+                    enabled: root.recent-line6 != "";
+                    activated => { root.file-open-recent(6); }
+                }
+                MenuItem {
+                    title: root.recent-line7;
+                    enabled: root.recent-line7 != "";
+                    activated => { root.file-open-recent(7); }
+                }
+                MenuItem {
+                    title: root.recent-line8;
+                    enabled: root.recent-line8 != "";
+                    activated => { root.file-open-recent(8); }
+                }
+                MenuItem {
+                    title: root.recent-line9;
+                    enabled: root.recent-line9 != "";
+                    activated => { root.file-open-recent(9); }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    title: "Clear Recent";
+                    enabled: root.recent-has-entries;
+                    activated => { root.file-clear-recent(); }
+                }
             }
             MenuItem {
                 title: "Close";
@@ -477,6 +561,27 @@ export component AppWindow inherits Window {
                         enabled: root.media-ready;
                         clicked => { root.play-pause(); }
                     }
+                    VerticalBox {
+                        alignment: center;
+                        spacing: 2px;
+                        padding: 0;
+                        Text {
+                            text: "Volume";
+                            color: #888;
+                            font-size: 10px;
+                        }
+                        Slider {
+                            width: 120px;
+                            height: 22px;
+                            minimum: 0;
+                            maximum: 100;
+                            value: root.volume-percent;
+                            changed(v) => {
+                                root.volume-percent = v;
+                                root.volume-changed(v);
+                            }
+                        }
+                    }
                     Text {
                         text: root.status-text;
                         color: #ccc;
@@ -486,6 +591,45 @@ export component AppWindow inherits Window {
                 }
             }
         }
+
+        Rectangle {
+            background: #1c1c22;
+            min-height: root.media-ready ? 52px : 0px;
+            visible: root.media-ready;
+            vertical-stretch: 0;
+            clip: true;
+            VerticalBox {
+                padding: 6px;
+                spacing: 4px;
+                Text {
+                    text: root.footer-codec-line;
+                    color: #b8b8c2;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.footer-path-line;
+                    color: #7a8490;
+                    font-size: 9px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.footer-save-line;
+                    color: root.footer-unsaved ? #e0a030 : #6aab7a;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        }
+        }
+
+        footer-sync-timer := Timer {
+            interval: 350ms;
+            running: root.media-ready && root.is-playing;
+            triggered => {
+                root.footer-refresh();
+            }
         }
 
         if root.export-preset-dialog-visible: Rectangle {
@@ -629,7 +773,6 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-        }
         }
     }
 }

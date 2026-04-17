@@ -2,8 +2,11 @@
 
 mod autosave;
 mod effects;
+mod media_extensions;
 mod player;
+mod prefs;
 mod project_io;
+mod recent;
 mod session;
 mod shell;
 mod timecode;
@@ -14,19 +17,25 @@ use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use reel_core::TrackKind;
 use reel_core::{export_concat_with_audio, ExportProgressFn};
+use reel_core::Project;
 use session::{
     export_format_for_path, split_enabled_for_playhead, video_lane_indices,
     web_export_format_from_preset_index, EditSession,
 };
 use slint::ComponentHandle;
 
-use crate::project_io::save_project;
+use crate::media_extensions::{
+    AUDIO_FILE_EXTENSIONS, OPEN_MEDIA_EXTENSIONS, VIDEO_CONTAINER_EXTENSIONS,
+};
+use crate::prefs::AppPrefs;
+use crate::project_io::{is_project_document_path, save_project};
+use crate::recent::RecentStore;
 use crate::ui_bridge::on_ui;
 
 slint::include_modules!();
@@ -133,6 +142,92 @@ fn begin_export_effect(
     }
 }
 
+fn format_footer_codec_line(p: &Project, seq_ms: f64) -> String {
+    let Some(vclip) = timeline::primary_clip_ref_at_seq_ms(p, seq_ms) else {
+        return "No clip at playhead".to_string();
+    };
+    let vcodec = vclip
+        .metadata
+        .video
+        .as_ref()
+        .map(|x| x.codec.as_str())
+        .unwrap_or("—");
+
+    let has_dedicated = timeline::clips_from_first_audio_track(p).is_some();
+    if has_dedicated {
+        if let Some(aid) = timeline::first_audio_clip_id_at_seq_ms(p, seq_ms) {
+            let aclip = p.clips.iter().find(|c| c.id == aid);
+            let audio_str = aclip
+                .map(|ac| {
+                    if ac.metadata.audio_disabled {
+                        "disabled".to_string()
+                    } else {
+                        ac.metadata
+                            .audio
+                            .as_ref()
+                            .map(|a| a.codec.clone())
+                            .unwrap_or_else(|| "none".into())
+                    }
+                })
+                .unwrap_or_else(|| "—".into());
+            format!("Video: {vcodec} · Audio: {audio_str} (first audio track)")
+        } else {
+            format!("Video: {vcodec} · Audio: silence (dedicated track — no clip at playhead)")
+        }
+    } else {
+        let audio_str = if vclip.metadata.audio_disabled {
+            "unavailable".to_string()
+        } else {
+            vclip
+                .metadata
+                .audio
+                .as_ref()
+                .map(|a| a.codec.clone())
+                .unwrap_or_else(|| "none".into())
+        };
+        format!("Video: {vcodec} · Audio: {audio_str} (embedded in video file)")
+    }
+}
+
+fn sync_footer(window: &AppWindow, session: &EditSession) {
+    if !window.get_media_ready() {
+        window.set_footer_codec_line("".into());
+        window.set_footer_path_line("".into());
+        window.set_footer_save_line("".into());
+        window.set_footer_unsaved(false);
+        return;
+    }
+    let Some(p) = session.project() else {
+        window.set_footer_codec_line("".into());
+        window.set_footer_path_line("".into());
+        window.set_footer_save_line("".into());
+        window.set_footer_unsaved(false);
+        return;
+    };
+    let ph = window.get_playhead_ms() as f64;
+    window.set_footer_codec_line(format_footer_codec_line(p, ph).into());
+    let media_path = timeline::resolve_for_project(p, ph)
+        .map(|(path, _)| path.display().to_string())
+        .unwrap_or_else(|| "—".into());
+    let proj_line = p
+        .path
+        .as_ref()
+        .map(|x| x.display().to_string())
+        .unwrap_or_else(|| "Not saved to disk".to_string());
+    window.set_footer_path_line(
+        format!("Current clip: {media_path} · Project file: {proj_line}").into(),
+    );
+    window.set_footer_unsaved(session.dirty);
+    window.set_footer_save_line(
+        (if session.dirty {
+            "Unsaved changes"
+        } else {
+            "All changes saved"
+        })
+        .into(),
+    );
+}
+
 pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     window.set_close_enabled(session.close_enabled());
     window.set_revert_enabled(session.revert_enabled());
@@ -179,6 +274,22 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
     window.set_timecode(timecode::format_pair(ph, dur).into());
+    sync_footer(window, session);
+}
+
+fn sync_recent_menu(window: &AppWindow, recent: &RecentStore) {
+    let labels = recent.menu_labels();
+    window.set_recent_line0(labels[0].clone().into());
+    window.set_recent_line1(labels[1].clone().into());
+    window.set_recent_line2(labels[2].clone().into());
+    window.set_recent_line3(labels[3].clone().into());
+    window.set_recent_line4(labels[4].clone().into());
+    window.set_recent_line5(labels[5].clone().into());
+    window.set_recent_line6(labels[6].clone().into());
+    window.set_recent_line7(labels[7].clone().into());
+    window.set_recent_line8(labels[8].clone().into());
+    window.set_recent_line9(labels[9].clone().into());
+    window.set_recent_has_entries(!recent.is_empty());
 }
 
 fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSession) {
@@ -198,9 +309,50 @@ fn sync_menu_and_autosave(
     window: &AppWindow,
     session_rc: &Rc<RefCell<EditSession>>,
     debouncer: &autosave::AutosaveDebouncer,
+    recent: &Rc<RefCell<RecentStore>>,
 ) {
     sync_menu(window, &session_rc.borrow());
+    sync_recent_menu(window, &recent.borrow());
     debouncer.nudge(Rc::clone(session_rc));
+}
+
+fn open_path_from_ui(
+    path: PathBuf,
+    sender: &player::PlayerCmdSender,
+    session: &Rc<RefCell<EditSession>>,
+    weak: &slint::Weak<AppWindow>,
+    debouncer: &autosave::AutosaveDebouncer,
+    recent: &Rc<RefCell<RecentStore>>,
+) {
+    tracing::info!(?path, "open path");
+    if let Some(w) = weak.upgrade() {
+        w.set_is_playing(false);
+        w.set_media_ready(false);
+    }
+    let open_result = session.borrow_mut().open_media(path.clone());
+    match open_result {
+        Ok(()) => {
+            {
+                let mut r = recent.borrow_mut();
+                if is_project_document_path(&path) {
+                    r.record_project(path.clone());
+                } else {
+                    r.record_media(path.clone());
+                }
+            }
+            if let Some(w) = weak.upgrade() {
+                sync_menu_and_autosave(&w, session, debouncer, recent);
+            }
+            reload_player_timeline(sender, &session.borrow());
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "open failed");
+            if let Some(w) = weak.upgrade() {
+                w.set_status_text(format!("Open failed: {e}").into());
+                sync_menu_and_autosave(&w, session, debouncer, recent);
+            }
+        }
+    }
 }
 
 fn show_help_window(doc: shell::HelpDoc) {
@@ -231,14 +383,24 @@ fn main() -> Result<()> {
     window.set_move_clip_down_enabled(false);
     window.set_move_clip_up_enabled(false);
     window.set_split_at_playhead_enabled(false);
+    window.set_footer_codec_line("".into());
+    window.set_footer_path_line("".into());
+    window.set_footer_save_line("".into());
+    window.set_footer_unsaved(false);
     window.set_video_fit_mode(0);
     window.set_stay_on_top(false);
 
+    let app_prefs = Rc::new(RefCell::new(AppPrefs::load()));
+    let master_vol = (app_prefs.borrow().master_volume.clamp(0.0, 1.0) * 1000.0).round() as u32;
+    let vol_arc = Arc::new(AtomicU32::new(master_vol));
+    window.set_volume_percent(app_prefs.borrow().master_volume * 100.0);
+
     let session = Rc::new(RefCell::new(EditSession::default()));
     let debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
+    let recent = Rc::new(RefCell::new(RecentStore::load()));
     let export_cancel = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
 
-    let player = match player::spawn_player(&window) {
+    let player = match player::spawn_player(&window, vol_arc) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "failed to start player threads");
@@ -248,36 +410,61 @@ fn main() -> Result<()> {
         }
     };
 
+    {
+        let vol = player.master_volume_1000.clone();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_volume_changed(move |pct| {
+            let p = (pct as f64).clamp(0.0, 100.0) / 100.0;
+            vol.store((p * 1000.0).round() as u32, Ordering::Relaxed);
+            app_prefs.borrow_mut().master_volume = p as f32;
+            app_prefs.borrow().save();
+        });
+    }
+
     let weak = window.as_weak();
     {
-        let p = player_handle_ref(&player);
+        let sender = player.cmd_sender();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_open(move || match prompt_open_dialog() {
             Some(path) => {
-                tracing::info!(?path, "file open");
-                if let Some(w) = weak.upgrade() {
-                    w.set_is_playing(false);
-                    w.set_media_ready(false);
-                }
-                let open_result = session.borrow_mut().open_media(path.clone());
-                match open_result {
-                    Ok(()) => {
-                        if let Some(w) = weak.upgrade() {
-                            sync_menu_and_autosave(&w, &session, &debouncer);
-                        }
-                        reload_player_timeline(&p, &session.borrow());
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "open project");
-                        if let Some(w) = weak.upgrade() {
-                            w.set_status_text(format!("Open failed: {e}").into());
-                            sync_menu_and_autosave(&w, &session, &debouncer);
-                        }
-                    }
-                }
+                open_path_from_ui(path, &sender, &session, &weak, &debouncer, &recent);
             }
             None => tracing::debug!("open cancelled"),
+        });
+    }
+
+    {
+        let sender = player.cmd_sender();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        let weak = window.as_weak();
+        window.on_file_open_recent(move |idx| {
+            let Some(path) = recent.borrow().path_for_menu_index(idx) else {
+                return;
+            };
+            if !path.exists() {
+                recent.borrow_mut().remove_path(&path);
+                if let Some(w) = weak.upgrade() {
+                    sync_recent_menu(&w, &recent.borrow());
+                    w.set_status_text(format!("Recent file not found: {}", path.display()).into());
+                }
+                return;
+            }
+            open_path_from_ui(path, &sender, &session, &weak, &debouncer, &recent);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let recent = Rc::clone(&recent);
+        window.on_file_clear_recent(move || {
+            recent.borrow_mut().clear();
+            if let Some(w) = weak.upgrade() {
+                sync_recent_menu(&w, &recent.borrow());
+            }
         });
     }
 
@@ -335,6 +522,7 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_save(move || {
             let proj = session.borrow().project().cloned();
             if let Some(proj) = proj {
@@ -346,8 +534,9 @@ fn main() -> Result<()> {
                     match save_project(&dest, &proj) {
                         Ok(()) => {
                             session.borrow_mut().mark_saved_to_path(dest.clone());
+                            recent.borrow_mut().record_project(dest.clone());
                             if let Some(w) = weak.upgrade() {
-                                sync_menu_and_autosave(&w, &session, &debouncer);
+                                sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                                 w.set_status_text(format!("Saved {}", dest.display()).into());
                             }
                         }
@@ -368,8 +557,10 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_insert_audio(move || match prompt_insert_audio_dialog() {
             Some(insert_path) => {
+                let mru_path = insert_path.clone();
                 let playhead_ms = weak
                     .upgrade()
                     .map(|w| w.get_playhead_ms() as f64)
@@ -379,13 +570,14 @@ fn main() -> Result<()> {
                     .insert_audio_clip_at_playhead(insert_path, playhead_ms);
                 match insert_result {
                     Ok(()) => {
+                        recent.borrow_mut().record_media(mru_path);
                         if let Some(w) = weak.upgrade() {
                             let n = session
                                 .borrow()
                                 .project()
                                 .map(|pr| pr.clips.len())
                                 .unwrap_or(0);
-                            sync_menu_and_autosave(&w, &session, &debouncer);
+                            sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                             w.set_status_text(
                                 format!("Inserted audio @ {playhead_ms:.0} ms ({n} clips)").into(),
                             );
@@ -408,8 +600,10 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_insert_video(move || match prompt_insert_dialog() {
             Some(insert_path) => {
+                let mru_path = insert_path.clone();
                 let playhead_ms = weak
                     .upgrade()
                     .map(|w| w.get_playhead_ms() as f64)
@@ -419,13 +613,14 @@ fn main() -> Result<()> {
                     .insert_clip_at_playhead(insert_path, playhead_ms);
                 match insert_result {
                     Ok(()) => {
+                        recent.borrow_mut().record_media(mru_path);
                         if let Some(w) = weak.upgrade() {
                             let n = session
                                 .borrow()
                                 .project()
                                 .map(|pr| pr.clips.len())
                                 .unwrap_or(0);
-                            sync_menu_and_autosave(&w, &session, &debouncer);
+                            sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                             w.set_status_text(
                                 format!("Inserted @ {playhead_ms:.0} ms ({n} clips)").into(),
                             );
@@ -447,12 +642,13 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_new_video_track(move || {
             let r = session.borrow_mut().add_video_track();
             match r {
                 Ok(()) => {
                     if let Some(w) = weak.upgrade() {
-                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                         w.set_status_text("Added video track".into());
                     }
                 }
@@ -469,12 +665,13 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_new_audio_track(move || {
             let r = session.borrow_mut().add_audio_track();
             match r {
                 Ok(()) => {
                     if let Some(w) = weak.upgrade() {
-                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                         w.set_status_text("Added audio track".into());
                     }
                 }
@@ -632,13 +829,14 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_edit_undo(move || {
             if !session.borrow_mut().undo() {
                 return;
             }
             reload_player_timeline(&sender, &session.borrow());
             if let Some(w) = weak.upgrade() {
-                sync_menu_and_autosave(&w, &session, &debouncer);
+                sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                 let n = session
                     .borrow()
                     .project()
@@ -690,13 +888,14 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_edit_redo(move || {
             if !session.borrow_mut().redo() {
                 return;
             }
             reload_player_timeline(&sender, &session.borrow());
             if let Some(w) = weak.upgrade() {
-                sync_menu_and_autosave(&w, &session, &debouncer);
+                sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                 let n = session
                     .borrow()
                     .project()
@@ -712,6 +911,7 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_edit_split_at_playhead(move || {
             let playhead_ms = weak
                 .upgrade()
@@ -722,7 +922,7 @@ fn main() -> Result<()> {
                 Ok(()) => {
                     reload_player_timeline(&sender, &session.borrow());
                     if let Some(w) = weak.upgrade() {
-                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                         let dur = w.get_duration_ms();
                         let ph = w.get_playhead_ms().min(dur);
                         w.set_playhead_ms(ph);
@@ -745,6 +945,7 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_edit_move_clip_down(move || {
             let playhead_ms = weak
                 .upgrade()
@@ -757,7 +958,7 @@ fn main() -> Result<()> {
                 Ok(()) => {
                     reload_player_timeline(&sender, &session.borrow());
                     if let Some(w) = weak.upgrade() {
-                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                         let dur = w.get_duration_ms();
                         let ph = w.get_playhead_ms().min(dur);
                         w.set_playhead_ms(ph);
@@ -780,6 +981,7 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_edit_move_clip_up(move || {
             let r = session
                 .borrow_mut()
@@ -788,7 +990,7 @@ fn main() -> Result<()> {
                 Ok(()) => {
                     reload_player_timeline(&sender, &session.borrow());
                     if let Some(w) = weak.upgrade() {
-                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                         let dur = w.get_duration_ms();
                         let ph = w.get_playhead_ms().min(dur);
                         w.set_playhead_ms(ph);
@@ -936,14 +1138,33 @@ fn main() -> Result<()> {
         });
     }
 
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_footer_refresh(move || {
+            if let Some(w) = weak.upgrade() {
+                sync_footer(&w, &session.borrow());
+            }
+        });
+    }
+
     sync_menu(&window, &session.borrow());
+    sync_recent_menu(&window, &recent.borrow());
 
     if let Some(path) = startup_auto_open_path() {
         tracing::info!(?path, "auto-opening from REEL_OPEN_PATH");
         let startup_open = session.borrow_mut().open_media(path.clone());
         match startup_open {
             Ok(()) => {
-                sync_menu_and_autosave(&window, &session, &debouncer);
+                {
+                    let mut r = recent.borrow_mut();
+                    if is_project_document_path(&path) {
+                        r.record_project(path);
+                    } else {
+                        r.record_media(path);
+                    }
+                }
+                sync_menu_and_autosave(&window, &session, &debouncer, &recent);
                 reload_player_timeline(&player.cmd_sender(), &session.borrow());
             }
             Err(e) => {
@@ -964,8 +1185,9 @@ fn player_handle_ref(p: &player::PlayerHandle) -> player::PlayerCmdSender {
 fn prompt_open_dialog() -> Option<PathBuf> {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         rfd::FileDialog::new()
-            .set_title("Open media…")
-            .add_filter("Video", &["mov", "mp4", "mkv", "m4v", "webm", "avi"])
+            .set_title("Open media or project…")
+            .add_filter("Media (video & audio)", OPEN_MEDIA_EXTENSIONS)
+            .add_filter("Reel project", &["reel", "json"])
             .add_filter("All files", &["*"])
             .pick_file()
     }));
@@ -983,7 +1205,7 @@ fn prompt_insert_dialog() -> Option<PathBuf> {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         rfd::FileDialog::new()
             .set_title("Insert video…")
-            .add_filter("Video", &["mov", "mp4", "mkv", "m4v", "webm", "avi"])
+            .add_filter("Video", VIDEO_CONTAINER_EXTENSIONS)
             .pick_file()
     }));
     result.unwrap_or_default()
@@ -993,16 +1215,8 @@ fn prompt_insert_audio_dialog() -> Option<PathBuf> {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         rfd::FileDialog::new()
             .set_title("Insert audio…")
-            .add_filter(
-                "Audio",
-                &[
-                    "wav", "aiff", "aif", "mp3", "m4a", "aac", "flac", "ogg", "opus",
-                ],
-            )
-            .add_filter(
-                "Video (audio stream)",
-                &["mov", "mp4", "mkv", "m4v", "webm"],
-            )
+            .add_filter("Audio", AUDIO_FILE_EXTENSIONS)
+            .add_filter("Video (audio stream)", VIDEO_CONTAINER_EXTENSIONS)
             .pick_file()
     }));
     result.unwrap_or_default()

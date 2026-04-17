@@ -3,8 +3,32 @@
 use std::path::Path;
 
 use anyhow::Context;
+use reel_core::migrate;
 use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
+
+/// True when **Open** should load a saved project JSON (vs probing as a single media file).
+pub fn is_project_document_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .as_deref(),
+        Some("reel" | "json")
+    )
+}
+
+/// Read a `.reel` / project `.json` file, migrate schema, and set [`Project::path`].
+pub fn load_project_file(path: &Path) -> anyhow::Result<Project> {
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut v: serde_json::Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+    migrate(&mut v).map_err(|e| anyhow::anyhow!("project migrate: {e}"))?;
+    let mut p: Project =
+        serde_json::from_value(v).with_context(|| format!("deserialize {}", path.display()))?;
+    p.path = Some(path.to_path_buf());
+    Ok(p)
+}
 
 /// Probe `media` and build a single-clip, single-track project.
 pub fn project_from_media_path(media: &Path) -> anyhow::Result<Project> {

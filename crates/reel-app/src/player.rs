@@ -21,7 +21,7 @@
 //! both and reset the clock.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -95,6 +95,8 @@ pub struct PlayerHandle {
     tx_audio: Sender<Cmd>,
     video_thread: Option<JoinHandle<()>>,
     audio_thread: Option<JoinHandle<()>>,
+    /// Master gain **0..=1000** (linear; 1000 = unity). Applied in the cpal output callback.
+    pub master_volume_1000: Arc<AtomicU32>,
 }
 
 impl PlayerHandle {
@@ -138,7 +140,12 @@ impl Drop for PlayerHandle {
 }
 
 /// Start the player; returns a handle plus the AudioClock for external wiring.
-pub fn spawn_player(window: &AppWindow) -> Result<PlayerHandle> {
+///
+/// `master_volume_1000` is shared with the UI; **0** = mute, **1000** = full level.
+pub fn spawn_player(
+    window: &AppWindow,
+    master_volume_1000: Arc<AtomicU32>,
+) -> Result<PlayerHandle> {
     // Initialize ffmpeg once.
     ffmpeg::init().context("ffmpeg::init")?;
 
@@ -160,15 +167,17 @@ pub fn spawn_player(window: &AppWindow) -> Result<PlayerHandle> {
 
     let weak_a = weak.clone();
     let clock_a = clock.clone();
+    let vol_stream = master_volume_1000.clone();
     let audio_thread = std::thread::Builder::new()
         .name("reel-audio".into())
-        .spawn(move || audio_loop(rx_audio, clock_a, producer, consumer, weak_a))?;
+        .spawn(move || audio_loop(rx_audio, clock_a, producer, consumer, weak_a, vol_stream))?;
 
     Ok(PlayerHandle {
         tx_video,
         tx_audio,
         video_thread: Some(video_thread),
         audio_thread: Some(audio_thread),
+        master_volume_1000,
     })
 }
 
@@ -566,6 +575,7 @@ fn audio_loop<P, C>(
     mut producer: P,
     mut consumer: C,
     weak: Weak<AppWindow>,
+    master_volume_1000: Arc<AtomicU32>,
 ) where
     P: Producer<Item = f32> + Send + 'static,
     C: Consumer<Item = f32> + Send + 'static,
@@ -590,11 +600,13 @@ fn audio_loop<P, C>(
     // SAFETY: cpal callbacks capture our consumer; the callback is invoked
     // on a cpal-owned thread. `HeapConsumer` is `Send`.
     let clock_cb = clock.clone();
+    let vol_cb = master_volume_1000;
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
+            let g = vol_cb.load(Ordering::Relaxed) as f32 * (1.0 / 1000.0);
             for sample in data.iter_mut() {
-                *sample = consumer.try_pop().unwrap_or(0.0);
+                *sample = consumer.try_pop().unwrap_or(0.0) * g;
             }
             if clock_cb.is_playing() {
                 let written = data.len() as u64 / OUT_CHANNELS as u64;

@@ -101,7 +101,7 @@ Source matrix: **`docs/SUPPORTED_FORMATS.md`**. These items track **first-class*
 
 Implementation tracking for **menu- and timeline-visible** features described in **`docs/phases-ui.md`** (U2-d … U4, **U3** presets). Uncheck until shipped; update **`docs/FEATURES.md`** when done.
 
-- [ ] **File → Open Recent** (**U4**) — MRU **projects** and **media** (supported extensions per **`docs/SUPPORTED_FORMATS.md`** / open dialog)
+- [x] **File → Open Recent** (**U4**) — MRU **projects** and **media**; **Clear Recent**; persistence + prune on missing file (per-entry remove optional / not shipped)
 - [ ] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**)
 - [ ] **Timeline** — **two markers** on the seek bar (in/out range); **double-click** timeline opens **trim** sheet (Trim / Cancel)
 - [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**

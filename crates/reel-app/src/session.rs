@@ -6,7 +6,7 @@ use anyhow::Context;
 use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
 
-use crate::project_io::project_from_media_path;
+use crate::project_io::{is_project_document_path, load_project_file, project_from_media_path};
 use crate::timecode;
 
 const MAX_UNDO: usize = 48;
@@ -67,6 +67,15 @@ pub(crate) fn insert_plan_for_playhead_ms(
 ) -> Option<InsertPlan> {
     let track = project.tracks.iter().find(|t| t.kind == TrackKind::Video)?;
     insert_plan_for_track_ms(project, track, playhead_ms)
+}
+
+fn primary_video_source_path(p: &Project) -> Option<PathBuf> {
+    p.tracks
+        .iter()
+        .find(|t| t.kind == TrackKind::Video)
+        .and_then(|t| t.clip_ids.first())
+        .and_then(|id| p.clips.iter().find(|c| c.id == *id))
+        .map(|c| c.source_path.clone())
 }
 
 /// Insert plan on the **first** [`TrackKind::Audio`] track (same sequence clock as primary video).
@@ -443,8 +452,16 @@ impl EditSession {
         Ok(())
     }
 
-    /// Load media: builds a one-clip project and clears history.
+    /// Load media or a saved **`.reel` / `.json` project**; clears undo/redo for a new media open,
+    /// or establishes a save baseline when opening a project file.
     pub fn open_media(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        if is_project_document_path(&path) {
+            let p = load_project_file(&path)?;
+            self.current_media = primary_video_source_path(&p);
+            self.project = Some(p);
+            self.mark_saved_to_path(path);
+            return Ok(());
+        }
         let p = project_from_media_path(&path)?;
         self.current_media = Some(path);
         self.project = Some(p);

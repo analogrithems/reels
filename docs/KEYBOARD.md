@@ -13,6 +13,7 @@ Click the **video or timeline area** so the main view has focus for playback and
 | Action | Windows / Linux | macOS |
 |--------|-----------------|-------|
 | Open… | **Ctrl+O** | **⌘O** |
+| Open Recent | *(menu only — no default shortcut)* | same |
 | Save… | **Ctrl+S** (when Save is enabled) | **⌘S** |
 | Close | **Ctrl+W** (when Close is enabled) | **⌘W** |
 | Insert Video… | **Ctrl+I** (needs media ready) | **⌘I** |
