@@ -6,6 +6,7 @@
 | [FEATURES.md](FEATURES.md) | Editing features shipped today + **roadmap** (update when features land). |
 | [KEYBOARD.md](KEYBOARD.md) | In-app **Help → Keyboard shortcuts**; focus + transport + clip-move chords. |
 | [MEDIA_FORMATS.md](MEDIA_FORMATS.md) | Containers, video/audio/subtitle **support level** in Reel (update when format behavior changes). |
+| [SUPPORTED_FORMATS.md](SUPPORTED_FORMATS.md) | **Playback vs export** matrix (containers & codecs), **roadmap** for unsupported gaps. |
 | [CLI.md](CLI.md) | `reel-cli` usage + CLI **roadmap**. |
 | [EXTERNAL_AI.md](EXTERNAL_AI.md) | How Reel hands frames to **external processes** (JSON + files, no fixed vendor API). |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | **Start here** for contributing (links roadmap, workflow, CI). |

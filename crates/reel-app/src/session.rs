@@ -63,6 +63,13 @@ pub(crate) fn insert_plan_for_playhead_ms(
     Some(InsertPlan::AtIndex(track.clip_ids.len()))
 }
 
+/// True when **Split Clip at Playhead** can run (playhead strictly inside a primary-track clip).
+pub(crate) fn split_enabled_for_playhead(project: &Project, playhead_ms: f64) -> bool {
+    insert_plan_for_playhead_ms(project, playhead_ms)
+        .map(|p| matches!(p, InsertPlan::Split { .. }))
+        .unwrap_or(false)
+}
+
 fn video_track_row_lines(p: &Project) -> Vec<String> {
     let vtracks: Vec<&Track> = p
         .tracks
@@ -273,6 +280,78 @@ impl EditSession {
             .context("primary video track")?
             .clip_ids
             .push(clip_id);
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Split the primary-track clip under `playhead_ms` into two adjacent clips (same source file;
+    /// in/out adjusted). Undoable. Fails if the playhead is in a gap or on a cut between clips.
+    pub fn split_clip_at_playhead(&mut self, playhead_ms: f64) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+
+        let plan = insert_plan_for_playhead_ms(self.project.as_ref().unwrap(), playhead_ms)
+            .context("no video track")?;
+        let InsertPlan::Split {
+            clip_index,
+            local_ms,
+        } = plan
+        else {
+            anyhow::bail!("playhead must be strictly inside a clip — not in a gap or on a cut");
+        };
+
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+
+        let track = proj
+            .tracks
+            .iter_mut()
+            .find(|t| t.kind == TrackKind::Video)
+            .context("no video track")?;
+
+        let old_id = *track.clip_ids.get(clip_index).context("split clip index")?;
+        let old = proj
+            .clips
+            .iter()
+            .find(|c| c.id == old_id)
+            .context("split clip missing")?
+            .clone();
+
+        let split_sec = old.in_point + (local_ms / 1000.0).max(0.0);
+        if split_sec <= old.in_point + SEQ_MS_EPS || split_sec >= old.out_point - SEQ_MS_EPS {
+            anyhow::bail!("playhead must be strictly inside a clip — not in a gap or on a cut");
+        }
+
+        let left_id = Uuid::new_v4();
+        let right_id = Uuid::new_v4();
+        let left = Clip {
+            id: left_id,
+            source_path: old.source_path.clone(),
+            metadata: old.metadata.clone(),
+            in_point: old.in_point,
+            out_point: split_sec,
+            extensions: Default::default(),
+        };
+        let right = Clip {
+            id: right_id,
+            source_path: old.source_path.clone(),
+            metadata: old.metadata.clone(),
+            in_point: split_sec,
+            out_point: old.out_point,
+            extensions: Default::default(),
+        };
+
+        proj.clips.retain(|c| c.id != old_id);
+        proj.clips.push(left);
+        proj.clips.push(right);
+
+        track
+            .clip_ids
+            .splice(clip_index..=clip_index, [left_id, right_id]);
+
         proj.touch();
         self.redo.clear();
         self.recompute_dirty();
@@ -709,6 +788,28 @@ mod tests {
                 local_ms: 500.0,
             })
         );
+    }
+
+    #[test]
+    fn split_enabled_matches_interior() {
+        let p = two_clip_project();
+        assert!(super::split_enabled_for_playhead(&p, 500.0));
+        assert!(!super::split_enabled_for_playhead(&p, 0.0));
+        assert!(!super::split_enabled_for_playhead(&p, 2000.0));
+    }
+
+    #[test]
+    fn split_clip_at_playhead_three_clips_on_primary() {
+        let mut s = EditSession::from_project_for_tests(two_clip_project());
+        s.split_clip_at_playhead(500.0).unwrap();
+        let p = s.project().unwrap();
+        let track = p
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .unwrap();
+        assert_eq!(track.clip_ids.len(), 3);
+        assert_eq!(p.clips.len(), 3);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 # Reel — media formats & track support
 
-**Maintenance:** When probe, decode, or project semantics change for containers, codecs, or tracks, update this file and **`docs/FEATURES.md`** as needed. Agents (Cursor, Claude) should keep this accurate for collaborators adding new formats.
+**See also:** **`docs/SUPPORTED_FORMATS.md`** — codec/container matrix (**playback vs export**) and **roadmap** for gaps.
+
+**Maintenance:** When probe, decode, or project semantics change for containers, codecs, or tracks, update this file, **`docs/SUPPORTED_FORMATS.md`** when the matrix changes, and **`docs/FEATURES.md`** as needed. Agents (Cursor, Claude) should keep this accurate for collaborators adding new formats.
 
 Reel uses **FFmpeg** (via **ffmpeg-next 7.1**; development targets **ffmpeg@7**). Anything FFmpeg can demux/decode is *likely* to work for preview, but Reel’s **logic** only understands a subset explicitly.
 

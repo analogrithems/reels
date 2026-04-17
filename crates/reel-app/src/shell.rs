@@ -7,6 +7,7 @@ pub enum HelpDoc {
     Features,
     Keyboard,
     MediaFormats,
+    SupportedFormats,
     Cli,
     ExternalAi,
     Developers,
@@ -21,6 +22,7 @@ impl HelpDoc {
             HelpDoc::Features => "Reel — Features & roadmap",
             HelpDoc::Keyboard => "Reel — Keyboard shortcuts",
             HelpDoc::MediaFormats => "Reel — Media formats & tracks",
+            HelpDoc::SupportedFormats => "Reel — Supported formats (playback vs export)",
             HelpDoc::Cli => "Reel — CLI (reel-cli)",
             HelpDoc::ExternalAi => "Reel — External AI & tools",
             HelpDoc::Developers => "Reel — Developers",
@@ -50,6 +52,12 @@ impl HelpDoc {
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
                     "/../../docs/MEDIA_FORMATS.md"
+                ))
+            }
+            HelpDoc::SupportedFormats => {
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../docs/SUPPORTED_FORMATS.md"
                 ))
             }
             HelpDoc::Cli => {
@@ -106,6 +114,7 @@ mod tests {
             HelpDoc::Features,
             HelpDoc::Keyboard,
             HelpDoc::MediaFormats,
+            HelpDoc::SupportedFormats,
             HelpDoc::Cli,
             HelpDoc::ExternalAi,
             HelpDoc::Developers,

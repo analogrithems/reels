@@ -69,7 +69,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 - [x] File / Edit / Effects / Window behaviors (see `FEATURES.md`)
 - [x] ffmpeg export integration tests (`target/reel-export-verify/`)
 - [x] Bundled Help: multi-topic (`shell.rs` `HelpDoc`), `docs/README.md` index
-- [x] Contributor docs: `CONTRIBUTING.md`, `DEVELOPERS.md`, `AGENTS.md`, `CLI.md`, `MEDIA_FORMATS.md`, `FEATURES.md`
+- [x] Contributor docs: `CONTRIBUTING.md`, `DEVELOPERS.md`, `AGENTS.md`, `CLI.md`, `MEDIA_FORMATS.md`, `SUPPORTED_FORMATS.md`, `FEATURES.md`
 - [x] `EXTERNAL_AI.md` + cross-links in `architecture.md`, `HELP.md`
 
 ---
@@ -78,8 +78,22 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 
 - [x] Core technical docs: `architecture.md`, `phases-ui.md`, `phase-status.md`, `HELP.md`
 - [x] Reference set: features, formats, CLI, external AI, phases (this cycle)
+- [x] `docs/SUPPORTED_FORMATS.md` — playback vs export matrix + prioritized roadmap (see **Format support roadmap** below)
 - [ ] `docs/USER_GUIDE.md` — optional narrative end-user guide (non-Help)
 - [ ] App bundle / notarization / Linux packaging (also **U4** polish in `phases-ui.md`)
+
+---
+
+## Format support roadmap (engineering)
+
+Source matrix: **`docs/SUPPORTED_FORMATS.md`**. These items track **first-class** support beyond “whatever FFmpeg accepts today.”
+
+- [ ] **Export — H.264 + AAC MP4 transcode preset** (explicit encode when `-c copy` fails or for fixed delivery targets)
+- [ ] **Export — VP9 and/or AV1 WebM** as user-selectable presets (today: **VP8 + Opus** only for `.webm`)
+- [ ] **Export — UX for remux failures** — clearer errors when MP4/MKV reject a stream (codec / licensing / mux constraints); link to transcode presets above
+- [ ] **Export — MOV mux** and/or **ProRes / DNx** intermediate paths for pro handoff
+- [ ] **Playback / export — Subtitles** — **WebVTT**, **SRT**, **TTML** (platform targets in `SUPPORTED_FORMATS.md`); **ASS/SSA** for advanced styling — not decoded, shown, or muxed today (see `MEDIA_FORMATS.md`)
+- [ ] **Playback — Multi-audio** stream selection (today: first decodable audio only)
 
 ---
 

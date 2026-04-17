@@ -72,7 +72,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Edit:** Undo / redo (project snapshots).
 - **Window:** Always on top; Fit / Fill / Center viewport.
 - **Effects:** Menu hooks to sidecar (see **U5**).
-- **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, **keyboard shortcuts**, media formats, CLI, external AI & tools, developers, agents, UI phases).
+- **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, **keyboard shortcuts**, media formats, **supported formats (playback vs export)**, CLI, external AI & tools, developers, agents, UI phases).
 - **Timeline:** `Slider` scrub → same seek as transport.
 - **Tests:** Session, project I/O, shell, effects resolve path; reel-core export fixture tests.
 
@@ -90,12 +90,13 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 - [x] Non-destructive **project file** workflow with undo/redo and autosave (path-backed).
 - [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** + timeline strip summary + **per-lane labels** (clip count / duration); **Move Clip to Track Below / Above** (Edit menu) move between primary and second video lane (below = playhead on primary clip; above = first clip on second lane to end of primary). Not a full per-lane visual editor (waveforms, drag) yet.
-- [ ] User can **trim** or **split** clips for edit intent beyond insert+split-at-playhead (e.g. trim handles, ripple).
+- [ ] User can **trim** clips (in/out handles, ripple, etc.). *Progress:* **split without importing** via **Edit → Split Clip at Playhead** / **Ctrl+B** (blade at playhead on the primary track).
 
 **Done**
 
 - In-memory **`Project`** with at least one **video** track; open creates one clip + track.
 - **Insert Video** with **split-at-playhead** when the playhead lies inside a clip.
+- **Split Clip at Playhead** (blade): two clips from one at the playhead; undoable.
 - **Save**, **Revert**, **Undo / Redo** (with explicit Save clearing stacks).
 - **Debounced autosave** to the on-disk project path (Slint timer; **preserves** undo vs explicit Save); flush on **Close** when possible.
 - **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Move Clip to Track Below / Above** (Edit menu) shuffle clips between primary and second video lane (see **FEATURES** for exact rules). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; secondary lanes are still **not** in the decode graph. Remaining: richer per-lane visuals (waveforms, thumbnails), drag moves, trim.
@@ -109,7 +110,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 **Not yet**
 
 - **Multi-track** video: clips can be **moved to the next video track** via the Edit menu; there is still no **mix** or preview from secondary lanes, and audible **audio tracks** in the UI are **not** exposed yet.
-- **Trim, ripple, roll, blade**, slip/slide; multi-cam.
+- **Trim, ripple, roll**, slip/slide; multi-cam (blade **without** new media is **Split Clip at Playhead**).
 - **Subtitles / captions** timeline (see **FEATURES** roadmap—may become **U6** or fold into U2/U3).
 - Optional: adopt **`ProjectStore`** from `reel-core` inside the app (library already implements debounced atomic writes).
 
@@ -143,7 +144,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 **Exit criteria (draft)**
 
-- [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **Ctrl+O** / **Ctrl+S** / **Ctrl+W** (open / save / close when enabled), **Ctrl+I** / **Ctrl+E** (insert / export when **media-ready**), **Space** (play/pause), **← / →** (±1 s seek), **Home** / **End** (sequence start/end), **Ctrl+Z** / **Ctrl+Shift+Z** (undo/redo when enabled), **Ctrl+Shift+↓/↑** (move clip between primary and second video lane when enabled; **⌘⇧↓/↑** on macOS). Transport and edit shortcuts expect the main view focused; **Open** works from an empty window; **Insert**/**Export** need decode ready.
+- [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **F1** (Help overview), **Ctrl+O** / **Ctrl+S** / **Ctrl+W** (open / save / close when enabled), **Ctrl+I** / **Ctrl+E** / **Ctrl+Shift+N** (insert / export / new video track when **media-ready**), **Ctrl+B** (split at playhead when enabled), **Space** (play/pause), **← / →** (±1 s seek), **Home** / **End** (sequence start/end), **Ctrl+Z** / **Ctrl+Shift+Z** (undo/redo when enabled), **Ctrl+Shift+↓/↑** (move clip between primary and second video lane when enabled; **⌘⇧↓/↑** on macOS). Transport and edit shortcuts expect the main view focused; **Open** works from an empty window; **Insert**/**Export**/**New Video Track** need decode ready.
 - [ ] **Accessibility** audit pass on main window + dialogs (labels, focus order—scope TBD).
 
 **Scope**

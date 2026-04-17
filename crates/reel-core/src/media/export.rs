@@ -7,6 +7,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// Web-friendly outputs we guarantee in tests (see `tests/export_web_formats.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +42,15 @@ pub struct ExportError {
     pub message: String,
 }
 
+impl ExportError {
+    /// True when the caller requested cancellation (ffmpeg was interrupted).
+    pub fn is_cancelled(&self) -> bool {
+        self.message == EXPORT_CANCELLED_MSG
+    }
+}
+
+const EXPORT_CANCELLED_MSG: &str = "export cancelled";
+
 impl fmt::Display for ExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
@@ -71,7 +82,7 @@ pub fn export_with_ffmpeg(
 
     append_format_args(&mut cmd, format);
     cmd.arg(output);
-    run_ffmpeg(cmd, output)
+    run_ffmpeg(cmd, output, None)
 }
 
 /// Export the **primary video track** as one output: one or more `(path, in_point_sec, out_point_sec)` spans.
@@ -82,10 +93,13 @@ pub fn export_with_ffmpeg(
 ///
 /// Paths must exist on disk. Stream copy (`-c copy`) may fail if segments use incompatible codecs; use a
 /// transcode preset (e.g. [`WebExportFormat::WebmVp8Opus`]) when sources differ.
+///
+/// When `cancel` is set and becomes true, ffmpeg is killed and [`ExportError::is_cancelled`] is true on the result.
 pub fn export_concat_timeline(
     segments: &[(PathBuf, f64, f64)],
     output: &Path,
     format: WebExportFormat,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(), ExportError> {
     if segments.is_empty() {
         return Err(ExportError {
@@ -129,7 +143,7 @@ pub fn export_concat_timeline(
             .stdout(Stdio::null());
         append_format_args(&mut cmd, format);
         cmd.arg(output);
-        return run_ffmpeg(cmd, output);
+        return run_ffmpeg(cmd, output, cancel);
     }
 
     let dir = tempfile::tempdir().map_err(|e| ExportError {
@@ -152,7 +166,7 @@ pub fn export_concat_timeline(
         .stdout(Stdio::null());
     append_format_args(&mut cmd, format);
     cmd.arg(output);
-    run_ffmpeg(cmd, output)
+    run_ffmpeg(cmd, output, cancel)
 }
 
 fn write_ffconcat_list(segments: &[(PathBuf, f64, f64)], out: &Path) -> Result<(), ExportError> {
@@ -205,20 +219,42 @@ fn append_format_args(cmd: &mut Command, format: WebExportFormat) {
     }
 }
 
-fn run_ffmpeg(mut cmd: Command, output: &Path) -> Result<(), ExportError> {
-    let status = cmd.status().map_err(|e| ExportError {
+fn run_ffmpeg(mut cmd: Command, output: &Path, cancel: Option<&AtomicBool>) -> Result<(), ExportError> {
+    let mut child = cmd.spawn().map_err(|e| ExportError {
         message: format!("failed to spawn ffmpeg: {e} (is ffmpeg on PATH? brew install ffmpeg@7)"),
     })?;
-    if !status.success() {
-        return Err(ExportError {
-            message: format!(
-                "ffmpeg failed with {:?} for export to {:?}",
-                status.code(),
-                output
-            ),
-        });
+
+    loop {
+        if let Some(c) = cancel {
+            if c.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ExportError {
+                    message: EXPORT_CANCELLED_MSG.into(),
+                });
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return Err(ExportError {
+                        message: format!(
+                            "ffmpeg failed with {:?} for export to {:?}",
+                            status.code(),
+                            output
+                        ),
+                    });
+                }
+                return Ok(());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                return Err(ExportError {
+                    message: format!("wait on ffmpeg: {e}"),
+                });
+            }
+        }
     }
-    Ok(())
 }
 
 /// Build the ffmpeg argv for [`WebExportFormat`] (for unit tests; no I/O).

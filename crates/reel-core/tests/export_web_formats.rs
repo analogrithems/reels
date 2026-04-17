@@ -58,7 +58,7 @@ fn exports_concat_two_spans_same_fixture() {
 
     // Two non-overlapping trims of the same H.264+AAC file (concat demuxer).
     let segs = vec![(input.clone(), 0.0, 0.12), (input.clone(), 0.15, 0.28)];
-    export_concat_timeline(&segs, &output, WebExportFormat::Mp4Remux).unwrap_or_else(|e| {
+    export_concat_timeline(&segs, &output, WebExportFormat::Mp4Remux, None).unwrap_or_else(|e| {
         panic!("concat export failed: {e}");
     });
     let meta = std::fs::metadata(&output).expect("output exists");

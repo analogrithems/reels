@@ -28,6 +28,8 @@ export component AppWindow inherits Window {
     in property <bool> redo-enabled: false;
     in property <bool> move-clip-down-enabled: false;
     in property <bool> move-clip-up-enabled: false;
+    in property <bool> split-at-playhead-enabled: false;
+    in property <bool> export-in-progress: false;
 
     /// Multi-track summary + preview rule (see session.timeline_summary_line).
     in property <string> timeline-info: "";
@@ -44,9 +46,11 @@ export component AppWindow inherits Window {
     callback file-insert-video();
     callback file-new-video-track();
     callback file-export();
+    callback export-cancel();
 
     callback edit-undo();
     callback edit-redo();
+    callback edit-split-at-playhead();
     callback edit-move-clip-down();
     callback edit-move-clip-up();
 
@@ -63,6 +67,7 @@ export component AppWindow inherits Window {
     callback help-features();
     callback help-keyboard();
     callback help-media-formats();
+    callback help-supported-formats();
     callback help-cli();
     callback help-external-ai();
     callback help-developers();
@@ -112,8 +117,13 @@ export component AppWindow inherits Window {
             }
             MenuItem {
                 title: "Export…";
-                enabled: root.media-ready;
+                enabled: root.media-ready && !root.export-in-progress;
                 activated => { root.file-export(); }
+            }
+            MenuItem {
+                title: "Cancel Export";
+                enabled: root.export-in-progress;
+                activated => { root.export-cancel(); }
             }
         }
         Menu {
@@ -127,6 +137,11 @@ export component AppWindow inherits Window {
                 title: "Redo";
                 enabled: root.redo-enabled;
                 activated => { root.edit-redo(); }
+            }
+            MenuItem {
+                title: "Split Clip at Playhead";
+                enabled: root.split-at-playhead-enabled;
+                activated => { root.edit-split-at-playhead(); }
             }
             MenuSeparator { }
             MenuItem {
@@ -197,6 +212,10 @@ export component AppWindow inherits Window {
                 activated => { root.help-media-formats(); }
             }
             MenuItem {
+                title: "Supported formats (playback vs export)";
+                activated => { root.help-supported-formats(); }
+            }
+            MenuItem {
                 title: "CLI (reel-cli)";
                 activated => { root.help-cli(); }
             }
@@ -242,14 +261,31 @@ export component AppWindow inherits Window {
                 } else {
                     reject
                 }
+            } else if (event.text == Key.F1) {
+                root.help-overview();
+                accept
+            } else if (event.text == Key.Escape) {
+                if (root.export-in-progress) {
+                    root.export-cancel();
+                    accept
+                } else {
+                    reject
+                }
             } else if (!root.media-ready) {
                 reject
+            } else if (event.text == Key.N && event.modifiers.control && event.modifiers.shift) {
+                root.file-new-video-track();
+                accept
             } else if (event.text == Key.I && event.modifiers.control && !event.modifiers.shift) {
                 root.file-insert-video();
                 accept
             } else if (event.text == Key.E && event.modifiers.control && !event.modifiers.shift) {
-                root.file-export();
-                accept
+                if (!root.export-in-progress) {
+                    root.file-export();
+                    accept
+                } else {
+                    reject
+                }
             } else if (event.text == Key.Space) {
                 root.play-pause();
                 accept
@@ -275,6 +311,13 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.Z && event.modifiers.control && !event.modifiers.shift) {
                 if (root.undo-enabled) {
                     root.edit-undo();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (event.text == Key.B && event.modifiers.control && !event.modifiers.shift) {
+                if (root.split-at-playhead-enabled) {
+                    root.edit-split-at-playhead();
                     accept
                 } else {
                     reject

@@ -9,15 +9,16 @@ This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, *
 3. **`docs/architecture.md`** — crates, threading, sidecar IPC.
 4. **`docs/FEATURES.md`** — **source of truth** for shipped vs planned user-facing behavior.
 5. **`docs/MEDIA_FORMATS.md`** — containers, streams, and limitations (update when format behavior changes).
-6. **`docs/EXTERNAL_AI.md`** — how effects hand off to external tools (update if stdin/JSON contract, tempfile rules, or env vars change).
-7. **`docs/phases-ui.md`** — UI phase roadmap (U1–U5), exit criteria, sub-milestones, **suggested next focus**.
+6. **`docs/SUPPORTED_FORMATS.md`** — playback vs export matrix and format roadmap (update when presets or decode scope changes).
+7. **`docs/EXTERNAL_AI.md`** — how effects hand off to external tools (update if stdin/JSON contract, tempfile rules, or env vars change).
+8. **`docs/phases-ui.md`** — UI phase roadmap (U1–U5), exit criteria, sub-milestones, **suggested next focus**.
 
 ## Responsibilities when landing changes
 
 | Change type | Update |
 |-------------|--------|
 | New or changed **editing / UI / export / effects** behavior | **`docs/FEATURES.md`** — move items between “Currently supported” and “Roadmap” as appropriate. |
-| Probe, decode, multi-stream, subtitle, or export codec behavior | **`docs/MEDIA_FORMATS.md`** + often **`docs/FEATURES.md`**. |
+| Probe, decode, multi-stream, subtitle, or export codec behavior | **`docs/MEDIA_FORMATS.md`**, **`docs/SUPPORTED_FORMATS.md`**, and often **`docs/FEATURES.md`**. |
 | New **`reel-cli`** subcommand or important flag | **`docs/CLI.md`** + **`docs/FEATURES.md`** if user-visible. |
 | **Sidecar protocol**, new `op`/`params` semantics, or handoff to non-Python tools | **`docs/EXTERNAL_AI.md`**, **`docs/architecture.md`**, and **`crates/reel-core/src/sidecar.rs`** doc comments as needed. |
 | New **bundled Help** document or menu entry | **`crates/reel-app/src/shell.rs`** (`HelpDoc` + `include_str!`), **`ui/app.slint`** (Help menu), **`main.rs`** callbacks, and **`docs/README.md`** (and the new `docs/*.md` file, e.g. **`KEYBOARD.md`**). |

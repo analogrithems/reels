@@ -1,6 +1,12 @@
 # Reel — keyboard shortcuts (desktop)
 
-Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **Insert** and **Export** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
+Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Insert**, **Export**, and **New Video Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
+
+## Help
+
+| Action | Shortcut |
+|--------|----------|
+| **Help → Overview** | **F1** |
 
 ## File
 
@@ -11,6 +17,7 @@ Click the **video or timeline area** so the main view has focus for playback and
 | Close | **Ctrl+W** (when Close is enabled) | **⌘W** |
 | Insert Video… | **Ctrl+I** (needs media ready) | **⌘I** |
 | Export… | **Ctrl+E** (needs media ready) | **⌘E** |
+| New Video Track | **Ctrl+Shift+N** (needs media ready) | **⌘⇧N** |
 
 ## Playback & timeline
 
@@ -28,6 +35,9 @@ Same actions as **Edit → Undo / Redo** when those menu items are enabled.
 |--------|-----------------|-------|
 | Undo | **Ctrl+Z** | **⌘Z** |
 | Redo | **Ctrl+Shift+Z** | **⌘⇧Z** |
+| Split clip at playhead | **Ctrl+B** (when enabled) | **⌘B** |
+
+Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**.
 
 ## Multi-track editing
 
