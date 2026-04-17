@@ -4,8 +4,8 @@ import { Button, ComboBox, HorizontalBox, LineEdit, Slider, VerticalBox } from "
 export { HelpWindow }
 
 export component AppWindow inherits Window {
-    preferred-width: 960px;
-    preferred-height: 600px;
+    preferred-width: 1280px;
+    preferred-height: 720px;
     title: "Reel";
 
     // Video fit: 0 = contain (fit), 1 = cover (fill)
@@ -20,7 +20,8 @@ export component AppWindow inherits Window {
     in-out property <float> playhead-ms: 0;
     in property <bool> is-playing: false;
     in property <bool> media-ready: false;
-    in property <string> status-text: "Ready";
+    /// Transient messages (export, errors, undo feedback). Empty when idle — readiness is shown in the footer.
+    in property <string> status-text: "";
 
     in property <bool> close-enabled: false;
     in property <bool> revert-enabled: false;
@@ -30,7 +31,7 @@ export component AppWindow inherits Window {
     in property <bool> move-clip-down-enabled: false;
     in property <bool> move-clip-up-enabled: false;
     in property <bool> split-at-playhead-enabled: false;
-    /// True when the playhead is on a primary-track clip, so rotate/flip can run.
+    /// True when a primary-track clip applies at the playhead (rotate/flip); not gated on decode.
     in property <bool> rotate-enabled: false;
     /// Same gate as `rotate-enabled` — the **Trim Clip…** sheet needs a clip under the playhead.
     in property <bool> trim-enabled: false;
@@ -54,8 +55,10 @@ export component AppWindow inherits Window {
     in property <string> video-track-lanes: "";
     /// One line per audio track lane, newline-separated (see session.audio_track_row_labels).
     in property <string> audio-track-lanes: "";
-    /// Playhead / duration (see `timecode::format_pair`).
-    in property <string> timecode: "0:00.000 / 0:00.000";
+    /// Elapsed sequence time (left of timeline scrubber); `M:SS.t` / `H:MM:SS.t`.
+    in property <string> time-elapsed: "0:00.0";
+    /// Total sequence duration (right of scrubber); same format as `time-elapsed`.
+    in property <string> time-total: "0:00.0";
 
     in property <string> recent-line0: "";
     in property <string> recent-line1: "";
@@ -74,6 +77,8 @@ export component AppWindow inherits Window {
     in property <string> footer-path-line: "";
     in property <string> footer-save-line: "";
     in property <bool> footer-unsaved: false;
+    /// True when a project / media is loaded — footer shows codecs, paths, save state (see `sync_footer`).
+    in property <bool> footer-visible: false;
     callback footer-refresh();
 
     callback file-open();
@@ -123,6 +128,12 @@ export component AppWindow inherits Window {
     /// When true, playback restarts from the start at sequence end (saved in prefs).
     in-out property <bool> loop-playback: false;
     callback view-toggle-loop();
+    /// Codec / path / save footer line (saved in prefs).
+    in-out property <bool> view-show-status: false;
+    callback view-toggle-show-status();
+    /// Keep the floating transport from auto-hiding (saved in prefs).
+    in-out property <bool> controls-overlay-always-visible: false;
+    callback view-toggle-controls-always-visible();
 
     /// Last decoded frame size (pixels); used for zoom and **Actual Size**.
     in property <float> preview-frame-width: 640.0;
@@ -153,6 +164,7 @@ export component AppWindow inherits Window {
     callback help-phases-ui();
 
     callback play-pause();
+
     callback seek-timeline(float);
     /// Nudge playhead by delta milliseconds (e.g. ±1000 for arrow keys).
     callback seek-nudge-ms(float);
@@ -161,12 +173,32 @@ export component AppWindow inherits Window {
     in-out property <float> volume-percent: 100.0;
     callback volume-changed(float);
 
-    /// Speed preset index **0..=6** in the timeline speed dropdown (default **3** = 1×).
-    in-out property <int> playback-speed-index: 3;
-    callback playback-speed-changed(int);
+    /// Preview rate label (e.g. `1.00×`, `-0.50×`) — mirrors signed speed in the player.
+    in-out property <string> transport-rate-label: "1.00×";
+    /// Floating transport over the video; fades out after idle (see `transport-chrome-hide`).
+    property <float> transport-chrome-opacity: 1.0;
+    callback transport-forward();
+    callback transport-rewind();
 
-    /// Opacity of the timeline speed control (0 = hidden). Shown while the pointer is over the video viewport; hides after 5s idle.
-    property <float> playback-speed-opacity: 0;
+    transport-chrome-hide := Timer {
+        interval: 5s;
+        triggered => {
+            if (!root.controls-overlay-always-visible) {
+                root.transport-chrome-opacity = 0.0;
+            }
+        }
+    }
+
+    function wake-transport-chrome() {
+        root.transport-chrome-opacity = 1.0;
+        if (!root.controls-overlay-always-visible) {
+            transport-chrome-hide.restart();
+        }
+    }
+
+    function transport-overlay-opacity() -> float {
+        return root.controls-overlay-always-visible ? 1.0 : root.transport-chrome-opacity;
+    }
 
     MenuBar {
         Menu {
@@ -235,8 +267,8 @@ export component AppWindow inherits Window {
                 }
             }
             MenuItem {
-                title: "Close";
-                enabled: root.close-enabled;
+                title: "Close Window";
+                enabled: root.close-enabled && !root.export-in-progress;
                 activated => { root.file-close(); }
             }
             MenuItem {
@@ -277,11 +309,6 @@ export component AppWindow inherits Window {
                 title: "Export…";
                 enabled: root.media-ready && !root.export-in-progress && !root.export-preset-dialog-visible;
                 activated => { root.file-export(); }
-            }
-            MenuItem {
-                title: "Cancel Export";
-                enabled: root.export-in-progress;
-                activated => { root.export-cancel(); }
             }
         }
         Menu {
@@ -363,6 +390,14 @@ export component AppWindow inherits Window {
             MenuItem {
                 title: root.loop-playback ? "✓ Loop Playback" : "Loop Playback";
                 activated => { root.view-toggle-loop(); }
+            }
+            MenuItem {
+                title: root.view-show-status ? "✓ Show Status" : "Show Status";
+                activated => { root.view-toggle-show-status(); }
+            }
+            MenuItem {
+                title: root.controls-overlay-always-visible ? "✓ Always Show Controls" : "Always Show Controls";
+                activated => { root.view-toggle-controls-always-visible(); }
             }
             MenuSeparator { }
             MenuItem {
@@ -473,7 +508,7 @@ export component AppWindow inherits Window {
                     reject
                 }
             } else if (event.text == Key.W && event.modifiers.control && !event.modifiers.shift) {
-                if (root.close-enabled) {
+                if (root.close-enabled && !root.export-in-progress) {
                     root.file-close();
                     accept
                 } else {
@@ -612,99 +647,238 @@ export component AppWindow inherits Window {
         spacing: 0px;
         padding: 0px;
 
-        playback-speed-hide := Timer {
-            interval: 5s;
-            triggered => {
-                root.playback-speed-opacity = 0;
-            }
-        }
-
         Rectangle {
             background: #000;
             vertical-stretch: 1;
+            width: 100%;
+            min-height: 200px;
+            clip: true;
+
+            preview-clip := Rectangle {
+                width: 100%;
+                height: 100%;
+                clip: true;
+                property <float> vw: self.width / 1px;
+                property <float> vh: self.height / 1px;
+                property <float> fw: max(1.0, root.preview-frame-width);
+                property <float> fh: max(1.0, root.preview-frame-height);
+                property <float> s-contain: min(vw / fw, vh / fh);
+                property <float> s-cover: max(vw / fw, vh / fh);
+                property <float> s-base: root.video-fit-mode == 1 ? s-cover : s-contain;
+                property <float> img-w: root.preview-zoom-actual ? fw : fw * s-base * (root.preview-zoom-percent / 100.0);
+                property <float> img-h: root.preview-zoom-actual ? fh : fh * s-base * (root.preview-zoom-percent / 100.0);
+                Image {
+                    x: (parent.width - img-w * 1px) / 2;
+                    y: (parent.height - img-h * 1px) / 2;
+                    width: img-w * 1px;
+                    height: img-h * 1px;
+                    source: root.current-frame;
+                    image-fit: fill;
+                }
+            }
+
+            // `moved` only fires while a button is held — use `pointer-event` for hover / trackpad glide.
             TouchArea {
                 width: 100%;
                 height: 100%;
-                clicked => {
-                    root.playback-speed-opacity = 1;
-                    playback-speed-hide.restart();
+                // `moved` only runs while a button is held; any pointer event covers hover + drag + touch.
+                pointer-event(_) => {
+                    wake-transport-chrome();
                 }
-                moved => {
-                    root.playback-speed-opacity = 1;
-                    playback-speed-hide.restart();
-                }
-                preview-clip := Rectangle {
-                    width: 100%;
-                    height: 100%;
-                    clip: true;
-                    property <float> vw: self.width / 1px;
-                    property <float> vh: self.height / 1px;
-                    property <float> fw: max(1.0, root.preview-frame-width);
-                    property <float> fh: max(1.0, root.preview-frame-height);
-                    property <float> s-contain: min(vw / fw, vh / fh);
-                    property <float> s-cover: max(vw / fw, vh / fh);
-                    property <float> s-base: root.video-fit-mode == 1 ? s-cover : s-contain;
-                    property <float> img-w: root.preview-zoom-actual ? fw : fw * s-base * (root.preview-zoom-percent / 100.0);
-                    property <float> img-h: root.preview-zoom-actual ? fh : fh * s-base * (root.preview-zoom-percent / 100.0);
-                    Image {
-                        x: (parent.width - img-w * 1px) / 2;
-                        y: (parent.height - img-h * 1px) / 2;
-                        width: img-w * 1px;
-                        height: img-h * 1px;
-                        source: root.current-frame;
-                        image-fit: fill;
+            }
+
+            // Compact floating transport: ≤150px tall and ≤42% of preview height (well under half the viewport).
+            if root.media-ready && transport-overlay-opacity() > 0.001: Rectangle {
+                property <length> chrome-max-h: min(150px, parent.height * 42 / 100);
+                x: 20px;
+                y: parent.height - self.height - 14px;
+                width: parent.width - 40px;
+                height: chrome-max-h;
+                opacity: transport-overlay-opacity();
+                clip: true;
+                border-radius: 10px;
+                background: #1c1c20e8;
+                // Do not wrap in a parent TouchArea — it would steal clicks from play / transport / sliders.
+                VerticalBox {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        spacing: 6px;
+                        alignment: center;
+                        HorizontalBox {
+                            spacing: 0px;
+                            alignment: center;
+                            min-height: 52px;
+                            max-height: 58px;
+                            HorizontalBox {
+                                spacing: 6px;
+                                alignment: center;
+                                Path {
+                                    width: 16px;
+                                    height: 14px;
+                                    y: (parent.height - 14px) / 2;
+                                    fill: #ffffff;
+                                    commands: "M 1 4 L 1 10 L 5 10 L 10 13 L 10 1 L 5 4 L 1 4";
+                                }
+                                Slider {
+                                    width: 88px;
+                                    height: 14px;
+                                    minimum: 0;
+                                    maximum: 100;
+                                    value: root.volume-percent;
+                                    changed(v) => {
+                                        root.volume-percent = v;
+                                        root.volume-changed(v);
+                                        wake-transport-chrome();
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-width: 14px;
+                                height: 1px;
+                            }
+                            HorizontalBox {
+                                spacing: 28px;
+                                alignment: center;
+                                rw-ta := TouchArea {
+                                    enabled: root.media-ready;
+                                    clicked => {
+                                        root.transport-rewind();
+                                        wake-transport-chrome();
+                                    }
+                                    Path {
+                                        width: 22px;
+                                        height: 18px;
+                                        y: (parent.height - 18px) / 2;
+                                        fill: #ffffff;
+                                        commands: "M 11 2 L 11 16 L 3 9 Z M 21 2 L 21 16 L 13 9 Z";
+                                    }
+                                }
+                                play-ta := TouchArea {
+                                    enabled: root.media-ready;
+                                    clicked => {
+                                        root.play-pause();
+                                        wake-transport-chrome();
+                                    }
+                                    Rectangle {
+                                        width: 32px;
+                                        height: 32px;
+                                        border-radius: 16px;
+                                        background: play-ta.pressed ? #ffffff33 : #ffffff22;
+                                        clip: true;
+                                        if root.is-playing: HorizontalBox {
+                                            alignment: center;
+                                            spacing: 4px;
+                                            Rectangle {
+                                                width: 4px;
+                                                height: 12px;
+                                                border-radius: 1px;
+                                                background: #ffffff;
+                                            }
+                                            Rectangle {
+                                                width: 4px;
+                                                height: 12px;
+                                                border-radius: 1px;
+                                                background: #ffffff;
+                                            }
+                                        }
+                                        if !root.is-playing: Path {
+                                            x: (parent.width - 12px) / 2 + 1px;
+                                            y: (parent.height - 14px) / 2;
+                                            width: 12px;
+                                            height: 14px;
+                                            fill: #ffffff;
+                                            commands: "M 0 0 L 12 7 L 0 14 Z";
+                                        }
+                                    }
+                                }
+                                ff-ta := TouchArea {
+                                    enabled: root.media-ready;
+                                    clicked => {
+                                        root.transport-forward();
+                                        wake-transport-chrome();
+                                    }
+                                    Path {
+                                        width: 22px;
+                                        height: 18px;
+                                        y: (parent.height - 18px) / 2;
+                                        fill: #ffffff;
+                                        commands: "M 1 2 L 1 16 L 9 9 Z M 11 2 L 11 16 L 19 9 Z";
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-width: 14px;
+                                height: 1px;
+                            }
+                            Text {
+                                text: root.transport-rate-label;
+                                color: #ffffff;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                                min-width: 44px;
+                            }
+                        }
+                        HorizontalBox {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            spacing: 12px;
+                            alignment: center;
+                            min-height: 34px;
+                            max-height: 40px;
+                            property <length> scrub-row-w: self.width;
+                            Text {
+                                text: root.time-elapsed;
+                                color: #ffffff;
+                                font-size: 11px;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                                width: max(52px, scrub-row-w * 10 / 100);
+                                overflow: elide;
+                            }
+                            Slider {
+                                width: scrub-row-w * 76 / 100;
+                                enabled: root.media-ready;
+                                minimum: 0;
+                                maximum: max(root.duration-ms, 1);
+                                step: 0;
+                                value <=> root.playhead-ms;
+                                changed(v) => {
+                                    root.seek-timeline(v);
+                                    wake-transport-chrome();
+                                }
+                                height: 14px;
+                            }
+                            Text {
+                                text: root.time-total;
+                                color: #ffffff;
+                                font-size: 11px;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                width: max(52px, scrub-row-w * 10 / 100);
+                                overflow: elide;
+                            }
+                        }
                     }
-                }
             }
         }
 
         Rectangle {
             background: #1a1a20;
-            min-height: 92px;
             vertical-stretch: 0;
             VerticalBox {
-                padding: 8px;
+                padding: 6px;
                 spacing: 4px;
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: center;
-                    Text {
-                        text: "Timeline";
-                        color: #888;
-                        font-size: 11px;
-                        horizontal-stretch: 0;
-                    }
-                    Text {
-                        text: root.timecode;
-                        color: #aaa;
-                        font-size: 11px;
-                        horizontal-alignment: right;
-                        horizontal-stretch: 1;
-                    }
-                    Rectangle {
-                        horizontal-stretch: 0;
-                        opacity: root.playback-speed-opacity;
-                        animate opacity {
-                            duration: 200ms;
-                            easing: ease-out;
-                        }
-                        ComboBox {
-                            width: 108px;
-                            enabled: root.media-ready && root.playback-speed-opacity > 0.05;
-                            model: ["0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"];
-                            current-index <=> root.playback-speed-index;
-                            selected(_) => {
-                                root.playback-speed-opacity = 1;
-                                playback-speed-hide.restart();
-                                root.playback-speed-changed(root.playback-speed-index);
-                            }
-                        }
-                    }
+                Text {
+                    text: "Timeline";
+                    color: #888;
+                    font-size: 11px;
                 }
                 Rectangle {
-                    // Non-draggable track-lane strip — double-click opens the Trim Clip… sheet
-                    // for the clip at the current playhead. Single-click is a no-op so the
-                    // Slider below still owns scrubbing.
                     visible: root.video-track-lanes != "";
                     height: lanes-text.preferred-height;
                     lanes-text := Text {
@@ -727,24 +901,12 @@ export component AppWindow inherits Window {
                     wrap: word-wrap;
                     visible: root.audio-track-lanes != "";
                 }
-                Slider {
-                    enabled: root.media-ready;
-                    minimum: 0;
-                    maximum: max(root.duration-ms, 1);
-                    /// `step: 0` disables the widget’s own ←/→ handling so **FocusScope** arrow keys keep **±1 s** seek (see `KEYBOARD.md`).
-                    step: 0;
-                    value <=> root.playhead-ms;
-                    changed(v) => {
-                        root.seek-timeline(v);
-                    }
-                    height: 28px;
-                }
             }
         }
 
         Rectangle {
             background: #2a2a30;
-            height: root.export-in-progress ? 56px : 52px;
+            vertical-stretch: 0;
             VerticalBox {
                 padding: 0;
                 spacing: 0;
@@ -759,76 +921,20 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalBox {
-                    padding: 8px;
-                    spacing: 12px;
+                    visible: root.status-text != "";
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 10px;
                     alignment: center;
-
-                    play-ta := TouchArea {
-                        enabled: root.media-ready;
-                        clicked => {
-                            root.play-pause();
-                        }
-                        Rectangle {
-                            width: 40px;
-                            height: 32px;
-                            border-radius: 6px;
-                            background: play-ta.pressed ? #3a3a46 : #35353e;
-                            border-width: 1px;
-                            border-color: #4a4a56;
-                            clip: true;
-                            if root.is-playing: HorizontalBox {
-                                alignment: center;
-                                spacing: 5px;
-                                Rectangle {
-                                    width: 5px;
-                                    height: 14px;
-                                    border-radius: 1px;
-                                    background: #ececf2;
-                                }
-                                Rectangle {
-                                    width: 5px;
-                                    height: 14px;
-                                    border-radius: 1px;
-                                    background: #ececf2;
-                                }
-                            }
-                            if !root.is-playing: Path {
-                                x: (parent.width - 14px) / 2;
-                                y: (parent.height - 16px) / 2;
-                                width: 14px;
-                                height: 16px;
-                                fill: #ececf2;
-                                commands: "M 0 0 L 14 8 L 0 16 Z";
-                            }
-                        }
-                    }
-
-                    VerticalBox {
-                        alignment: center;
-                        spacing: 2px;
-                        padding: 0;
-                        Text {
-                            text: "Volume";
-                            color: #888;
-                            font-size: 10px;
-                        }
-                        Slider {
-                            width: 120px;
-                            height: 22px;
-                            minimum: 0;
-                            maximum: 100;
-                            value: root.volume-percent;
-                            changed(v) => {
-                                root.volume-percent = v;
-                                root.volume-changed(v);
-                            }
-                        }
-                    }
+                    min-height: 30px;
                     Text {
                         text: root.status-text;
                         color: #ccc;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
+                        wrap: word-wrap;
                     }
                 }
             }
@@ -836,8 +942,8 @@ export component AppWindow inherits Window {
 
         Rectangle {
             background: #1c1c22;
-            min-height: root.media-ready ? 30px : 0px;
-            visible: root.media-ready;
+            min-height: root.footer-visible ? 30px : 0px;
+            visible: root.footer-visible;
             vertical-stretch: 0;
             clip: true;
             HorizontalBox {
@@ -888,7 +994,7 @@ export component AppWindow inherits Window {
 
         footer-sync-timer := Timer {
             interval: 350ms;
-            running: root.media-ready && root.is-playing;
+            running: root.footer-visible && root.is-playing;
             triggered => {
                 root.footer-refresh();
             }
@@ -1028,6 +1134,80 @@ export component AppWindow inherits Window {
                                     text: "Next…";
                                     clicked => {
                                         root.export-preset-confirm();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.export-in-progress: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: rgba(0, 0, 0, 60%);
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => { }
+            }
+            VerticalBox {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                HorizontalBox {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: min(parent.width * 0.88, 420px);
+                        background: #2e2e36;
+                        border-radius: 8px;
+                        TouchArea {
+                            width: 100%;
+                            height: 100%;
+                            clicked => { }
+                        }
+                        VerticalBox {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text {
+                                text: "Exporting";
+                                color: #eee;
+                                font-size: 16px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "Writing the file to disk — you can cancel and keep editing.";
+                                color: #888;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            Rectangle {
+                                height: 10px;
+                                background: #1a1a20;
+                                border-radius: 5px;
+                                clip: true;
+                                Rectangle {
+                                    height: 10px;
+                                    width: parent.width * min(1, max(0, root.export-progress));
+                                    background: #4a9eff;
+                                    border-radius: 5px;
+                                }
+                            }
+                            Text {
+                                text: round(root.export-progress * 1000) / 10 + "%";
+                                color: #ccc;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                            }
+                            HorizontalBox {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Button {
+                                    text: "Cancel export";
+                                    clicked => {
+                                        root.export-cancel();
                                     }
                                 }
                             }

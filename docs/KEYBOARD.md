@@ -1,6 +1,6 @@
 # Reel — keyboard shortcuts (desktop)
 
-Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** exits **fullscreen** when the window is fullscreen; otherwise **Esc** closes the **Trim Clip…** sheet if it is open; otherwise **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **File → Cancel Export**). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
+Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close Window** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** exits **fullscreen** when the window is fullscreen; otherwise **Esc** closes the **Trim Clip…** sheet if it is open; otherwise **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **Cancel export** on the export progress modal). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
 
 ## Help
 
@@ -15,11 +15,11 @@ Click the **video or timeline area** so the main view has focus for playback and
 | Open… | **Ctrl+O** | **⌘O** |
 | Open Recent | *(menu only — no default shortcut)* | same |
 | Save… | **Ctrl+S** (when Save is enabled) | **⌘S** |
-| Close | **Ctrl+W** (when Close is enabled) | **⌘W** |
+| Close Window | **Ctrl+W** (when Close Window is enabled; not while exporting) | **⌘W** |
 | Insert Video… | **Ctrl+I** (needs media ready) | **⌘I** |
 | Insert Audio… | **Ctrl+Shift+I** (needs an audio track + media ready) | **⌘⇧I** |
 | Export… | **Ctrl+E** (needs media ready; disabled while exporting or while the export preset sheet is open) | **⌘E** |
-| Cancel Export / dismiss export preset | **Esc** (while exporting, or while the export preset sheet is open) | **Esc** |
+| Cancel in-progress export / dismiss export preset | **Esc** (while exporting, or while the export preset sheet is open). While encoding: **Cancel export** on the progress modal. | same |
 | New Video Track | **Ctrl+Shift+N** (needs media ready) | **⌘⇧N** |
 | New Audio Track | **Ctrl+Shift+A** (needs media ready) | **⌘⇧A** |
 

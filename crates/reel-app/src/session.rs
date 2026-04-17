@@ -484,7 +484,8 @@ impl EditSession {
         }
         let clip_id = {
             let p = self.project.as_ref().expect("checked");
-            crate::timeline::primary_clip_id_at_seq_ms(p, playhead_ms)
+            let seq = crate::timeline::sequence_ms_for_primary_clip_lookup(p, playhead_ms);
+            crate::timeline::primary_clip_id_at_seq_ms(p, seq)
                 .context("playhead not on a clip — seek into the clip you want to rotate / flip")?
         };
         self.push_undo_snapshot();
@@ -521,12 +522,15 @@ impl EditSession {
         self.mutate_playhead_clip_orientation(playhead_ms, |o| o.toggle_flip_v())
     }
 
-    /// True when the playhead lies on a primary-track clip (so rotate/flip can run).
+    /// True when rotate/flip can run at `playhead_ms` (primary-track clip under the playhead).
+    ///
+    /// Does not require the decoder to be ready — orientation edits are project state.
     pub fn rotate_enabled(&self, playhead_ms: f64) -> bool {
-        self.project
-            .as_ref()
-            .and_then(|p| crate::timeline::primary_clip_id_at_seq_ms(p, playhead_ms))
-            .is_some()
+        let Some(p) = self.project.as_ref() else {
+            return false;
+        };
+        let seq = crate::timeline::sequence_ms_for_primary_clip_lookup(p, playhead_ms);
+        crate::timeline::primary_clip_id_at_seq_ms(p, seq).is_some()
     }
 
     /// Snapshot needed to populate the trim sheet for the clip at `seq_ms`.
@@ -1341,7 +1345,7 @@ mod tests {
         let rows = video_track_row_lines(&p);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].starts_with("V1 · primary · 2 clips"));
-        assert!(rows[0].contains("0:05.000"));
+        assert!(rows[0].contains("0:05.0"));
     }
 
     #[test]

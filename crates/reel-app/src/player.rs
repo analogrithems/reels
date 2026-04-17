@@ -21,7 +21,7 @@
 //! both and reset the clock.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -98,9 +98,10 @@ pub struct PlayerHandle {
     audio_thread: Option<JoinHandle<()>>,
     /// Master gain **0..=1000** (linear; 1000 = unity). Applied in the cpal output callback.
     pub master_volume_1000: Arc<AtomicU32>,
-    /// Preview speed **250..=4000** where **1000 = 1.0×**. Shared with the audio thread + cpal callback.
-    #[allow(dead_code)] // Reserved for transport speed UI (same handle passed at spawn).
-    pub playback_speed_milli: Arc<AtomicU32>,
+    /// Preview speed **±250..=±2000** in milli-units where **±1000 = 1.0×**; **negative** = rewind (seek-based).
+    #[allow(dead_code)]
+    // Exposed for future UI sync / debugging; threads hold the canonical `Arc`.
+    pub playback_signed_milli: Arc<AtomicI32>,
 }
 
 impl PlayerHandle {
@@ -157,11 +158,11 @@ impl Drop for PlayerHandle {
 ///
 /// `master_volume_1000` is shared with the UI; **0** = mute, **1000** = full level.
 /// `playback_loop` is read when playback reaches the end of the sequence (both threads).
-/// `playback_speed_milli` is preview rate **250..=4000** (**1000** = 1.0×).
+/// `playback_signed_milli` is preview rate **±250..=±2000** (**±1000** = 1.0×); negative values rewind.
 pub fn spawn_player(
     window: &AppWindow,
     master_volume_1000: Arc<AtomicU32>,
-    playback_speed_milli: Arc<AtomicU32>,
+    playback_signed_milli: Arc<AtomicI32>,
     playback_loop: Arc<AtomicBool>,
 ) -> Result<PlayerHandle> {
     // Initialize ffmpeg once.
@@ -186,14 +187,12 @@ pub fn spawn_player(
     let clock_v = clock.clone();
     let restart_v = restart.clone();
     let loop_v = playback_loop.clone();
-    let video_thread = std::thread::Builder::new()
-        .name("reel-video".into())
-        .spawn(move || video_loop(rx_video, weak_v, clock_v, restart_v, loop_v))?;
+    let signed_v = playback_signed_milli.clone();
 
     let weak_a = weak.clone();
     let clock_a = clock.clone();
     let vol_stream = master_volume_1000.clone();
-    let speed_stream = playback_speed_milli.clone();
+    let speed_stream = playback_signed_milli.clone();
     let restart_a = restart;
     let loop_a = playback_loop;
     let audio_thread = std::thread::Builder::new()
@@ -212,14 +211,59 @@ pub fn spawn_player(
             )
         })?;
 
+    let video_thread = std::thread::Builder::new()
+        .name("reel-video".into())
+        .spawn(move || video_loop(rx_video, weak_v, clock_v, restart_v, loop_v, signed_v))?;
+
     Ok(PlayerHandle {
         tx_video,
         tx_audio,
         video_thread: Some(video_thread),
         audio_thread: Some(audio_thread),
         master_volume_1000,
-        playback_speed_milli,
+        playback_signed_milli,
     })
+}
+
+/// Seek primary video to `seq_ms`, open the segment decoder, and present one frame.
+fn video_seek_to_sequence_ms(
+    weak: &Weak<AppWindow>,
+    timeline: &Arc<TimelineSync>,
+    ctx: &mut Option<VideoCtx>,
+    video_seg_idx: &mut usize,
+    clock: &AudioClock,
+    seq_ms: u64,
+) -> bool {
+    let cap = timeline.total_sequence_ms();
+    let seq_ms = seq_ms.min(cap);
+    if let Some((idx, local_ms)) = timeline.resolve_seek(seq_ms) {
+        timeline.active_index.store(idx, Ordering::SeqCst);
+        *video_seg_idx = idx;
+        let s = &timeline.segments[idx];
+        match try_open_video(&s.path) {
+            Ok(mut c) => {
+                c.set_orientation(s.orientation);
+                if let Err(e) = c.seek(local_ms) {
+                    tracing::warn!(error = %e, seq_ms, "video seek failed");
+                }
+                if let Some(frame) = c.next_presentable_frame() {
+                    present(weak, frame);
+                }
+                *ctx = Some(c);
+                clock.set(seq_ms);
+                let sf = seq_ms as f32;
+                let w = weak.clone();
+                on_ui(w, move |win| apply_playhead_transport(&win, sf));
+                true
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "video reopen seek failed");
+                false
+            }
+        }
+    } else {
+        false
+    }
 }
 
 // ---------- video thread ----------
@@ -230,6 +274,7 @@ fn video_loop(
     clock: AudioClock,
     restart: PlayerCmdSender,
     loop_playback: Arc<AtomicBool>,
+    playback_signed: Arc<AtomicI32>,
 ) {
     let mut ctx: Option<VideoCtx> = None;
     let mut playing = false;
@@ -265,7 +310,7 @@ fn video_loop(
                         on_ui(weak.clone(), move |w| {
                             w.set_media_ready(false);
                             w.set_is_playing(false);
-                            w.set_status_text("Loading…".into());
+                            w.set_status_text("".into());
                         });
                     }
                     match try_open_video(&s0.path) {
@@ -279,7 +324,7 @@ fn video_loop(
                             }
                             ctx = Some(new_ctx);
                             on_ui(weak.clone(), move |w| {
-                                w.set_status_text("Ready".into());
+                                w.set_status_text("".into());
                                 w.set_media_ready(true);
                                 apply_playhead_transport(&w, 0.0);
                             });
@@ -314,27 +359,14 @@ fn video_loop(
                     let Some(ref t) = timeline else {
                         continue;
                     };
-                    if let Some((idx, local_ms)) = t.resolve_seek(seq_ms) {
-                        t.active_index.store(idx, Ordering::SeqCst);
-                        video_seg_idx = idx;
-                        let s = &t.segments[idx];
-                        match try_open_video(&s.path) {
-                            Ok(mut c) => {
-                                c.set_orientation(s.orientation);
-                                if let Err(e) = c.seek(local_ms) {
-                                    tracing::warn!(error = %e, seq_ms, "video seek failed");
-                                }
-                                if let Some(frame) = c.next_presentable_frame() {
-                                    present(&weak, frame);
-                                }
-                                ctx = Some(c);
-                                clock.set(seq_ms);
-                                let sf = seq_ms as f32;
-                                on_ui(weak.clone(), move |w| apply_playhead_transport(&w, sf));
-                            }
-                            Err(e) => tracing::warn!(error = %e, "video reopen seek failed"),
-                        }
-                    }
+                    let _ = video_seek_to_sequence_ms(
+                        &weak,
+                        t,
+                        &mut ctx,
+                        &mut video_seg_idx,
+                        &clock,
+                        seq_ms,
+                    );
                 }
                 Cmd::Close => {
                     ctx = None;
@@ -346,8 +378,9 @@ fn video_loop(
                     on_ui(weak.clone(), |w| {
                         w.set_media_ready(false);
                         w.set_is_playing(false);
-                        w.set_status_text("No media".into());
-                        w.set_timecode("0:00.000 / 0:00.000".into());
+                        w.set_status_text("".into());
+                        w.set_time_elapsed("0:00.0".into());
+                        w.set_time_total("0:00.0".into());
                         w.set_playhead_ms(0.0);
                     });
                 }
@@ -356,6 +389,45 @@ fn video_loop(
         }
 
         if playing {
+            let spd = playback_signed.load(Ordering::Relaxed);
+            if spd < 0 {
+                if let Some(ref t) = timeline {
+                    let cur = clock.get();
+                    if cur <= 1 {
+                        playing = false;
+                        clock.set_playing(false);
+                        playback_signed.store(1000, Ordering::Relaxed);
+                        on_ui(weak.clone(), |w| {
+                            w.set_is_playing(false);
+                            w.set_transport_rate_label("1.00×".into());
+                        });
+                        std::thread::sleep(Duration::from_millis(16));
+                        continue;
+                    }
+                    let abs = (-spd).clamp(250, 2000) as u64;
+                    let step_ms = (abs * 80 / 1000).max(1).min(cur);
+                    let new_seq = cur.saturating_sub(step_ms);
+                    if !video_seek_to_sequence_ms(
+                        &weak,
+                        t,
+                        &mut ctx,
+                        &mut video_seg_idx,
+                        &clock,
+                        new_seq,
+                    ) {
+                        playing = false;
+                        clock.set_playing(false);
+                        playback_signed.store(1000, Ordering::Relaxed);
+                        on_ui(weak.clone(), |w| {
+                            w.set_is_playing(false);
+                            w.set_transport_rate_label("1.00×".into());
+                        });
+                    }
+                    let pace = (128u64).saturating_sub(abs / 40).clamp(8, 64);
+                    std::thread::sleep(Duration::from_millis(pace));
+                }
+                continue;
+            }
             if let Some(c) = ctx.as_mut() {
                 match c.next_presentable_frame() {
                     Some(frame) => {
@@ -710,7 +782,7 @@ fn audio_loop<P, C>(
     mut consumer: C,
     weak: Weak<AppWindow>,
     master_volume_1000: Arc<AtomicU32>,
-    playback_speed_milli: Arc<AtomicU32>,
+    playback_signed_milli: Arc<AtomicI32>,
     restart: PlayerCmdSender,
     loop_playback: Arc<AtomicBool>,
 ) where
@@ -738,7 +810,7 @@ fn audio_loop<P, C>(
     // on a cpal-owned thread. `HeapConsumer` is `Send`.
     let clock_cb = clock.clone();
     let vol_cb = master_volume_1000;
-    let speed_cb = playback_speed_milli.clone();
+    let speed_cb = playback_signed_milli.clone();
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
@@ -746,11 +818,12 @@ fn audio_loop<P, C>(
             for sample in data.iter_mut() {
                 *sample = consumer.try_pop().unwrap_or(0.0) * g;
             }
-            if clock_cb.is_playing() {
+            let sgn = speed_cb.load(Ordering::Relaxed);
+            if clock_cb.is_playing() && sgn > 0 {
                 let written = data.len() as u64 / OUT_CHANNELS as u64;
                 let ms = written * 1000 / OUT_SAMPLE_RATE as u64;
                 let cur = clock_cb.get();
-                let sp = (speed_cb.load(Ordering::Relaxed) as f64).clamp(250.0, 4000.0) / 1000.0;
+                let sp = (sgn as f64).clamp(250.0, 4000.0) / 1000.0;
                 let adv = ((ms as f64) * sp).round() as u64;
                 clock_cb.set(cur.saturating_add(adv));
             }
@@ -829,6 +902,12 @@ fn audio_loop<P, C>(
                     if decode_timeline.is_none() {
                         continue;
                     }
+                    let sgn = playback_signed_milli.load(Ordering::Relaxed);
+                    if sgn < 0 {
+                        playing = true;
+                        clock.set_playing(true);
+                        continue;
+                    }
                     if actx.is_none() && !silence_pad {
                         continue;
                     }
@@ -837,6 +916,7 @@ fn audio_loop<P, C>(
                 }
                 Cmd::Pause => {
                     playing = false;
+                    clock.set_playing(false);
                 }
                 Cmd::SeekSequence { seq_ms } => {
                     let Some(ref vm) = video_master else {
@@ -890,7 +970,9 @@ fn audio_loop<P, C>(
         }
 
         if playing {
-            let should_output_silence = silence_pad
+            let sgn = playback_signed_milli.load(Ordering::Relaxed);
+            let should_output_silence = sgn < 0
+                || silence_pad
                 || (dedicated_audio
                     && actx.is_none()
                     && video_master
@@ -923,7 +1005,7 @@ fn audio_loop<P, C>(
                 }
             } else if let Some(a) = actx.as_mut() {
                 if let Some(samples) = a.next_packet_samples() {
-                    let sp = (playback_speed_milli.load(Ordering::Relaxed) as f64)
+                    let sp = (playback_signed_milli.load(Ordering::Relaxed).unsigned_abs() as f64)
                         .clamp(250.0, 4000.0)
                         / 1000.0;
                     speed_carry.push_speed_samples(samples, sp, &mut producer, || {

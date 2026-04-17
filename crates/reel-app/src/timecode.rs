@@ -9,36 +9,39 @@ pub(crate) fn clamp_playhead_ms(playhead_ms: f32, duration_ms: f32) -> f32 {
     playhead_ms.clamp(0.0, d)
 }
 
-/// `playhead / duration` as `M:SS.mmm` (or `H:MM:SS.mmm` when needed).
-pub(crate) fn format_pair(playhead_ms: f32, duration_ms: f32) -> String {
-    format!("{} / {}", fmt_ms(playhead_ms), fmt_ms(duration_ms))
+/// Timeline elapsed + total labels (playhead clamped to duration).
+pub(crate) fn refresh_time_labels(w: &AppWindow, playhead_ms: f32, duration_ms: f32) {
+    let ph = clamp_playhead_ms(playhead_ms, duration_ms);
+    w.set_time_elapsed(fmt_ms(ph).into());
+    w.set_time_total(fmt_ms(duration_ms).into());
 }
 
-/// Single time value as `M:SS.mmm` (shared with per-track lane labels).
+/// Single time value (shared with per-track lane labels).
 pub(crate) fn format_ms_alone(ms: f32) -> String {
     fmt_ms(ms)
 }
 
 fn fmt_ms(ms: f32) -> String {
-    let t = ms.round().clamp(0.0, u64::MAX as f32) as u64;
-    let frac = (t % 1000) as u32;
-    let total_s = t / 1000;
-    let s = total_s % 60;
-    let total_m = total_s / 60;
-    let m = total_m % 60;
-    let h = total_m / 60;
+    let ms_u = ms.round().clamp(0.0, u64::MAX as f32) as u64;
+    let total_tenths = (ms_u + 50) / 100;
+    let whole_sec = total_tenths / 10;
+    let tenth = (total_tenths % 10) as u32;
+    let h = whole_sec / 3600;
+    let rem = whole_sec % 3600;
+    let m = rem / 60;
+    let s = rem % 60;
     if h > 0 {
-        format!("{h}:{m:02}:{s:02}.{frac:03}")
+        format!("{h}:{m:02}:{s:02}.{tenth}")
     } else {
-        format!("{m}:{s:02}.{frac:03}")
+        format!("{m}:{s:02}.{tenth}")
     }
 }
 
-/// Update slider + timecode label together (player thread → UI thread).
+/// Update slider + elapsed/total labels together (player thread → UI thread).
 pub(crate) fn apply_playhead_transport(w: &AppWindow, playhead_ms: f32) {
     let dur = w.get_duration_ms();
     let ph = clamp_playhead_ms(playhead_ms, dur);
-    w.set_timecode(format_pair(ph, dur).into());
+    refresh_time_labels(w, ph, dur);
     w.set_playhead_ms(ph);
 }
 
@@ -47,13 +50,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_subminute() {
-        assert_eq!(format_pair(123.0, 12_345.0), "0:00.123 / 0:12.345");
+    fn formats_subminute_tenths() {
+        assert_eq!(format_ms_alone(123.0), "0:00.1");
+        assert_eq!(format_ms_alone(12_345.0), "0:12.3");
     }
 
     #[test]
-    fn formats_over_minute() {
-        assert_eq!(format_pair(61_234.0, 61_234.0), "1:01.234 / 1:01.234");
+    fn formats_over_minute_tenths() {
+        assert_eq!(format_ms_alone(61_234.0), "1:01.2");
     }
 
     #[test]

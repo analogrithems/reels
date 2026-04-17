@@ -78,6 +78,26 @@ pub(crate) fn sequence_duration_ms(clips: &[PrimaryTimelineClip]) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Nudge sequence time slightly inward from the timeline end so [`primary_clip_id_at_seq_ms`]
+/// still finds the last clip when the UI playhead is clamped to `duration_ms`.
+///
+/// Only applies when `sequence_ms` is **at** the real end (within ~1 ms past `d`). Values far past
+/// the sequence (gaps / bogus seeks) are left unchanged so they still resolve to **no** clip.
+pub(crate) fn sequence_ms_for_primary_clip_lookup(p: &Project, sequence_ms: f64) -> f64 {
+    let Some(clips) = clips_from_project(p) else {
+        return sequence_ms.max(0.0);
+    };
+    let d = sequence_duration_ms(&clips);
+    if d <= 0.0 {
+        return sequence_ms.max(0.0);
+    }
+    let mut seq = sequence_ms.max(0.0);
+    if seq + 1e-6 >= d - 1e-3 && seq <= d + 1.0 {
+        seq = (d - 0.5).max(0.0);
+    }
+    seq
+}
+
 /// Map concatenated timeline `sequence_ms` to a source file and ffmpeg seek position (ms in file).
 pub(crate) fn resolve_sequence_media_ms(
     clips: &[PrimaryTimelineClip],

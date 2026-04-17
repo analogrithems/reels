@@ -18,17 +18,52 @@ use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use reel_core::project::ClipOrientation;
 use reel_core::TrackKind;
 use reel_core::{export_concat_with_audio_oriented, ExportProgressFn};
+use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use session::{
     export_format_for_path, split_enabled_for_playhead, video_lane_indices,
     web_export_format_from_preset_index, EditSession,
 };
+
+fn bump_transport_forward(signed: &Arc<AtomicI32>) {
+    const TIERS: [i32; 7] = [250, 500, 750, 1000, 1250, 1500, 2000];
+    let cur = signed.load(Ordering::Relaxed);
+    if cur <= 0 {
+        signed.store(1000, Ordering::Relaxed);
+        return;
+    }
+    let next = TIERS
+        .iter()
+        .find(|&&t| t > cur)
+        .copied()
+        .unwrap_or(TIERS[6]);
+    signed.store(next, Ordering::Relaxed);
+}
+
+fn bump_transport_rewind(signed: &Arc<AtomicI32>) {
+    const TIERS: [i32; 7] = [-250, -500, -750, -1000, -1250, -1500, -2000];
+    let cur = signed.load(Ordering::Relaxed);
+    if cur >= 0 {
+        signed.store(-250, Ordering::Relaxed);
+        return;
+    }
+    let next = TIERS
+        .iter()
+        .find(|&&t| t < cur)
+        .copied()
+        .unwrap_or(TIERS[6]);
+    signed.store(next, Ordering::Relaxed);
+}
+
+fn transport_rate_label(milli: i32) -> String {
+    format!("{:.2}×", milli as f64 / 1000.0)
+}
 use slint::ComponentHandle;
 use uuid::Uuid;
 
@@ -186,6 +221,8 @@ fn begin_export_effect(
 
 fn sync_footer(window: &AppWindow, session: &EditSession) {
     let ph = window.get_playhead_ms() as f64;
+    let has_project = session.project().is_some();
+    window.set_footer_visible(has_project);
     if let Some(f) = footer::compute_footer_lines(session.project(), ph, session.dirty) {
         window.set_footer_codec_line(f.codec_line.into());
         window.set_footer_path_line(f.path_line.into());
@@ -235,7 +272,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_split_at_playhead_enabled(
             window.get_media_ready() && split_enabled_for_playhead(p, ph),
         );
-        window.set_rotate_enabled(window.get_media_ready() && session.rotate_enabled(ph));
+        window.set_rotate_enabled(session.rotate_enabled(ph));
         window.set_trim_enabled(window.get_media_ready() && session.trim_enabled(ph));
     } else {
         window.set_duration_ms(0.0);
@@ -247,7 +284,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
-    window.set_timecode(timecode::format_pair(ph, dur).into());
+    timecode::refresh_time_labels(window, ph, dur);
     sync_footer(window, session);
 }
 
@@ -288,6 +325,21 @@ fn sync_menu_and_autosave(
     sync_menu(window, &session_rc.borrow());
     sync_recent_menu(window, &recent.borrow());
     debouncer.nudge(Rc::clone(session_rc));
+}
+
+/// Clears the session and stops the player (empty **File → Close Window** state).
+fn close_window_and_clear_player(
+    p: &player::PlayerCmdSender,
+    session: &Rc<RefCell<EditSession>>,
+    weak: &slint::Weak<AppWindow>,
+) {
+    let mut s = session.borrow_mut();
+    s.clear_media();
+    p.send(player::Cmd::Close);
+    drop(s);
+    if let Some(w) = weak.upgrade() {
+        sync_menu(&w, &session.borrow());
+    }
 }
 
 fn open_path_from_ui(
@@ -353,8 +405,9 @@ fn main() -> Result<()> {
     }
 
     let window = AppWindow::new()?;
+    window.set_transport_rate_label("1.00×".into());
     window.set_media_ready(false);
-    window.set_timecode("0:00.000 / 0:00.000".into());
+    timecode::refresh_time_labels(&window, 0.0, 0.0);
     window.set_video_track_lanes("".into());
     window.set_audio_track_lanes("".into());
     window.set_insert_audio_enabled(false);
@@ -364,6 +417,7 @@ fn main() -> Result<()> {
     window.set_rotate_enabled(false);
     window.set_trim_enabled(false);
     window.set_trim_sheet_visible(false);
+    window.set_footer_visible(false);
     window.set_footer_codec_line("".into());
     window.set_footer_path_line("".into());
     window.set_footer_save_line("".into());
@@ -380,7 +434,7 @@ fn main() -> Result<()> {
     window.set_preview_zoom_percent(app_prefs.borrow().preview_zoom_percent);
     window.set_preview_zoom_actual(app_prefs.borrow().preview_zoom_actual);
     window.set_window_fullscreen(false);
-    let playback_speed_milli = Arc::new(AtomicU32::new(1000));
+    let playback_signed_milli = Arc::new(AtomicI32::new(1000));
 
     let session = Rc::new(RefCell::new(EditSession::default()));
     let debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
@@ -393,7 +447,7 @@ fn main() -> Result<()> {
     let player = match player::spawn_player(
         &window,
         vol_arc,
-        playback_speed_milli.clone(),
+        playback_signed_milli.clone(),
         playback_loop.clone(),
     ) {
         Ok(p) => p,
@@ -417,19 +471,37 @@ fn main() -> Result<()> {
     }
 
     {
-        let spd = playback_speed_milli.clone();
-        window.on_playback_speed_changed(move |idx| {
-            let milli = match idx {
-                0 => 250,
-                1 => 500,
-                2 => 750,
-                3 => 1000,
-                4 => 1250,
-                5 => 1500,
-                6 => 2000,
-                _ => 1000,
-            };
-            spd.store(milli, Ordering::Relaxed);
+        let signed = playback_signed_milli.clone();
+        let p = player.cmd_sender();
+        let weak = window.as_weak();
+        window.on_transport_forward(move || {
+            bump_transport_forward(&signed);
+            if let Some(w) = weak.upgrade() {
+                if w.get_media_ready() {
+                    w.set_transport_rate_label(
+                        transport_rate_label(signed.load(Ordering::Relaxed)).into(),
+                    );
+                    w.set_is_playing(true);
+                    p.send(player::Cmd::Play);
+                }
+            }
+        });
+    }
+    {
+        let signed = playback_signed_milli.clone();
+        let p = player.cmd_sender();
+        let weak = window.as_weak();
+        window.on_transport_rewind(move || {
+            bump_transport_rewind(&signed);
+            if let Some(w) = weak.upgrade() {
+                if w.get_media_ready() {
+                    w.set_transport_rate_label(
+                        transport_rate_label(signed.load(Ordering::Relaxed)).into(),
+                    );
+                    w.set_is_playing(true);
+                    p.send(player::Cmd::Play);
+                }
+            }
         });
     }
 
@@ -586,15 +658,92 @@ fn main() -> Result<()> {
         let p = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_close(move || {
-            if let Err(e) = session.borrow_mut().flush_autosave_if_needed() {
-                tracing::warn!(error = %e, "autosave before close failed");
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            if w.get_export_in_progress() {
+                return;
             }
-            let mut s = session.borrow_mut();
-            s.clear_media();
-            p.send(player::Cmd::Close);
-            if let Some(w) = weak.upgrade() {
-                sync_menu(&w, &s);
+
+            let (has_media, dirty) = {
+                let s = session.borrow();
+                (s.has_media(), s.dirty)
+            };
+            if !has_media {
+                return;
+            }
+            if !dirty {
+                close_window_and_clear_player(&p, &session, &weak);
+                return;
+            }
+
+            let res = MessageDialog::new()
+                .set_level(MessageLevel::Warning)
+                .set_title("Save changes?")
+                .set_description(
+                    "Save the project before closing? Unsaved changes will be lost if you don't save.",
+                )
+                .set_buttons(MessageButtons::YesNoCancelCustom(
+                    "Save".into(),
+                    "Don't Save".into(),
+                    "Cancel".into(),
+                ))
+                .show();
+
+            match res {
+                MessageDialogResult::Custom(s) if s == "Save" => {
+                    let had_path = session
+                        .borrow()
+                        .project()
+                        .and_then(|p| p.path.clone());
+                    if had_path.is_some() {
+                        if let Err(e) = session.borrow_mut().flush_autosave_if_needed() {
+                            tracing::error!(error = %e, "save before close failed");
+                            if let Some(win) = weak.upgrade() {
+                                win.set_status_text(format!("Could not save: {e}").into());
+                            }
+                            return;
+                        }
+                    } else {
+                        let proj = session.borrow().project().cloned();
+                        let Some(proj) = proj else {
+                            return;
+                        };
+                        let Some(dest) = rfd::FileDialog::new()
+                            .set_title("Save project…")
+                            .add_filter("Reel project", &["reel", "json"])
+                            .save_file()
+                        else {
+                            return;
+                        };
+                        match save_project(&dest, &proj) {
+                            Ok(()) => {
+                                session.borrow_mut().mark_saved_to_path(dest.clone());
+                                recent.borrow_mut().record_project(dest.clone());
+                                if let Some(win) = weak.upgrade() {
+                                    sync_menu_and_autosave(&win, &session, &debouncer, &recent);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "save before close failed");
+                                if let Some(win) = weak.upgrade() {
+                                    win.set_status_text(format!("Save failed: {e}").into());
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    close_window_and_clear_player(&p, &session, &weak);
+                }
+                MessageDialogResult::Custom(s) if s == "Don't Save" => {
+                    close_window_and_clear_player(&p, &session, &weak);
+                }
+                MessageDialogResult::Cancel => {}
+                MessageDialogResult::Custom(s) if s == "Cancel" => {}
+                _ => {}
             }
         });
     }
@@ -1051,7 +1200,7 @@ fn main() -> Result<()> {
                         let dur = w.get_duration_ms();
                         let ph = w.get_playhead_ms().min(dur);
                         w.set_playhead_ms(ph);
-                        w.set_timecode(timecode::format_pair(ph, dur).into());
+                        timecode::refresh_time_labels(&w, ph, dur);
                         sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
                         w.set_status_text("Split clip at playhead".into());
                     }
@@ -1260,7 +1409,7 @@ fn main() -> Result<()> {
                     let dur = w.get_duration_ms();
                     let ph = w.get_playhead_ms().min(dur);
                     w.set_playhead_ms(ph);
-                    w.set_timecode(timecode::format_pair(ph, dur).into());
+                    timecode::refresh_time_labels(&w, ph, dur);
                     sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
                     w.set_status_text("Trimmed clip".into());
                 }
@@ -1293,7 +1442,7 @@ fn main() -> Result<()> {
                         let dur = w.get_duration_ms();
                         let ph = w.get_playhead_ms().min(dur);
                         w.set_playhead_ms(ph);
-                        w.set_timecode(timecode::format_pair(ph, dur).into());
+                        timecode::refresh_time_labels(&w, ph, dur);
                         sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
                         w.set_status_text("Moved clip to track below".into());
                     }
@@ -1325,7 +1474,7 @@ fn main() -> Result<()> {
                         let dur = w.get_duration_ms();
                         let ph = w.get_playhead_ms().min(dur);
                         w.set_playhead_ms(ph);
-                        w.set_timecode(timecode::format_pair(ph, dur).into());
+                        timecode::refresh_time_labels(&w, ph, dur);
                         sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
                         w.set_status_text("Moved clip from track below to primary".into());
                     }
@@ -1453,7 +1602,7 @@ fn main() -> Result<()> {
             let dur = w.get_duration_ms();
             let v = timecode::clamp_playhead_ms(v, dur);
             w.set_playhead_ms(v);
-            w.set_timecode(timecode::format_pair(v, dur).into());
+            timecode::refresh_time_labels(&w, v, dur);
             sync_menu(&w, &session.borrow());
             p.send(player::Cmd::SeekSequence { seq_ms: v as u64 });
         });
@@ -1474,7 +1623,7 @@ fn main() -> Result<()> {
             let dur = w.get_duration_ms();
             let next = timecode::clamp_playhead_ms(cur + delta, dur);
             w.set_playhead_ms(next);
-            w.set_timecode(timecode::format_pair(next, dur).into());
+            timecode::refresh_time_labels(&w, next, dur);
             sync_menu(&w, &session.borrow());
             p.send(player::Cmd::SeekSequence {
                 seq_ms: next as u64,

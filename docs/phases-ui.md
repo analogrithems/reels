@@ -19,7 +19,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
 | **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (double-click track-lane strip + Edit menu); multi-lane **partial**; **planned:** clip markers, **audio** remove/replace/overlay+gain, **resize** |
 | **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 / WebM / MKV preset sheet** **done**; **planned:** H.264/AAC transcode, VP9/AV1 WebM, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
-| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **opportunistic:** preview **playback speed** dropdown + icon play/pause — see **U4** body |
+| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **QuickTime-style** floating **volume + transport + scrub + times** over the **video** (auto-hide ~5 s idle); stepped speeds — see **U4** body |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
 
 ---
@@ -96,7 +96,7 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 **Delivered**
 
 - **MenuBar:** File, Edit, Effects, View, Window, Help.
-- **File:** Open (media or **`.reel` / `.json` project**), **Open Recent** (MRU + **Clear Recent**), Close, Revert, New Window, Save (`.reel` JSON), Insert Video (playhead-aware, **split** when inside a clip), Insert Audio (first audio lane; **U2-b**), New Video Track (empty lane; **U2-a**), New Audio Track (empty lane; **U2-b**), Export (ffmpeg **primary-track** concat / trim).
+- **File:** Open (media or **`.reel` / `.json` project**), **Open Recent** (MRU + **Clear Recent**), Close Window, Revert, New Window, Save (`.reel` JSON), Insert Video (playhead-aware, **split** when inside a clip), Insert Audio (first audio lane; **U2-b**), New Video Track (empty lane; **U2-a**), New Audio Track (empty lane; **U2-b**), Export (ffmpeg **primary-track** concat / trim).
 - **Edit:** Undo / redo (project snapshots).
 - **Window:** Always on top; Fit / Fill / Center viewport.
 - **Effects:** Menu hooks to sidecar (see **U5**).
@@ -140,7 +140,7 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 - **Insert Video** with **split-at-playhead** when the playhead lies inside a clip.
 - **Split Clip at Playhead** (blade): two clips from one at the playhead; undoable.
 - **Save**, **Revert**, **Undo / Redo** (with explicit Save clearing stacks).
-- **Debounced autosave** to the on-disk project path (Slint timer; **preserves** undo vs explicit Save); flush on **Close** when possible.
+- **Debounced autosave** to the on-disk project path (Slint timer; **preserves** undo vs explicit Save); **Close Window** prompts to save when dirty.
 - **Per-clip orientation** (**Edit → Rotate 90°** / **Flip**): stored in the project; preview after the scaler; export uses ffmpeg **`-vf`** when any primary-track clip is non-identity (mixed orientations in one export remain a limitation—see **`docs/FEATURES.md`**).
 - **Trim Clip…** (**U2-c / U2-d**): sheet with begin/end in **source-file seconds**, inline validation, undoable; see **`docs/FEATURES.md`** and **`docs/KEYBOARD.md`**.
 - **U2-a (partial):** **New Video Track** appends an empty `TrackKind::Video` lane (undoable); timeline strip summarizes the project and lists **each video lane** (primary vs secondary, clip count, summed duration). **Move Clip to Track Below / Above** (Edit menu) shuffle clips between primary and second video lane (see **FEATURES** for exact rules). **Primary-track sequence preview** (concat timeline, play/scrub across clips, auto-advance at boundaries) is **implemented**; secondary lanes are still **not** in the decode graph. Remaining: richer per-lane visuals (waveforms, thumbnails), draggable moves, **on-timeline** trim handles (numeric **Trim Clip…** shipped).
@@ -172,7 +172,7 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 - [ ] User picks **named export configurations** aligned with **`docs/SUPPORTED_FORMATS.md`** — at minimum: **web** targets (e.g. **H.264 + AAC-LC MP4**, **VP9 or AV1 WebM** when codecs exist), **mobile-friendly** tiers (e.g. **HEVC + AAC** MP4 where supported), plus existing **remux** / **compatibility** paths; exact list ships with the preset picker.
 - [ ] User picks **preset** (resolution / bitrate / format family) from the app (may merge with the row above).
-- [x] Long exports show **cancellable** ffmpeg work without killing the whole app (**Esc** / **File → Cancel Export**).
+- [x] Long exports show **cancellable** ffmpeg work without killing the whole app (**Esc** / **Cancel export** on the progress modal).
 - [x] **Determinate export feedback** in the main window: status **%** plus a thin **progress strip** above the transport row (ffmpeg `out_time_ms` vs timeline duration).
 
 **Partial / shipped**
@@ -211,8 +211,8 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 These were **not** planned as named U4 deliverables; they improve everyday preview without blocking other milestones:
 
-- **Preview playback speed (0.25×–2×):** A compact speed **dropdown** on the **far right of the timeline header** (timecode row). It **appears** when the pointer moves or clicks over the **video viewport** and **auto-hides after ~5 seconds** of idle time (unchanged timing). Changing the preset updates preview **audio + clock** speed in `reel-app`’s player; **export** is unchanged.
-- **Transport play control:** The bottom bar uses **icon-style play (triangle) and pause (bars)** instead of text-only **Play** / **Pause** labels.
+- **Preview playback speed (0.25×–2× forward and reverse):** **Volume**, **rewind**, **play/pause**, and **fast-forward** in a **floating bar** over the **bottom of the video**; **elapsed** / **total** (**tenths of a second**) flank the **scrub bar** on the second row of that bar. The bar **hides after ~5 s** without pointer movement over the **viewport**; movement or click **shows** it again. **Rewind** / **fast-forward** increase speed on **repeated clicks**; **export** is unchanged.
+- **Transport:** Icon-style **play** / **pause** with **rewind** and **fast-forward** adjacent; status text lives in the **thin bar** below the timeline (not duplicated under the video).
 
 Treat these as **nice-to-have polish** overlapping **U4** (transport feel) that does **not** close remaining **U4** items (a11y audit, optional zoom pan / toolbar fullscreen, etc.).
 

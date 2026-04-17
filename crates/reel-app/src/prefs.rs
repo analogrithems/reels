@@ -20,6 +20,12 @@ pub struct AppPrefs {
     /// When true, preview draws the frame at **1:1** logical pixels.
     #[serde(default)]
     pub preview_zoom_actual: bool,
+    /// Codec / path / save line under the preview (View → Show Status).
+    #[serde(default)]
+    pub show_footer_status: bool,
+    /// Keep the floating transport visible instead of fading after idle.
+    #[serde(default)]
+    pub controls_overlay_always_visible: bool,
 }
 
 fn default_master_volume() -> f32 {
@@ -37,6 +43,8 @@ impl Default for AppPrefs {
             playback_loop: false,
             preview_zoom_percent: 100.0,
             preview_zoom_actual: false,
+            show_footer_status: false,
+            controls_overlay_always_visible: false,
         }
     }
 }
