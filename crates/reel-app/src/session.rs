@@ -1054,22 +1054,30 @@ impl EditSession {
     }
 }
 
-/// Map a save/export file extension to [`reel_core::WebExportFormat`].
-pub fn export_format_for_path(path: &Path) -> Option<reel_core::WebExportFormat> {
-    match path.extension()?.to_str()?.to_lowercase().as_str() {
-        "mp4" | "m4v" => Some(reel_core::WebExportFormat::Mp4Remux),
-        "webm" => Some(reel_core::WebExportFormat::WebmVp8Opus),
-        "mkv" => Some(reel_core::WebExportFormat::MkvRemux),
-        _ => None,
+/// True when `path`'s lowercase extension matches the container of `fmt`. Accepts `.m4v`
+/// alongside `.mp4` for both MP4 presets (remux and explicit H.264/AAC transcode).
+pub fn path_matches_export_format(path: &Path, fmt: reel_core::WebExportFormat) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let ext = ext.to_ascii_lowercase();
+    match fmt {
+        reel_core::WebExportFormat::Mp4Remux | reel_core::WebExportFormat::Mp4H264Aac => {
+            ext == "mp4" || ext == "m4v"
+        }
+        reel_core::WebExportFormat::WebmVp8Opus => ext == "webm",
+        reel_core::WebExportFormat::MkvRemux => ext == "mkv",
     }
 }
 
-/// Preset row from **Export** dialog (`0` = MP4, `1` = WebM, `2` = MKV). See `docs/SUPPORTED_FORMATS.md`.
+/// Preset row from **Export** dialog (`0` = MP4 remux, `1` = MP4 H.264+AAC transcode,
+/// `2` = WebM, `3` = MKV). See `docs/SUPPORTED_FORMATS.md`.
 pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebExportFormat> {
     match index {
         0 => Some(reel_core::WebExportFormat::Mp4Remux),
-        1 => Some(reel_core::WebExportFormat::WebmVp8Opus),
-        2 => Some(reel_core::WebExportFormat::MkvRemux),
+        1 => Some(reel_core::WebExportFormat::Mp4H264Aac),
+        2 => Some(reel_core::WebExportFormat::WebmVp8Opus),
+        3 => Some(reel_core::WebExportFormat::MkvRemux),
         _ => None,
     }
 }
@@ -1251,11 +1259,29 @@ mod tests {
     }
 
     #[test]
-    fn export_format_mapping() {
-        assert_eq!(
-            export_format_for_path(Path::new("x.webm")),
-            Some(reel_core::WebExportFormat::WebmVp8Opus)
-        );
+    fn path_matches_export_format_by_extension() {
+        use reel_core::WebExportFormat as F;
+        assert!(path_matches_export_format(Path::new("x.mp4"), F::Mp4Remux));
+        assert!(path_matches_export_format(Path::new("x.m4v"), F::Mp4Remux));
+        assert!(path_matches_export_format(
+            Path::new("x.mp4"),
+            F::Mp4H264Aac
+        ));
+        assert!(path_matches_export_format(
+            Path::new("x.m4v"),
+            F::Mp4H264Aac
+        ));
+        assert!(path_matches_export_format(
+            Path::new("x.webm"),
+            F::WebmVp8Opus
+        ));
+        assert!(path_matches_export_format(Path::new("x.mkv"), F::MkvRemux));
+        assert!(!path_matches_export_format(
+            Path::new("x.webm"),
+            F::Mp4Remux
+        ));
+        assert!(!path_matches_export_format(Path::new("x.mp4"), F::MkvRemux));
+        assert!(!path_matches_export_format(Path::new("no_ext"), F::Mp4Remux));
     }
 
     #[test]
@@ -1266,13 +1292,18 @@ mod tests {
         );
         assert_eq!(
             web_export_format_from_preset_index(1),
-            Some(reel_core::WebExportFormat::WebmVp8Opus),
+            Some(reel_core::WebExportFormat::Mp4H264Aac),
         );
         assert_eq!(
             web_export_format_from_preset_index(2),
+            Some(reel_core::WebExportFormat::WebmVp8Opus),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(3),
             Some(reel_core::WebExportFormat::MkvRemux),
         );
         assert_eq!(web_export_format_from_preset_index(-1), None);
+        assert_eq!(web_export_format_from_preset_index(4), None);
     }
 
     fn clip_sec(id: Uuid, path: &str, sec: f64) -> Clip {

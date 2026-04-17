@@ -18,6 +18,10 @@ use crate::project::ClipOrientation;
 pub enum WebExportFormat {
     /// MP4 container; stream copy when codecs allow (fast).
     Mp4Remux,
+    /// MP4 container; explicit H.264 + AAC transcode — use when remux fails due to
+    /// incompatible source codecs, or when a fixed delivery target (H.264 / AAC-LC)
+    /// is required regardless of the input.
+    Mp4H264Aac,
     /// WebM VP8 + Opus (faster to encode than VP9 for short fixtures).
     WebmVp8Opus,
     /// Matroska; stream copy for quick container swap tests.
@@ -25,15 +29,16 @@ pub enum WebExportFormat {
 }
 
 impl WebExportFormat {
-    pub const ALL: [WebExportFormat; 3] = [
+    pub const ALL: [WebExportFormat; 4] = [
         WebExportFormat::Mp4Remux,
+        WebExportFormat::Mp4H264Aac,
         WebExportFormat::WebmVp8Opus,
         WebExportFormat::MkvRemux,
     ];
 
     pub fn file_extension(self) -> &'static str {
         match self {
-            WebExportFormat::Mp4Remux => "mp4",
+            WebExportFormat::Mp4Remux | WebExportFormat::Mp4H264Aac => "mp4",
             WebExportFormat::WebmVp8Opus => "webm",
             WebExportFormat::MkvRemux => "mkv",
         }
@@ -405,6 +410,27 @@ fn append_dual_mux_format_args_with_vf(
                 "+faststart",
             ]);
         }
+        // Audio stream in the dedicated-lane path already comes from input 1 as an
+        // audio stream, but we can't assume it's AAC — transcode to AAC for guaranteed
+        // MP4 conformance whether or not `-vf` is present.
+        (WebExportFormat::Mp4H264Aac, _) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
         (WebExportFormat::WebmVp8Opus, _) => {
             cmd.args([
                 "-c:v",
@@ -476,6 +502,24 @@ fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_cha
                 "yuv420p",
                 "-c:a",
                 "aac",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+        (WebExportFormat::Mp4H264Aac, _) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
                 "-movflags",
                 "+faststart",
             ]);
@@ -589,6 +633,22 @@ fn run_ffmpeg(
 pub fn ffmpeg_args_for_format(format: WebExportFormat) -> Vec<&'static str> {
     match format {
         WebExportFormat::Mp4Remux => vec!["-c", "copy", "-movflags", "+faststart"],
+        WebExportFormat::Mp4H264Aac => vec![
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+        ],
         WebExportFormat::WebmVp8Opus => vec![
             "-c:v",
             "libvpx",
@@ -621,6 +681,45 @@ mod tests {
         let a = ffmpeg_args_for_format(WebExportFormat::Mp4Remux);
         assert!(a.contains(&"-c"));
         assert!(a.contains(&"copy"));
+    }
+
+    #[test]
+    fn mp4_h264_aac_transcodes_with_faststart() {
+        let a = ffmpeg_args_for_format(WebExportFormat::Mp4H264Aac);
+        assert!(a.contains(&"libx264"));
+        assert!(a.contains(&"aac"));
+        assert!(a.contains(&"yuv420p"));
+        assert!(a.contains(&"+faststart"));
+        assert!(!a.contains(&"copy"));
+    }
+
+    #[test]
+    fn mp4_h264_aac_with_vf_still_transcodes() {
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(&mut cmd, WebExportFormat::Mp4H264Aac, Some("transpose=1"));
+        let args = cmd_args_as_strings(&cmd);
+        let vf_idx = args.iter().position(|a| a == "-vf").expect("missing -vf");
+        assert_eq!(args[vf_idx + 1], "transpose=1");
+        assert!(args.iter().any(|a| a == "libx264"));
+        assert!(args.iter().any(|a| a == "aac"));
+        assert!(!args.iter().any(|a| a == "copy"));
+    }
+
+    #[test]
+    fn mp4_h264_aac_dual_mux_transcodes_audio_too() {
+        let mut cmd = Command::new("ffmpeg");
+        append_dual_mux_format_args_with_vf(&mut cmd, WebExportFormat::Mp4H264Aac, None);
+        let args = cmd_args_as_strings(&cmd);
+        // When the dedicated-audio lane is muxed, the transcode preset must re-encode
+        // audio too (input may not be AAC); stream copy is wrong for this preset.
+        let c_a = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[c_a + 1], "aac");
+        assert!(args.iter().any(|a| a == "libx264"));
+    }
+
+    #[test]
+    fn mp4_h264_aac_shares_mp4_extension() {
+        assert_eq!(WebExportFormat::Mp4H264Aac.file_extension(), "mp4");
     }
 
     #[test]

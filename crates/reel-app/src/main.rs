@@ -27,7 +27,7 @@ use reel_core::TrackKind;
 use reel_core::{export_concat_with_audio_oriented, ExportProgressFn};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use session::{
-    export_format_for_path, split_enabled_for_playhead, video_lane_indices,
+    path_matches_export_format, split_enabled_for_playhead, video_lane_indices,
     web_export_format_from_preset_index, EditSession,
 };
 
@@ -120,28 +120,44 @@ fn unified_export_video_orientation(
 }
 
 /// Primary video spans + optional first-audio-track spans for ffmpeg export (empty timeline → `None`).
+///
+/// When `range_ms` is `Some`, the seek-bar In/Out markers limit the output: video and audio
+/// concat inputs are sliced to the range (sequence clock) and rebased so the first span begins
+/// at **0**. Returns `None` when the range produces no video coverage so the caller can tell
+/// the user nothing would export.
 fn export_timeline_payload(
     session: &EditSession,
+    range_ms: Option<(f64, f64)>,
 ) -> Option<(ExportSpanVec, Option<ExportSpanVec>)> {
-    let segs = session
-        .project()
-        .and_then(timeline::clips_from_project)
-        .map(|clips| {
-            clips
-                .into_iter()
-                .map(|c| (c.path, c.media_in_s, c.media_out_s))
-                .collect::<Vec<_>>()
-        })?;
-    if segs.is_empty() {
+    let video_clips = session.project().and_then(timeline::clips_from_project)?;
+    let video_clips = match range_ms {
+        Some(r) => timeline::slice_clips_to_range_ms(&video_clips, r),
+        None => video_clips,
+    };
+    if video_clips.is_empty() {
         return None;
     }
+    let segs: ExportSpanVec = video_clips
+        .into_iter()
+        .map(|c| (c.path, c.media_in_s, c.media_out_s))
+        .collect();
     let audio_segs = session.project().and_then(|p| {
-        timeline::clips_from_first_audio_track(p).map(|clips| {
-            clips
-                .into_iter()
-                .map(|c| (c.path, c.media_in_s, c.media_out_s))
-                .collect::<Vec<_>>()
+        timeline::clips_from_first_audio_track(p).map(|clips| match range_ms {
+            Some(r) => timeline::slice_clips_to_range_ms(&clips, r),
+            None => clips,
         })
+    });
+    let audio_segs = audio_segs.and_then(|clips| {
+        if clips.is_empty() {
+            None
+        } else {
+            Some(
+                clips
+                    .into_iter()
+                    .map(|c| (c.path, c.media_in_s, c.media_out_s))
+                    .collect::<ExportSpanVec>(),
+            )
+        }
     });
     Some((segs, audio_segs))
 }
@@ -150,6 +166,9 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
     let d = rfd::FileDialog::new().set_title("Export media…");
     match fmt {
         reel_core::WebExportFormat::Mp4Remux => d.add_filter("MP4", &["mp4", "m4v"]),
+        reel_core::WebExportFormat::Mp4H264Aac => {
+            d.add_filter("MP4 (H.264 + AAC)", &["mp4", "m4v"])
+        }
         reel_core::WebExportFormat::WebmVp8Opus => d.add_filter("WebM", &["webm"]),
         reel_core::WebExportFormat::MkvRemux => d.add_filter("Matroska", &["mkv"]),
     }
@@ -993,7 +1012,17 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         window.on_file_export(move || {
-            if export_timeline_payload(&session.borrow()).is_none() {
+            let range = session.borrow().marker_range_ms();
+            if export_timeline_payload(&session.borrow(), range).is_none() {
+                // Distinguish "no project / no video" (silent) from "markers set but empty range".
+                if range.is_some() && export_timeline_payload(&session.borrow(), None).is_some() {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(
+                            "No clips in the In/Out range — clear markers or adjust them to export."
+                                .into(),
+                        );
+                    }
+                }
                 return;
             }
             if let Some(w) = weak.upgrade() {
@@ -1030,7 +1059,14 @@ fn main() -> Result<()> {
                 return;
             };
 
-            let Some((segs, audio_segs)) = export_timeline_payload(&session.borrow()) else {
+            let range = session.borrow().marker_range_ms();
+            let Some((segs, audio_segs)) = export_timeline_payload(&session.borrow(), range) else {
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_text(
+                        "No clips in the In/Out range — clear markers or adjust them to export."
+                            .into(),
+                    );
+                }
                 return;
             };
 
@@ -1048,7 +1084,7 @@ fn main() -> Result<()> {
                 return;
             };
 
-            if export_format_for_path(&dest) != Some(fmt) {
+            if !path_matches_export_format(&dest, fmt) {
                 if let Some(w) = weak.upgrade() {
                     w.set_status_text(
                         format!("Use a .{} file name for this preset.", fmt.file_extension())
@@ -1060,8 +1096,12 @@ fn main() -> Result<()> {
 
             let cancel = Arc::new(AtomicBool::new(false));
             *export_cancel_slot.lock().expect("export cancel mutex") = Some(cancel.clone());
+            let start_status = match range {
+                Some((i, o)) => format!("Exporting range {:.3}–{:.3} s…", i / 1000.0, o / 1000.0),
+                None => "Exporting…".to_string(),
+            };
             if let Some(w) = weak.upgrade() {
-                w.set_status_text("Exporting…".into());
+                w.set_status_text(start_status.into());
                 w.set_export_progress(0.0);
                 w.set_export_in_progress(true);
             }

@@ -78,6 +78,50 @@ pub(crate) fn sequence_duration_ms(clips: &[PrimaryTimelineClip]) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Slice `clips` to the `(range_in_ms, range_out_ms)` sequence range (e.g. from the
+/// seek-bar In/Out markers). Clips entirely outside the range are dropped; partials are
+/// trimmed in source-file seconds; `seq_start_ms` of the result is **rebased to 0** so the
+/// sliced list stands alone as a new concat timeline (ffmpeg export treats it that way).
+pub(crate) fn slice_clips_to_range_ms(
+    clips: &[PrimaryTimelineClip],
+    range_ms: (f64, f64),
+) -> Vec<PrimaryTimelineClip> {
+    let (range_in, range_out) = range_ms;
+    if range_out <= range_in + SEQ_MS_EPS {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut new_seq = 0.0_f64;
+    for c in clips {
+        let span_ms = (c.media_out_s - c.media_in_s) * 1000.0;
+        let seq_start = c.seq_start_ms;
+        let seq_end = seq_start + span_ms;
+        if seq_end <= range_in + SEQ_MS_EPS {
+            continue;
+        }
+        if seq_start + SEQ_MS_EPS >= range_out {
+            break;
+        }
+        let lead_ms = (range_in - seq_start).max(0.0);
+        let trail_ms = (seq_end - range_out).max(0.0);
+        let new_in_s = c.media_in_s + lead_ms / 1000.0;
+        let new_out_s = c.media_out_s - trail_ms / 1000.0;
+        let new_span_ms = (new_out_s - new_in_s) * 1000.0;
+        if new_span_ms <= SEQ_MS_EPS {
+            continue;
+        }
+        out.push(PrimaryTimelineClip {
+            path: c.path.clone(),
+            media_in_s: new_in_s,
+            media_out_s: new_out_s,
+            seq_start_ms: new_seq,
+            orientation: c.orientation,
+        });
+        new_seq += new_span_ms;
+    }
+    out
+}
+
 /// Nudge sequence time slightly inward from the timeline end so [`primary_clip_id_at_seq_ms`]
 /// still finds the last clip when the UI playhead is clamped to `duration_ms`.
 ///
@@ -374,5 +418,85 @@ mod tests {
         let (pth, ms) = resolve_sequence_media_ms(&c, 2500.0).unwrap();
         assert_eq!(pth, PathBuf::from("/b.mp4"));
         assert!((ms as f64 - 500.0).abs() < 2.0);
+    }
+
+    fn timeline_clip(path: &str, in_s: f64, out_s: f64, seq_start_ms: f64) -> PrimaryTimelineClip {
+        PrimaryTimelineClip {
+            path: PathBuf::from(path),
+            media_in_s: in_s,
+            media_out_s: out_s,
+            seq_start_ms,
+            orientation: Default::default(),
+        }
+    }
+
+    #[test]
+    fn slice_keeps_clip_fully_inside_range() {
+        // Clip 0..2 s on sequence; range 500..1500 → one clip, media 0.5..1.5 s, rebased to 0.
+        let c = timeline_clip("/a.mp4", 0.0, 2.0, 0.0);
+        let out = slice_clips_to_range_ms(&[c], (500.0, 1500.0));
+        assert_eq!(out.len(), 1);
+        assert!((out[0].media_in_s - 0.5).abs() < 1e-6);
+        assert!((out[0].media_out_s - 1.5).abs() < 1e-6);
+        assert!((out[0].seq_start_ms - 0.0).abs() < 1e-6);
+        assert!((sequence_duration_ms(&out) - 1000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn slice_drops_clips_outside_range() {
+        // Two 2 s clips (sequence 0..2 s, 2..4 s). Range 2500..3500 should keep only the second,
+        // trimmed to its middle 1 s (media 0.5..1.5 s), rebased to sequence start 0.
+        let a = timeline_clip("/a.mp4", 0.0, 2.0, 0.0);
+        let b = timeline_clip("/b.mp4", 0.0, 2.0, 2000.0);
+        let out = slice_clips_to_range_ms(&[a, b], (2500.0, 3500.0));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, PathBuf::from("/b.mp4"));
+        assert!((out[0].media_in_s - 0.5).abs() < 1e-6);
+        assert!((out[0].media_out_s - 1.5).abs() < 1e-6);
+        assert!((out[0].seq_start_ms - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn slice_spans_two_clips_trims_edges_and_rebases() {
+        // Clips 0..2 s and 2..5 s on sequence. Range 1500..3500 should keep the tail of the first
+        // (media 1.5..2.0 = 0.5 s) followed by the head of the second (media 0.0..1.5 = 1.5 s).
+        let a = timeline_clip("/a.mp4", 0.0, 2.0, 0.0);
+        let b = timeline_clip("/b.mp4", 0.0, 3.0, 2000.0);
+        let out = slice_clips_to_range_ms(&[a, b], (1500.0, 3500.0));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].path, PathBuf::from("/a.mp4"));
+        assert!((out[0].media_in_s - 1.5).abs() < 1e-6);
+        assert!((out[0].media_out_s - 2.0).abs() < 1e-6);
+        assert!((out[0].seq_start_ms - 0.0).abs() < 1e-6);
+        assert_eq!(out[1].path, PathBuf::from("/b.mp4"));
+        assert!((out[1].media_in_s - 0.0).abs() < 1e-6);
+        assert!((out[1].media_out_s - 1.5).abs() < 1e-6);
+        assert!((out[1].seq_start_ms - 500.0).abs() < 1e-6);
+        assert!((sequence_duration_ms(&out) - 2000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn slice_empty_when_range_outside_all_clips() {
+        let a = timeline_clip("/a.mp4", 0.0, 2.0, 0.0);
+        let out = slice_clips_to_range_ms(&[a], (5000.0, 6000.0));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn slice_empty_when_range_degenerate() {
+        let a = timeline_clip("/a.mp4", 0.0, 2.0, 0.0);
+        assert!(slice_clips_to_range_ms(std::slice::from_ref(&a), (500.0, 500.0)).is_empty());
+        assert!(slice_clips_to_range_ms(&[a], (1500.0, 500.0)).is_empty());
+    }
+
+    #[test]
+    fn slice_handles_trimmed_source_clip() {
+        // Source media_in 10..20 s (clip already trimmed); sequence span 10 s starting at 0.
+        // Range 2000..5000 ms → keep 3 s in source, media 12..15 s.
+        let c = timeline_clip("/trimmed.mp4", 10.0, 20.0, 0.0);
+        let out = slice_clips_to_range_ms(&[c], (2000.0, 5000.0));
+        assert_eq!(out.len(), 1);
+        assert!((out[0].media_in_s - 12.0).abs() < 1e-6);
+        assert!((out[0].media_out_s - 15.0).abs() < 1e-6);
     }
 }
