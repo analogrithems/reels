@@ -16,6 +16,8 @@ use reel_core::export_with_ffmpeg;
 use session::{export_format_for_path, EditSession};
 use slint::ComponentHandle;
 
+use crate::project_io::save_project;
+
 slint::include_modules!();
 
 fn sync_menu(window: &AppWindow, session: &EditSession) {
@@ -54,13 +56,25 @@ fn main() -> Result<()> {
         window.on_file_open(move || match prompt_open_dialog() {
             Some(path) => {
                 tracing::info!(?path, "file open");
-                session.borrow_mut().set_media(path.clone());
                 if let Some(w) = weak.upgrade() {
                     w.set_is_playing(false);
                     w.set_media_ready(false);
-                    sync_menu(&w, &session.borrow());
                 }
-                p.send(player::Cmd::Open(path));
+                match session.borrow_mut().open_media(path.clone()) {
+                    Ok(()) => {
+                        if let Some(w) = weak.upgrade() {
+                            sync_menu(&w, &session.borrow());
+                        }
+                        p.send(player::Cmd::Open(path));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "open project");
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text(format!("Open failed: {e}").into());
+                            sync_menu(&w, &session.borrow());
+                        }
+                    }
+                }
             }
             None => tracing::debug!("open cancelled"),
         });
@@ -84,17 +98,23 @@ fn main() -> Result<()> {
         let p = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
-        window.on_file_revert(move || {
-            let path = session.borrow().current_media.clone();
-            if let Some(path) = path {
-                session.borrow_mut().revert_to_saved();
+        window.on_file_revert(move || match session.borrow_mut().revert_to_saved() {
+            Ok(()) => {
                 p.send(player::Cmd::Pause);
-                p.send(player::Cmd::Open(path));
+                if let Some(pb) = session.borrow().playback_path() {
+                    p.send(player::Cmd::Open(pb));
+                }
                 if let Some(w) = weak.upgrade() {
                     sync_menu(&w, &session.borrow());
-                    w.set_status_text("Reverted — reloading…".into());
+                    let n = session
+                        .borrow()
+                        .project()
+                        .map(|pr| pr.clips.len())
+                        .unwrap_or(0);
+                    w.set_status_text(format!("Reverted ({n} clips in timeline)").into());
                 }
             }
+            Err(e) => tracing::warn!(error = %e, "revert"),
         });
     }
 
@@ -110,16 +130,16 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         window.on_file_save(move || {
-            let media = session.borrow().current_media.clone();
-            if let Some(media) = media {
+            let proj = session.borrow().project().cloned();
+            if let Some(proj) = proj {
                 if let Some(dest) = rfd::FileDialog::new()
                     .set_title("Save project…")
                     .add_filter("Reel project", &["reel", "json"])
                     .save_file()
                 {
-                    match project_io::save_project_reel(&dest, &media) {
+                    match save_project(&dest, &proj) {
                         Ok(()) => {
-                            session.borrow_mut().mark_saved();
+                            session.borrow_mut().mark_saved_to_path(dest.clone());
                             if let Some(w) = weak.upgrade() {
                                 sync_menu(&w, &session.borrow());
                                 w.set_status_text(format!("Saved {}", dest.display()).into());
@@ -138,14 +158,35 @@ fn main() -> Result<()> {
     }
 
     {
+        let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         window.on_file_insert_video(move || match prompt_insert_dialog() {
-            Some(path) => {
-                session.borrow_mut().push_insert(path.clone());
-                if let Some(w) = weak.upgrade() {
-                    sync_menu(&w, &session.borrow());
-                    w.set_status_text(format!("Queued insert: {}", path.display()).into());
+            Some(insert_path) => {
+                let before_pb = session.borrow().playback_path();
+                match session.borrow_mut().insert_clip(insert_path) {
+                    Ok(()) => {
+                        if let Some(w) = weak.upgrade() {
+                            let n = session
+                                .borrow()
+                                .project()
+                                .map(|pr| pr.clips.len())
+                                .unwrap_or(0);
+                            sync_menu(&w, &session.borrow());
+                            w.set_status_text(format!("Inserted clip ({n} in timeline)").into());
+                        }
+                        let after_pb = session.borrow().playback_path();
+                        if after_pb != before_pb {
+                            if let Some(pb) = after_pb {
+                                sender.send(player::Cmd::Open(pb));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text(format!("Insert failed: {e}").into());
+                        }
+                    }
                 }
             }
             None => tracing::debug!("insert cancelled"),
@@ -193,27 +234,55 @@ fn main() -> Result<()> {
     }
 
     {
+        let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         window.on_edit_undo(move || {
-            if let Some(op) = session.borrow_mut().undo() {
-                if let Some(w) = weak.upgrade() {
-                    sync_menu(&w, &session.borrow());
-                    w.set_status_text(format!("Undo: {op}").into());
+            let before = session.borrow().playback_path();
+            if !session.borrow_mut().undo() {
+                return;
+            }
+            let after = session.borrow().playback_path();
+            if after != before {
+                if let Some(pb) = after {
+                    sender.send(player::Cmd::Open(pb));
                 }
+            }
+            if let Some(w) = weak.upgrade() {
+                sync_menu(&w, &session.borrow());
+                let n = session
+                    .borrow()
+                    .project()
+                    .map(|pr| pr.clips.len())
+                    .unwrap_or(0);
+                w.set_status_text(format!("Undo ({n} clips)").into());
             }
         });
     }
 
     {
+        let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         window.on_edit_redo(move || {
-            if let Some(op) = session.borrow_mut().redo() {
-                if let Some(w) = weak.upgrade() {
-                    sync_menu(&w, &session.borrow());
-                    w.set_status_text(format!("Redo: {op}").into());
+            let before = session.borrow().playback_path();
+            if !session.borrow_mut().redo() {
+                return;
+            }
+            let after = session.borrow().playback_path();
+            if after != before {
+                if let Some(pb) = after {
+                    sender.send(player::Cmd::Open(pb));
                 }
+            }
+            if let Some(w) = weak.upgrade() {
+                sync_menu(&w, &session.borrow());
+                let n = session
+                    .borrow()
+                    .project()
+                    .map(|pr| pr.clips.len())
+                    .unwrap_or(0);
+                w.set_status_text(format!("Redo ({n} clips)").into());
             }
         });
     }
@@ -303,9 +372,15 @@ fn main() -> Result<()> {
 
     if let Some(path) = startup_auto_open_path() {
         tracing::info!(?path, "auto-opening from REEL_OPEN_PATH");
-        session.borrow_mut().set_media(path.clone());
-        sync_menu(&window, &session.borrow());
-        player.cmd_sender().send(player::Cmd::Open(path));
+        match session.borrow_mut().open_media(path.clone()) {
+            Ok(()) => {
+                sync_menu(&window, &session.borrow());
+                player.cmd_sender().send(player::Cmd::Open(path));
+            }
+            Err(e) => {
+                window.set_status_text(format!("REEL_OPEN_PATH failed: {e}").into());
+            }
+        }
     }
 
     window.run()?;

@@ -1,4 +1,4 @@
-//! Minimal `.reel` project writes — full timeline integration comes later.
+//! Project file I/O (`.reel` JSON).
 
 use std::path::Path;
 
@@ -6,13 +6,13 @@ use anyhow::Context;
 use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
 
-/// Write a single-clip project pointing at `media_path`.
-pub fn save_project_reel(out: &Path, media_path: &Path) -> anyhow::Result<()> {
+/// Probe `media` and build a single-clip, single-track project.
+pub fn project_from_media_path(media: &Path) -> anyhow::Result<Project> {
     let probe = FfmpegProbe::new();
-    let md = probe.probe(media_path).context("probe media for save")?;
+    let md = probe.probe(media).context("probe media")?;
     let clip_id = Uuid::new_v4();
     let track_id = Uuid::new_v4();
-    let name = media_path
+    let name = media
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Project");
@@ -21,7 +21,7 @@ pub fn save_project_reel(out: &Path, media_path: &Path) -> anyhow::Result<()> {
     let dur = md.duration_seconds;
     p.clips.push(Clip {
         id: clip_id,
-        source_path: media_path.to_path_buf(),
+        source_path: media.to_path_buf(),
         metadata: md,
         in_point: 0.0,
         out_point: dur,
@@ -33,8 +33,12 @@ pub fn save_project_reel(out: &Path, media_path: &Path) -> anyhow::Result<()> {
         clip_ids: vec![clip_id],
         extensions: Default::default(),
     });
+    Ok(p)
+}
 
-    let json = serde_json::to_vec_pretty(&p).context("serialize project")?;
+/// Serialize `project` to `out` (pretty JSON).
+pub fn save_project(out: &Path, project: &Project) -> anyhow::Result<()> {
+    let json = serde_json::to_vec_pretty(project).context("serialize project")?;
     std::fs::write(out, json).with_context(|| format!("write {}", out.display()))?;
     Ok(())
 }
@@ -47,7 +51,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn save_writes_valid_json_roundtrip() {
+    fn save_roundtrip_matches_probe_fixture() {
         let dir = tempdir().unwrap();
         let reel = dir.path().join("t.reel");
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -60,9 +64,12 @@ mod tests {
             eprintln!("skip: fixture missing");
             return;
         }
-        save_project_reel(&reel, &fixture).expect("save");
+        let p = project_from_media_path(&fixture).expect("project");
+        assert_eq!(p.clips.len(), 1);
+        save_project(&reel, &p).expect("save");
         let bytes = std::fs::read(&reel).unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["schema_version"], 2);
+        let parsed: Project = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.clips.len(), 1);
+        assert_eq!(parsed.schema_version, reel_core::project::SCHEMA_VERSION);
     }
 }

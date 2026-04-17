@@ -13,11 +13,12 @@ Reel’s shell is still early. Work is grouped so each phase ships a testable sl
 - **Unit tests** (pure Rust): session state, undo/redo, export preset args, new-window command builder.
 - **Integration tests** (reel-core): export fixture video to web-family outputs under `target/reel-export-verify/`.
 
-## Phase U2 — Project & timeline
+## Phase U2 — Project & timeline (in progress)
 
-- Persist **timeline edits** in `project.json` (clips, tracks, cursor).
-- Insert Video places a clip at the current playhead; dirty/save/revert operate on real project data.
-- Stronger undo/redo (per edit operation).
+- [x] In-memory `Project`: open builds one clip + video track; **Insert Video** probes and appends a clip.
+- [x] **Save** writes the live `Project` JSON; **Revert** restores last saved snapshot or re-probes the opened file.
+- [x] **Undo / redo** use project snapshots (insert/remove clip); player reloads if the first clip’s source path changes.
+- [ ] Playhead-as-cursor for insert position; multi-track / audio; `ProjectStore` autosave for editor documents.
 
 ## Phase U3 — Export UX
 
