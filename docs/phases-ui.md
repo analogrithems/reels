@@ -49,7 +49,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | U1 | Currently supported: Playback, Viewport, Help |
 | U2 | Project & timeline (partial) + Roadmap: **QuickTime-style** Edit (rotate, flip, markers, trim sheet, audio, resize) |
 | U3 | Roadmap: **Export presets** (web/mobile from `SUPPORTED_FORMATS.md`), batch, progress UI |
-| U4 | Roadmap: **File → Open Recent**; **View** (loop, zoom, fullscreen); shortcuts, a11y, bundle |
+| U4 | **Currently supported:** **File → Open Recent**; **View** (loop, zoom, fullscreen) + partial shortcuts — see **Viewport** / **Playback** in **`FEATURES.md`**. **Roadmap:** a11y, bundle, optional zoom pan / toolbar fullscreen |
 | U5 | Currently supported: Effects + Roadmap: Export & effects (real models) |
 
 When you ship something, **move or add bullets in `FEATURES.md`** and adjust the **Status** column in the table above.
@@ -78,9 +78,9 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Logging:** Every run writes **`reels.session.<timestamp>.log`** under the OS data directory (`reel/logs/`) as **NDJSON** (structured fields + module **target**, **file**, **line**); optional terminal mirror when stdout is a TTY (**pretty** or **json** per `REEL_LOG_FORMAT`). See **`docs/architecture.md`**.
 - **Tests:** Session, project I/O, shell, effects resolve path; reel-core export fixture tests.
 
-**Explicitly deferred**
+**Explicitly deferred** (relative to original U1 scope)
 
-- Global **keyboard shortcuts** (menu accelerators) → **U4**.
+- Global **keyboard shortcuts** — **partially delivered** under **U4** (see **U4** exit criteria and **`docs/KEYBOARD.md`**); full menu parity + a11y remains **U4** / polish.
 
 ---
 
@@ -160,6 +160,11 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - [ ] **View** (optional / polish): **Zoom to Video** (semantic TBD); **pan** when zoomed past the viewport (today overflow is **clipped**).
 - [ ] **Accessibility** audit pass on main window + dialogs (labels, focus order—scope TBD).
 
+**Reliability (shipped — keep in sync with code)**
+
+- **Timeline scrub:** `playhead-ms` is **in-out** with the timeline **`Slider`** (two-way bind); **`step: 0`** on that slider so **← / →** stay on the main **FocusScope** (**±1 s** nudge), not the slider’s own 1 ms steps. **`timecode::clamp_playhead_ms`** clamps player + UI to **[0, duration]** (unit tests in `crates/reel-app/src/timecode.rs`).
+- **Help window:** **ScrollView** fills the window so long bundled topics **scroll** correctly.
+
 **Opportunistic / ahead of formal U4 chrome (not original exit criteria)**
 
 These were **not** planned as named U4 deliverables; they improve everyday preview without blocking other milestones:
@@ -226,8 +231,8 @@ Items live in **`docs/FEATURES.md`** until we carve **U6+**:
 Priorities change; this is **guidance for contributors**, not a commitment.
 
 1. **U2-d / U2-e** — **QuickTime-style** Edit (rotate, flip, markers, trim sheet) + **audio** remove/replace/overlay (depends on **U2-b** for mix/export).
-2. **U3** — **Export preset catalog** from **`SUPPORTED_FORMATS.md`** + determinate **progress bar**.
-3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome); **Open Recent** MRU + **View** loop/zoom/fullscreen shipped.
+2. **U3** — **Export preset catalog** (H.264/AAC, VP9/AV1 tiers, etc.) from **`SUPPORTED_FORMATS.md`**; determinate **%** + strip already shipped — further **chrome** polish optional.
+3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome). (**Open Recent**, **View** loop/zoom/fullscreen, timeline scrub reliability — shipped.)
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 
 Revisit when **trim UI** or **export presets** land.

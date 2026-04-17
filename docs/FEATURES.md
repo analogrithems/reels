@@ -7,7 +7,7 @@
 ### Playback & transport
 
 - Open a media file or a saved **`.reel` / `.json` project** via **File → Open** (native dialog) or **Ctrl+O** (**⌘O** on macOS). The dialog lists **Video**, **Reel project**, and **All files** filters. The shortcut is handled before media is ready so you can open from an empty window after the main view has focus (click the window once if keys do nothing). **File → Open Recent** lists the last opened projects and media (stored under the OS app data directory; **Clear Recent** empties the list). Missing paths are removed when picked.
-- **Play / Pause**; timeline **Slider** scrub (seeks video + audio). **Volume** slider on the bottom bar (**0–100%**) applies to **preview audio only** (not exported files); the level is saved to **`prefs.json`** in the app data directory and restored on launch. **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence). **Home** / **End** jump to the **start** or **end** of the sequence. **Ctrl+Z** / **Ctrl+Shift+Z** invoke **Undo** / **Redo** when enabled (**⌘Z** / **⌘⇧Z** on macOS). **Ctrl+B** invokes **Split Clip at Playhead** when enabled (**⌘B** on macOS). **Ctrl+Shift+↓** / **Ctrl+Shift+↑** invoke **Move Clip to Track Below / Above** when those Edit actions are enabled (on **macOS**, Slint uses **⌘** for the `control` modifier, so **⌘⇧↓ / ⌘⇧↑**). A **shortcut table** is in **Help → Keyboard shortcuts** (bundled from `docs/KEYBOARD.md`). The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
+- **Play / Pause**; timeline **Slider** scrub (seeks video + audio) with a **two-way playhead** so scrubbing and playback stay aligned. **Volume** slider on the bottom bar (**0–100%**) applies to **preview audio only** (not exported files); the level is saved to **`prefs.json`** in the app data directory and restored on launch. **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence) when the main view has focus — not the timeline thumb’s fine steps. **Home** / **End** jump to the **start** or **end** of the sequence. **Ctrl+Z** / **Ctrl+Shift+Z** invoke **Undo** / **Redo** when enabled (**⌘Z** / **⌘⇧Z** on macOS). **Ctrl+B** invokes **Split Clip at Playhead** when enabled (**⌘B** on macOS). **Ctrl+Shift+↓** / **Ctrl+Shift+↑** invoke **Move Clip to Track Below / Above** when those Edit actions are enabled (on **macOS**, Slint uses **⌘** for the `control` modifier, so **⌘⇧↓ / ⌘⇧↑**). A **shortcut table** is in **Help → Keyboard shortcuts** (bundled from `docs/KEYBOARD.md`). The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
 - **AudioClock**: audio drives timing; video follows (may drop frames when behind).
 - **Close** clears the project and stops playback (**Ctrl+W** / **⌘W** when enabled).
 - Startup: optional **`REEL_OPEN_PATH`** env var auto-opens one file (dev/testing).
@@ -47,7 +47,7 @@ Below the transport bar, a **single-line footer** shows three regions separated 
 
 ### Help
 
-- **Help** menu entries bundle markdown from `docs/` (overview, features, keyboard shortcuts, media formats, CLI, external AI & tools, developers, agents, UI phases). **F1** opens **Help → Overview**. **File** track shortcuts (**New Video Track**, **New Audio Track**, **Insert Audio**) are listed in **Keyboard shortcuts** and **Features**.
+- **Help** menu entries bundle markdown from `docs/` (overview, features, keyboard shortcuts, media formats, CLI, external AI & tools, developers, agents, UI phases). Long topics open in a **scrollable** secondary window. **F1** opens **Help → Overview**. **File** track shortcuts (**New Video Track**, **New Audio Track**, **Insert Audio**) are listed in **Keyboard shortcuts** and **Features**.
 
 ---
 
@@ -79,7 +79,7 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 ### Export & effects
 
 - **Export configuration presets** — named targets derived from **`docs/SUPPORTED_FORMATS.md`**: e.g. **web** (H.264 + AAC-LC MP4, VP9/AV1 WebM when implemented), **mobile-friendly** (HEVC + AAC MP4, etc.), **compatibility remux**, plus resolution/bitrate fields per preset.
-- Determinate **progress bar** in the window chrome (status **N%** exists today).
+- Richer determinate **progress** presentation in the window chrome (status **N%** + thin strip exist today).
 - **Batch export**.
 - **Real FaceFusion** frame pipeline in the sidecar (beyond import check / stubs).
 - **Robust Video Matting (ONNX)** or equivalent for true matting (current `rvm_chroma` is chroma-style).
