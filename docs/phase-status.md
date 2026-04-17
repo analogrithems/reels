@@ -8,7 +8,7 @@ High-level checklist for **infrastructure, engine, and repo documentation**. For
 
 ## Product UI phases (U1–U5)
 
-Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2-a … U5-c), **parking lot**, and **suggested next focus** live in **`docs/phases-ui.md`**. This file does not duplicate that roadmap; it tracks **engineering** phases below.
+Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2-a … U5-c), **parking lot**, **logging standards**, and **suggested next focus** live in **`docs/phases-ui.md`**. This file does not duplicate that roadmap; it tracks **engineering** phases below.
 
 ---
 
@@ -106,7 +106,7 @@ Implementation tracking for **menu- and timeline-visible** features described in
 
 - [x] **File → Open Recent** (**U4**) — MRU **projects** and **media**; **Clear Recent**; persistence + prune on missing file (per-entry remove optional / not shipped)
 - [x] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**) — per-clip, **Ctrl+R** / **Ctrl+Shift+R**; preview post-scaler + ffmpeg `-vf` on export
-- [ ] **Timeline** — **two markers** on the seek bar (in/out range); **double-click** timeline opens **trim** sheet (Trim / Cancel)
+- [ ] **Timeline** — **two markers** on the seek bar (in/out range) *(open)*; **double-click** the video track-lane strip opens **trim** sheet (Trim / Cancel) — **shipped**: per-clip begin/end in source-file seconds, inline validation (≥ 0, begin < end, ≥ 50 ms duration, ≤ source duration), undoable; also reachable from **Edit → Trim Clip…**
 - [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
 - [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)
 - [x] **View** — **Loop Playback** (primary-track sequence; **prefs** + **Ctrl+L** / **⌘L**)
@@ -121,6 +121,7 @@ Implementation tracking for **menu- and timeline-visible** features described in
 | Role | Use |
 |------|-----|
 | **Product / roadmap** | **`docs/phases-ui.md`** + **`docs/FEATURES.md`** |
+| **Session logs & `tracing`** | **`docs/phases-ui.md`** → *Logging standards*; **`docs/architecture.md`** (paths, `REEL_LOG*`) |
 | **Infra & engine completeness** | This file (Phases 0–3) |
 | **Design detail** | **`docs/architecture.md`**, **`docs/EXTERNAL_AI.md`** |
 

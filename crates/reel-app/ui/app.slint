@@ -1,5 +1,5 @@
 import { HelpWindow } from "help_window.slint";
-import { Button, ComboBox, HorizontalBox, Slider, VerticalBox } from "std-widgets.slint";
+import { Button, ComboBox, HorizontalBox, LineEdit, Slider, VerticalBox } from "std-widgets.slint";
 
 export { HelpWindow }
 
@@ -32,6 +32,19 @@ export component AppWindow inherits Window {
     in property <bool> split-at-playhead-enabled: false;
     /// True when the playhead is on a primary-track clip, so rotate/flip can run.
     in property <bool> rotate-enabled: false;
+    /// Same gate as `rotate-enabled` — the **Trim Clip…** sheet needs a clip under the playhead.
+    in property <bool> trim-enabled: false;
+
+    // --- Trim sheet (Edit → Trim Clip…) ---
+    in-out property <bool> trim-sheet-visible: false;
+    /// Prefilled by Rust when the sheet opens. The sheet writes the confirmed values back
+    /// via `trim-confirm(begin, end)`; these bindings are for display only.
+    in-out property <float> trim-begin-s: 0.0;
+    in-out property <float> trim-end-s: 0.0;
+    /// Source-file duration for the clip being trimmed; `0` when probe didn't report one.
+    in property <float> trim-source-duration-s: 0.0;
+    /// Error label under the fields; empty hides it.
+    in property <string> trim-error: "";
     in property <bool> export-in-progress: false;
     /// 0.0–1.0 while exporting; reset when export ends.
     in property <float> export-progress: 0.0;
@@ -92,6 +105,11 @@ export component AppWindow inherits Window {
     callback edit-rotate-left();
     callback edit-flip-horizontal();
     callback edit-flip-vertical();
+    /// Opens the Trim Clip… sheet for the clip under the playhead.
+    callback edit-trim-clip();
+    /// User pressed Trim in the sheet. Args are the entered begin / end seconds.
+    callback trim-confirm(float, float);
+    callback trim-cancel();
 
     callback effect-face-swap();
     callback effect-face-enhance();
@@ -314,6 +332,12 @@ export component AppWindow inherits Window {
                 title: "Flip Vertical";
                 enabled: root.rotate-enabled;
                 activated => { root.edit-flip-vertical(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Trim Clip…";
+                enabled: root.trim-enabled;
+                activated => { root.edit-trim-clip(); }
             }
         }
         Menu {
@@ -674,12 +698,24 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                Text {
-                    text: root.video-track-lanes;
-                    color: #8a8a95;
-                    font-size: 10px;
-                    wrap: word-wrap;
+                Rectangle {
+                    // Non-draggable track-lane strip — double-click opens the Trim Clip… sheet
+                    // for the clip at the current playhead. Single-click is a no-op so the
+                    // Slider below still owns scrubbing.
                     visible: root.video-track-lanes != "";
+                    height: lanes-text.preferred-height;
+                    lanes-text := Text {
+                        text: root.video-track-lanes;
+                        color: #8a8a95;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                    TouchArea {
+                        enabled: root.trim-enabled;
+                        double-clicked => {
+                            root.edit-trim-clip();
+                        }
+                    }
                 }
                 Text {
                     text: root.audio-track-lanes;
@@ -989,6 +1025,109 @@ export component AppWindow inherits Window {
                                     text: "Next…";
                                     clicked => {
                                         root.export-preset-confirm();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.trim-sheet-visible: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: rgba(0, 0, 0, 55%);
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    root.trim-cancel();
+                }
+            }
+            VerticalBox {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                HorizontalBox {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: min(parent.width * 0.92, 440px);
+                        background: #2e2e36;
+                        border-radius: 8px;
+                        TouchArea {
+                            // Swallow clicks inside the card so the backdrop doesn't close the sheet.
+                            width: 100%;
+                            height: 100%;
+                        }
+                        VerticalBox {
+                            padding: 16px;
+                            spacing: 10px;
+                            Text {
+                                text: "Trim Clip";
+                                color: #eee;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.trim-source-duration-s > 0
+                                    ? "Source duration: " + round(root.trim-source-duration-s * 1000) / 1000 + " s. Begin and end are in source-file seconds."
+                                    : "Begin and end are in source-file seconds (source duration unknown — ffmpeg will clamp on seek).";
+                                color: #888;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                spacing: 10px;
+                                VerticalBox {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Begin (s)";
+                                        color: #bbb;
+                                        font-size: 11px;
+                                    }
+                                    trim-begin-input := LineEdit {
+                                        text: round(root.trim-begin-s * 1000) / 1000;
+                                        input-type: decimal;
+                                    }
+                                }
+                                VerticalBox {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "End (s)";
+                                        color: #bbb;
+                                        font-size: 11px;
+                                    }
+                                    trim-end-input := LineEdit {
+                                        text: round(root.trim-end-s * 1000) / 1000;
+                                        input-type: decimal;
+                                    }
+                                }
+                            }
+                            if root.trim-error != "": Text {
+                                text: root.trim-error;
+                                color: #ff8080;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                spacing: 10px;
+                                alignment: end;
+                                Button {
+                                    text: "Cancel";
+                                    clicked => {
+                                        root.trim-cancel();
+                                    }
+                                }
+                                Button {
+                                    text: "Trim";
+                                    primary: true;
+                                    clicked => {
+                                        root.trim-confirm(
+                                            trim-begin-input.text.to-float(),
+                                            trim-end-input.text.to-float(),
+                                        );
                                     }
                                 }
                             }

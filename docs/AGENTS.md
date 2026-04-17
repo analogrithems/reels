@@ -11,7 +11,7 @@ This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, *
 5. **`docs/MEDIA_FORMATS.md`** — containers, streams, and limitations (update when format behavior changes).
 6. **`docs/SUPPORTED_FORMATS.md`** — playback vs export matrix and format roadmap (update when presets or decode scope changes).
 7. **`docs/EXTERNAL_AI.md`** — how effects hand off to external tools (update if stdin/JSON contract, tempfile rules, or env vars change).
-8. **`docs/phases-ui.md`** — UI phase roadmap (U1–U5), exit criteria, sub-milestones, **suggested next focus**.
+8. **`docs/phases-ui.md`** — UI phase roadmap (U1–U5), exit criteria, sub-milestones, **logging standards (requirement)**, **suggested next focus**.
 
 ## Responsibilities when landing changes
 
@@ -24,6 +24,7 @@ This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, *
 | New **bundled Help** document or menu entry | **`crates/reel-app/src/shell.rs`** (`HelpDoc` + `include_str!`), **`ui/app.slint`** (Help menu), **`main.rs`** callbacks, and **`docs/README.md`** (and the new `docs/*.md` file, e.g. **`KEYBOARD.md`**). |
 | Phase / milestone shift | **`docs/phases-ui.md`** (UI roadmap) and **`docs/phase-status.md`** (engineering checklist)—keep both consistent with **`docs/FEATURES.md`**. |
 | Roadmap **priority** or **sub-milestone** (U2-a … U5-c) changes | **`docs/phases-ui.md`** — **Suggested next focus**, exit criteria, checkboxes. |
+| New or materially changed **behavior** (flows, export, session, core paths) | Follow **`docs/phases-ui.md`** → **Logging standards** (`tracing` at appropriate levels); see **`docs/architecture.md`** for session file env vars. |
 
 ## Tooling expectations
 

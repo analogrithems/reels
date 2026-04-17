@@ -30,6 +30,7 @@ use session::{
     web_export_format_from_preset_index, EditSession,
 };
 use slint::ComponentHandle;
+use uuid::Uuid;
 
 use crate::media_extensions::{
     AUDIO_FILE_EXTENSIONS, OPEN_MEDIA_EXTENSIONS, VIDEO_CONTAINER_EXTENSIONS,
@@ -235,12 +236,14 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
             window.get_media_ready() && split_enabled_for_playhead(p, ph),
         );
         window.set_rotate_enabled(window.get_media_ready() && session.rotate_enabled(ph));
+        window.set_trim_enabled(window.get_media_ready() && session.trim_enabled(ph));
     } else {
         window.set_duration_ms(0.0);
         window.set_move_clip_down_enabled(false);
         window.set_move_clip_up_enabled(false);
         window.set_split_at_playhead_enabled(false);
         window.set_rotate_enabled(false);
+        window.set_trim_enabled(false);
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
@@ -359,6 +362,8 @@ fn main() -> Result<()> {
     window.set_move_clip_up_enabled(false);
     window.set_split_at_playhead_enabled(false);
     window.set_rotate_enabled(false);
+    window.set_trim_enabled(false);
+    window.set_trim_sheet_visible(false);
     window.set_footer_codec_line("".into());
     window.set_footer_path_line("".into());
     window.set_footer_save_line("".into());
@@ -380,6 +385,9 @@ fn main() -> Result<()> {
     let session = Rc::new(RefCell::new(EditSession::default()));
     let debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
     let recent = Rc::new(RefCell::new(RecentStore::load()));
+    // Tracks the clip currently loaded into the Trim Clip… sheet, so `on_trim_confirm` can
+    // apply the edit without racing against the playhead after the sheet opens.
+    let trim_target: Rc<RefCell<Option<Uuid>>> = Rc::new(RefCell::new(None));
     let export_cancel = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
 
     let player = match player::spawn_player(
@@ -1184,6 +1192,80 @@ fn main() -> Result<()> {
                     if let Some(w) = weak.upgrade() {
                         w.set_status_text(format!("{e:#}").into());
                     }
+                }
+            }
+        });
+    }
+
+    {
+        // Edit → Trim Clip… opens the sheet prefilled from the clip under the playhead.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let trim_target = Rc::clone(&trim_target);
+        window.on_edit_trim_clip(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let ph = w.get_playhead_ms() as f64;
+            let cand = session.borrow().trim_candidate_at_seq_ms(ph);
+            if let Some(c) = cand {
+                *trim_target.borrow_mut() = Some(c.clip_id);
+                w.set_trim_begin_s(c.current_in_s as f32);
+                w.set_trim_end_s(c.current_out_s as f32);
+                w.set_trim_source_duration_s(c.source_duration_s as f32);
+                w.set_trim_error("".into());
+                w.set_trim_sheet_visible(true);
+            } else {
+                w.set_status_text("No clip at playhead to trim".into());
+            }
+        });
+    }
+
+    {
+        // Trim sheet Cancel: just hide; don't touch the project.
+        let weak = window.as_weak();
+        let trim_target = Rc::clone(&trim_target);
+        window.on_trim_cancel(move || {
+            *trim_target.borrow_mut() = None;
+            if let Some(w) = weak.upgrade() {
+                w.set_trim_sheet_visible(false);
+                w.set_trim_error("".into());
+            }
+        });
+    }
+
+    {
+        // Trim sheet Confirm: validate through session.trim_clip and show inline errors
+        // in the sheet. On success, close sheet, reload timeline, resync playhead/menu.
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        let trim_target = Rc::clone(&trim_target);
+        window.on_trim_confirm(move |begin, end| {
+            let Some(w) = weak.upgrade() else { return };
+            let Some(clip_id) = *trim_target.borrow() else {
+                w.set_trim_sheet_visible(false);
+                return;
+            };
+            let r = session
+                .borrow_mut()
+                .trim_clip(clip_id, begin as f64, end as f64);
+            match r {
+                Ok(()) => {
+                    *trim_target.borrow_mut() = None;
+                    w.set_trim_sheet_visible(false);
+                    w.set_trim_error("".into());
+                    reload_player_timeline(&sender, &session.borrow());
+                    sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                    let dur = w.get_duration_ms();
+                    let ph = w.get_playhead_ms().min(dur);
+                    w.set_playhead_ms(ph);
+                    w.set_timecode(timecode::format_pair(ph, dur).into());
+                    sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
+                    w.set_status_text("Trimmed clip".into());
+                }
+                Err(e) => {
+                    w.set_trim_error(format!("{e:#}").into());
                 }
             }
         });

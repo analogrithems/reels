@@ -15,6 +15,21 @@ const MAX_UNDO: usize = 48;
 /// Epsilon for sequence-ms boundaries (float noise + UI rounding).
 const SEQ_MS_EPS: f64 = 1e-3;
 
+/// Smallest allowed clip span after a trim. Matches the threshold split/insert math already
+/// uses implicitly via `SEQ_MS_EPS` — one low-FPS frame (~16 ms) is comfortable above it.
+pub const MIN_TRIM_DURATION_S: f64 = 0.05;
+
+/// Data the trim-clip sheet needs to prefill: the target clip's id, its current in/out points,
+/// and the source file duration (0.0 when the probe didn't report one — the sheet then skips
+/// the upper-bound check and relies on ffmpeg to clamp during seek).
+#[derive(Debug, Clone, Copy)]
+pub struct TrimCandidate {
+    pub clip_id: Uuid,
+    pub current_in_s: f64,
+    pub current_out_s: f64,
+    pub source_duration_s: f64,
+}
+
 /// How **Insert Video** should place the new clip on the main video track.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum InsertPlan {
@@ -512,6 +527,89 @@ impl EditSession {
             .as_ref()
             .and_then(|p| crate::timeline::primary_clip_id_at_seq_ms(p, playhead_ms))
             .is_some()
+    }
+
+    /// Snapshot needed to populate the trim sheet for the clip at `seq_ms`.
+    /// `None` when no project is loaded or the playhead isn't on a primary-track clip.
+    pub fn trim_candidate_at_seq_ms(&self, seq_ms: f64) -> Option<TrimCandidate> {
+        let p = self.project.as_ref()?;
+        let id = crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms)?;
+        let c = p.clips.iter().find(|c| c.id == id)?;
+        Some(TrimCandidate {
+            clip_id: id,
+            current_in_s: c.in_point,
+            current_out_s: c.out_point,
+            source_duration_s: c.metadata.duration_seconds,
+        })
+    }
+
+    /// True when [`trim_candidate_at_seq_ms`] would return `Some` — used to gate the
+    /// **Edit → Trim Clip…** menu item.
+    pub fn trim_enabled(&self, playhead_ms: f64) -> bool {
+        self.trim_candidate_at_seq_ms(playhead_ms).is_some()
+    }
+
+    /// Set `clip_id.in_point` and `out_point` to the given source-file seconds. Undoable.
+    ///
+    /// Validates:
+    /// - clip exists in the project
+    /// - `0 <= new_in_s < new_out_s`
+    /// - `new_out_s <= source_duration_s`
+    /// - resulting duration `>= MIN_TRIM_DURATION_S` (50 ms — guards against zero-length clips
+    ///   and the epsilon-rejection edge case in split / timeline math).
+    ///
+    /// No undo snapshot is pushed when validation fails, matching [`rotate_playhead_clip_right`]'s
+    /// "failed op doesn't pollute undo" policy.
+    pub fn trim_clip(
+        &mut self,
+        clip_id: Uuid,
+        new_in_s: f64,
+        new_out_s: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        if !new_in_s.is_finite() || !new_out_s.is_finite() {
+            anyhow::bail!("trim values must be finite");
+        }
+        if new_in_s < 0.0 {
+            anyhow::bail!("trim begin must be >= 0");
+        }
+        if new_in_s >= new_out_s {
+            anyhow::bail!("trim begin must be < trim end");
+        }
+        if new_out_s - new_in_s < MIN_TRIM_DURATION_S {
+            anyhow::bail!("clip duration must be >= {:.3} s", MIN_TRIM_DURATION_S);
+        }
+        let source_duration_s = {
+            let p = self.project.as_ref().expect("checked");
+            let c = p
+                .clips
+                .iter()
+                .find(|c| c.id == clip_id)
+                .context("clip missing from project")?;
+            c.metadata.duration_seconds
+        };
+        // Source duration of `0` means probe didn't report it — treat as "unknown", skip upper bound.
+        if source_duration_s > 0.0 && new_out_s > source_duration_s + SEQ_MS_EPS {
+            anyhow::bail!(
+                "trim end ({new_out_s:.3}) exceeds source duration ({source_duration_s:.3})"
+            );
+        }
+
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        let clip = proj
+            .clips
+            .iter_mut()
+            .find(|c| c.id == clip_id)
+            .expect("clip existed a moment ago");
+        clip.in_point = new_in_s;
+        clip.out_point = new_out_s;
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
     }
 
     /// Load media or a saved **`.reel` / `.json` project**; clears undo/redo for a new media open,
@@ -1331,5 +1429,135 @@ mod tests {
             ms += (clip.out_point - clip.in_point) * 1000.0;
         }
         Some(ms)
+    }
+
+    /// Build an EditSession pre-populated with `two_clip_project()`, bypassing the
+    /// fixture-file requirement so trim tests don't depend on ffmpeg on CI.
+    fn session_with_two_clip_project() -> EditSession {
+        EditSession {
+            project: Some(two_clip_project()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn trim_candidate_none_without_project() {
+        let s = EditSession::default();
+        assert!(s.trim_candidate_at_seq_ms(0.0).is_none());
+        assert!(!s.trim_enabled(0.0));
+    }
+
+    #[test]
+    fn trim_candidate_on_first_clip_returns_bounds() {
+        let s = session_with_two_clip_project();
+        let p = s.project().unwrap();
+        let first_id = p.tracks[0].clip_ids[0];
+        // 500ms is inside first clip (spans 0–2000 ms)
+        let c = s
+            .trim_candidate_at_seq_ms(500.0)
+            .expect("candidate on first clip");
+        assert_eq!(c.clip_id, first_id);
+        assert!((c.current_in_s - 0.0).abs() < 1e-9);
+        assert!((c.current_out_s - 2.0).abs() < 1e-9);
+        assert!((c.source_duration_s - 2.0).abs() < 1e-9);
+        assert!(s.trim_enabled(500.0));
+    }
+
+    #[test]
+    fn trim_candidate_past_end_returns_none() {
+        let s = session_with_two_clip_project();
+        // two_clip_project totals 5s = 5000ms; well past end:
+        assert!(s.trim_candidate_at_seq_ms(999_999.0).is_none());
+        assert!(!s.trim_enabled(999_999.0));
+    }
+
+    #[test]
+    fn trim_clip_happy_path_updates_bounds_and_marks_dirty() {
+        let mut s = session_with_two_clip_project();
+        // Establish a saved baseline == current state so `dirty` tracks subsequent edits.
+        s.saved_baseline = s.project().cloned();
+        s.dirty = false;
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.trim_clip(first_id, 0.2, 1.5).expect("trim ok");
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!((c.in_point - 0.2).abs() < 1e-9);
+        assert!((c.out_point - 1.5).abs() < 1e-9);
+        assert!(s.dirty);
+        assert!(s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_clip_undo_restores_original_bounds() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.trim_clip(first_id, 0.3, 1.7).unwrap();
+        assert!(s.undo());
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!((c.in_point - 0.0).abs() < 1e-9);
+        assert!((c.out_point - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trim_clip_rejects_begin_ge_end_without_pushing_undo() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        assert!(!s.undo_enabled());
+        assert!(s.trim_clip(first_id, 1.0, 1.0).is_err());
+        assert!(s.trim_clip(first_id, 1.5, 1.0).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_clip_rejects_negative_begin() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        assert!(s.trim_clip(first_id, -0.1, 1.0).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_clip_rejects_duration_below_minimum() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        // Below MIN_TRIM_DURATION_S (0.05s)
+        assert!(s.trim_clip(first_id, 0.5, 0.52).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_clip_rejects_out_exceeding_source_duration() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        // Source duration is 2.0s; 2.5s is clearly out of range.
+        assert!(s.trim_clip(first_id, 0.0, 2.5).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_clip_rejects_unknown_clip_id() {
+        let mut s = session_with_two_clip_project();
+        assert!(s.trim_clip(Uuid::new_v4(), 0.0, 1.0).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_clip_rejects_non_finite_values() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        assert!(s.trim_clip(first_id, f64::NAN, 1.0).is_err());
+        assert!(s.trim_clip(first_id, 0.0, f64::INFINITY).is_err());
+        assert!(!s.undo_enabled());
     }
 }

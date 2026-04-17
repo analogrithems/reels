@@ -31,6 +31,7 @@ Below the transport bar, a **single-line footer** shows three regions separated 
 - **Insert Audio…** (**File** menu): probes the file and inserts on the **first audio track** at the playhead (same sequence-time rules as insert video). Requires **File → New Audio Track** first. **Ctrl+Shift+I** (**⌘⇧I**) when **Insert Audio** is enabled.
 - **Split Clip at Playhead** (**Edit** menu, **Ctrl+B** / **⌘B** when enabled): cuts the primary-track clip at the playhead into two clips (same source, adjusted in/out). Only when the playhead lies **strictly inside** a clip—not in a gap or on a cut (same rule as insert-split).
 - **Rotate / Flip** (**Edit** menu, enabled when the playhead is on a primary-track clip): **Rotate 90° Right** (**Ctrl+R** / **⌘R**), **Rotate 90° Left** (**Ctrl+Shift+R** / **⌘⇧R**), **Flip Horizontal**, **Flip Vertical**. Stored **per clip** in the project (survives save/load and splits). Preview applies the transform **after** the scaler; export re-encodes via ffmpeg `-vf` when any clip is non-identity. Mixed orientations across primary clips are **not** supported for export in one pass—align them or export separately.
+- **Trim Clip…** (**Edit** menu, enabled when the playhead is on a primary-track clip; also **double-click the video track-lane strip** above the slider): opens a sheet with **Begin (s)** and **End (s)** in source-file seconds. Validates **begin ≥ 0**, **begin < end**, **duration ≥ 50 ms**, and (when the probe reported a source duration) **end ≤ source duration**; inline error shown in the sheet on reject. **Trim** commits (undoable); **Cancel** closes without changes.
 - **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter). **Ctrl+S** (**⌘S** on macOS) when **Save** is enabled (same as the menu).
 - **Revert** restores the last explicit save baseline, or re-probes the original opened media file if never saved.
 - **Undo / Redo** (document snapshots): insert and related edits; **explicit Save** clears undo/redo stacks.
@@ -63,7 +64,6 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 ### Editing / timeline (QuickTime-style)
 
 - **Seek bar clip range** — **two markers** (in/out) on the timeline scrub bar to define a **begin** and **end** for the working range (export, trim, or preview scope—see **`docs/phases-ui.md` U2-d**).
-- **Double-click timeline** — opens **trim** UI: adjust begin/end, **Trim** (commit) or **Cancel** (QuickTime-like).
 - **Edit → Resize Video…** — scale to target resolution / preset dimensions.
 - **Multi-track** video (multiple `TrackKind::Video` lanes) and **separate audio tracks**: secondary **video** lanes are still not in the video preview; **mixing** multiple audio lanes, **gain**, and **J/L cuts** are open. **U2-b** preview now **switches** to the first audio lane when it has clips (see **Project & timeline** above).
 - **Trim / ripple / roll** at playhead beyond the trim sheet; blade tool; slip/slide.
