@@ -77,6 +77,20 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 
 ---
 
+## Phase UT — UI testing harness 🚧
+
+Implementation notes live in **`docs/phases-ui-test.md`**. This row tracks engineering shipments.
+
+- [x] **Strict version pin** — `i-slint-backend-testing = "=1.16.0"` in `[workspace.dependencies]`, consumed by `reel-app` as a dev-dep. Must be bumped in lockstep with `slint`.
+- [x] **Headless harness** — `ui_test_support::init()` (`crates/reel-app/src/main.rs`) wraps `init_integration_test_with_system_time()` behind a `Once`; first smoke test boots `AppWindow`, verifies startup defaults, and round-trips `export-preset-index` across the full 0..=3 range.
+- [x] **Probe seam** (Phase 1b) — `MediaProbe` threaded through `project_from_media_path_with_probe` + `EditSession::{open_media,insert_clip_at_playhead,insert_audio_clip_at_playhead}_with_probe`; `FakeProbe` test helper in `session.rs` drives a no-ffmpeg Open → Insert scenario (`session::tests::open_and_insert_via_fake_probe_no_ffmpeg`).
+- [ ] **Player engine trait** — abstract `crates/reel-app/src/player.rs` so tests can inject a mock engine (returns static frames, no ffmpeg). Deferred until a UI test actually needs rendered frames or timing behavior.
+- [x] **`Open → Edit → Export` integration test** — three layers shipped: (a) headless UI smoke — `ui_smoke_tests::window_boots_and_round_trips_basic_properties` boots `AppWindow`, drives Open through `FakeProbe`, asserts Slint menu-gate properties, and invokes all three `file-export` preflight branches (sheet opens / status warns / silent); (b) preset-confirm seam — `prepare_export_job(&session, preset_index, &dyn SaveDialogProvider) -> ExportPreflight`, with `StubSaveDialog` covering invalid preset index, empty range, cancelled dialog, wrong extension, happy-path `Spawn`, marker range passthrough, and preset-index → `WebExportFormat` wiring for all four presets; (c) export pipeline — `export_payload_tests::payload_*` covers `export_timeline_payload` for single-clip, range-sliced, out-of-range, first-audio-lane cases. Still deferred: live click through `invoke_export_preset_confirm()` (needs wiring a `SaveDialogProvider` into `install_export_preset_confirm_callback` so tests can swap it) and `ElementHandle::find_by_accessible_label` usage (blocked on adding `accessible-label` to Slint buttons).
+- [ ] **Visual regression harness** — software renderer capture + golden PNG diffing (`UPDATE_EXPECTATIONS` env to regenerate).
+- [x] **Post-export validation for session-driven exports** — `export_payload_tests::roundtrip_session_to_ffmpeg_to_reprobe_mp4_remux` opens the fixture through `FfmpegProbe`, runs the real `export_concat_timeline`, and re-probes the output (duration > 0, video stream present). Complements `crates/reel-core/tests/export_web_formats.rs` which covers each preset in isolation.
+
+---
+
 ## Phase 4 — Distribution & long-form docs 📋
 
 - [x] Core technical docs: `architecture.md`, `phases-ui.md`, `phase-status.md`, `HELP.md`
@@ -91,7 +105,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 
 Source matrix: **`docs/SUPPORTED_FORMATS.md`**. These items track **first-class** support beyond “whatever FFmpeg accepts today.”
 
-- [ ] **Export — H.264 + AAC MP4 transcode preset** (explicit encode when `-c copy` fails or for fixed delivery targets)
+- [x] **Export — H.264 + AAC MP4 transcode preset** — explicit encode preset **MP4 — H.264 + AAC** (`libx264 -preset medium -crf 20 -pix_fmt yuv420p`, AAC 160 kbps, `+faststart`); use when MP4 remux fails on codec mismatch or for fixed delivery targets
 - [ ] **Export — VP9 and/or AV1 WebM** as user-selectable presets (today: **VP8 + Opus** only for `.webm`)
 - [ ] **Export — UX for remux failures** — clearer errors when MP4/MKV reject a stream (codec / licensing / mux constraints); link to transcode presets above
 - [ ] **Export — MOV mux** and/or **ProRes / DNx** intermediate paths for pro handoff
@@ -113,7 +127,7 @@ Implementation tracking for **menu- and timeline-visible** features described in
 - [x] **View** — **Loop Playback** (primary-track sequence; **prefs** + **Ctrl+L** / **⌘L**)
 - [x] **View** — **Zoom** (in / out / fit / actual size; **prefs** + **Ctrl+=** / **+-** / **0**); **Enter/Exit Fullscreen** (menu; **Esc**)
 - [ ] **View** (optional) — **Zoom to Video**; **pan** when zoomed; **fullscreen** on playback toolbar
-- [ ] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers, not only remux / VP8 WebM)
+- [ ] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers). **Shipped today:** MP4 remux, **MP4 H.264 + AAC** (web-tier transcode), WebM (VP8 + Opus), MKV remux. **Remaining:** VP9 / AV1 WebM, HEVC + AAC MP4 (mobile tier), MOV / ProRes / DNx intermediates.
 
 ---
 

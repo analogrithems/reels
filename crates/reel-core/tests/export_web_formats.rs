@@ -33,7 +33,10 @@ fn exports_fixture_to_each_web_format() {
     std::fs::create_dir_all(&out_dir).expect("create verify dir");
 
     for fmt in WebExportFormat::ALL {
-        let name = format!("tiny_h264_aac.{}", fmt.file_extension());
+        // Variant slug so MP4 remux and MP4 H.264+AAC don't overwrite each other in the
+        // verification dir (both share the .mp4 extension).
+        let slug = format!("{fmt:?}").to_lowercase();
+        let name = format!("tiny_h264_aac_{slug}.{}", fmt.file_extension());
         let output = out_dir.join(&name);
         export_with_ffmpeg(&input, &output, fmt).unwrap_or_else(|e| {
             panic!("export {:?} failed: {e}", output);

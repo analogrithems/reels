@@ -30,9 +30,16 @@ pub fn load_project_file(path: &Path) -> anyhow::Result<Project> {
     Ok(p)
 }
 
-/// Probe `media` and build a single-clip, single-track project.
-pub fn project_from_media_path(media: &Path) -> anyhow::Result<Project> {
-    let probe = FfmpegProbe::new();
+/// Probe `media` with `probe` and build a single-clip, single-track project.
+///
+/// Taking `&dyn MediaProbe` is the injection seam for UI/unit tests (see
+/// `docs/phases-ui-test.md` Phase 1b). Production code should keep calling
+/// [`project_from_media_path`], which wraps this with the real
+/// [`FfmpegProbe`].
+pub fn project_from_media_path_with_probe(
+    probe: &dyn MediaProbe,
+    media: &Path,
+) -> anyhow::Result<Project> {
     let md = probe.probe(media).context("probe media")?;
     let clip_id = Uuid::new_v4();
     let track_id = Uuid::new_v4();
@@ -59,6 +66,15 @@ pub fn project_from_media_path(media: &Path) -> anyhow::Result<Project> {
         extensions: Default::default(),
     });
     Ok(p)
+}
+
+/// Probe `media` (real ffmpeg) and build a single-clip, single-track project.
+///
+/// Thin wrapper over [`project_from_media_path_with_probe`] that supplies the
+/// real ffmpeg-backed probe. Prefer the `_with_probe` variant from tests.
+pub fn project_from_media_path(media: &Path) -> anyhow::Result<Project> {
+    let probe = FfmpegProbe::new();
+    project_from_media_path_with_probe(&probe, media)
 }
 
 /// Serialize `project` to `out` (pretty JSON).

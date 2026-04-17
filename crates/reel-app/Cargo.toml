@@ -32,3 +32,4 @@ slint-build.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+i-slint-backend-testing.workspace = true

@@ -688,8 +688,21 @@ impl EditSession {
     }
 
     /// Load media or a saved **`.reel` / `.json` project**; clears undo/redo for a new media open,
-    /// or establishes a save baseline when opening a project file.
+    /// or establishes a save baseline when opening a project file. Uses the real ffmpeg probe.
     pub fn open_media(&mut self, path: PathBuf) -> anyhow::Result<()> {
+        let probe = FfmpegProbe::new();
+        self.open_media_with_probe(&probe, path)
+    }
+
+    /// Open-media variant that takes an injected `&dyn MediaProbe`. Used by UI
+    /// tests that want to exercise the Open flow without ffmpeg. Project-file
+    /// opens (`.reel` / `.json`) skip the probe entirely and ignore the
+    /// injected dependency, matching [`Self::open_media`] behavior.
+    pub fn open_media_with_probe(
+        &mut self,
+        probe: &dyn MediaProbe,
+        path: PathBuf,
+    ) -> anyhow::Result<()> {
         if is_project_document_path(&path) {
             let p = load_project_file(&path)?;
             self.current_media = primary_video_source_path(&p);
@@ -698,7 +711,7 @@ impl EditSession {
             self.clear_markers();
             return Ok(());
         }
-        let p = project_from_media_path(&path)?;
+        let p = crate::project_io::project_from_media_path_with_probe(probe, &path)?;
         self.current_media = Some(path);
         self.project = Some(p);
         self.saved_baseline = None;
@@ -724,9 +737,22 @@ impl EditSession {
     }
 
     /// Insert a new clip from disk at the timeline position indicated by `playhead_ms`
-    /// (milliseconds on the concatenated sequence).
+    /// (milliseconds on the concatenated sequence). Uses the real ffmpeg probe.
     pub fn insert_clip_at_playhead(
         &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        let probe = FfmpegProbe::new();
+        self.insert_clip_at_playhead_with_probe(&probe, path, playhead_ms)
+    }
+
+    /// Insert variant that takes an injected `&dyn MediaProbe`. Tests pass a
+    /// fake probe here so the edit flow exercises its split / append logic
+    /// without spinning up ffmpeg. See `docs/phases-ui-test.md` Phase 1b.
+    pub fn insert_clip_at_playhead_with_probe(
+        &mut self,
+        probe: &dyn MediaProbe,
         path: PathBuf,
         playhead_ms: f64,
     ) -> anyhow::Result<()> {
@@ -740,7 +766,6 @@ impl EditSession {
 
         let plan = insert_plan_for_playhead_ms(proj, playhead_ms).context("no video track")?;
 
-        let probe = FfmpegProbe::new();
         let md = probe.probe(&path).context("probe insert")?;
         let new_id = Uuid::new_v4();
         let dur = md.duration_seconds;
@@ -823,9 +848,21 @@ impl EditSession {
     }
 
     /// Insert audio from disk on the **first** audio track at `playhead_ms` (primary video sequence time).
-    /// Requires **File → New Audio Track** (or an existing audio lane) first.
+    /// Requires **File → New Audio Track** (or an existing audio lane) first. Uses the real ffmpeg probe.
     pub fn insert_audio_clip_at_playhead(
         &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        let probe = FfmpegProbe::new();
+        self.insert_audio_clip_at_playhead_with_probe(&probe, path, playhead_ms)
+    }
+
+    /// Audio-insert variant that takes an injected `&dyn MediaProbe`. See
+    /// [`EditSession::insert_clip_at_playhead_with_probe`] for the rationale.
+    pub fn insert_audio_clip_at_playhead_with_probe(
+        &mut self,
+        probe: &dyn MediaProbe,
         path: PathBuf,
         playhead_ms: f64,
     ) -> anyhow::Result<()> {
@@ -840,7 +877,6 @@ impl EditSession {
         let plan = insert_plan_for_first_audio_track_ms(proj, playhead_ms)
             .context("add an audio track first (File → New Audio Track)")?;
 
-        let probe = FfmpegProbe::new();
         let md = probe.probe(&path).context("probe insert")?;
         let new_id = Uuid::new_v4();
         let dur = md.duration_seconds;
@@ -1082,8 +1118,69 @@ pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebE
     }
 }
 
+/// Test-only helpers exposed to sibling `#[cfg(test)]` modules in this crate
+/// (notably `main::ui_smoke_tests`). Kept in a separate module so `FakeProbe`
+/// is reachable from any `crate::session::tests_fake_probe::FakeProbe` path.
+#[cfg(test)]
+pub(crate) mod tests_fake_probe {
+    use super::*;
+    use reel_core::{MediaMetadata, VideoStreamInfo};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Fake probe for Phase 1b UI/unit tests: returns canned [`MediaMetadata`]
+    /// for any path, so Open / Insert flows exercise the edit model without
+    /// ffmpeg on disk. See `docs/phases-ui-test.md` Phase 1b.
+    ///
+    /// Tests that want a specific duration (e.g. to land a split at a known
+    /// ms boundary) should use [`FakeProbe::with_duration`].
+    pub(crate) struct FakeProbe {
+        duration_seconds: f64,
+        /// Paths passed to `probe`, in call order — tests assert on this to
+        /// confirm the seam is actually invoked from the expected call site.
+        calls: Mutex<Vec<PathBuf>>,
+    }
+
+    impl FakeProbe {
+        pub(crate) fn with_duration(duration_seconds: f64) -> Self {
+            Self {
+                duration_seconds,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        pub(crate) fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl MediaProbe for FakeProbe {
+        fn probe(
+            &self,
+            path: &std::path::Path,
+        ) -> Result<MediaMetadata, reel_core::error::ProbeError> {
+            self.calls.lock().unwrap().push(path.to_path_buf());
+            Ok(MediaMetadata {
+                path: path.to_path_buf(),
+                duration_seconds: self.duration_seconds,
+                container: "fake".into(),
+                video: Some(VideoStreamInfo {
+                    codec: "h264".into(),
+                    width: 16,
+                    height: 16,
+                    frame_rate: 24.0,
+                    pixel_format: "YUV420P".into(),
+                    rotation: 0,
+                }),
+                audio: None,
+                audio_disabled: false,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::tests_fake_probe::FakeProbe;
     use super::*;
     use reel_core::{Clip, MediaMetadata, Project, Track, TrackKind};
     use uuid::Uuid;
@@ -1095,6 +1192,47 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("tiny_h264_aac.mp4")
+    }
+
+    /// Exercises the Phase 1b seam: open + insert at the tail of the
+    /// timeline without touching ffmpeg. Guards against regressions where a
+    /// future refactor hard-codes `FfmpegProbe::new()` back into the flow —
+    /// that would make this test panic inside `FakeProbe` call counting.
+    #[test]
+    fn open_and_insert_via_fake_probe_no_ffmpeg() {
+        let probe = FakeProbe::with_duration(4.0);
+        let mut s = EditSession::default();
+        let fake = PathBuf::from("/tmp/fake-video-1.mp4");
+        s.open_media_with_probe(&probe, fake.clone())
+            .expect("open with fake probe");
+        let p = s.project().expect("project after open");
+        assert_eq!(p.clips.len(), 1);
+        assert_eq!(p.clips[0].out_point, 4.0, "clip out-point = fake duration");
+
+        // Insert a second clip at the tail.
+        let tail_ms = timeline_end_ms_for_tests(p).unwrap_or(0.0);
+        let second = PathBuf::from("/tmp/fake-video-2.mp4");
+        s.insert_clip_at_playhead_with_probe(&probe, second.clone(), tail_ms)
+            .expect("insert with fake probe");
+
+        let p = s.project().unwrap();
+        assert_eq!(p.clips.len(), 2);
+        let track = p
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .expect("video track");
+        assert_eq!(track.clip_ids.len(), 2);
+        assert_eq!(p.clips[0].source_path, fake);
+        assert_eq!(p.clips[1].source_path, second);
+        // Both flows must call through the injected probe — 1 for open, 1 for insert.
+        assert_eq!(probe.call_count(), 2);
+
+        // Undo / redo still intact once we've bypassed ffmpeg.
+        assert!(s.undo());
+        assert_eq!(s.project().unwrap().clips.len(), 1);
+        assert!(s.redo());
+        assert_eq!(s.project().unwrap().clips.len(), 2);
     }
 
     #[test]
@@ -1281,7 +1419,10 @@ mod tests {
             F::Mp4Remux
         ));
         assert!(!path_matches_export_format(Path::new("x.mp4"), F::MkvRemux));
-        assert!(!path_matches_export_format(Path::new("no_ext"), F::Mp4Remux));
+        assert!(!path_matches_export_format(
+            Path::new("no_ext"),
+            F::Mp4Remux
+        ));
     }
 
     #[test]

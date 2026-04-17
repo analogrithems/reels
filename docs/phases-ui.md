@@ -18,7 +18,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
 | **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); **seek-bar range markers** **shipped** (I/O keys + Edit menu); **range-scoped export** **shipped** (markers slice ffmpeg concat); multi-lane **partial**; **planned:** **audio** remove/replace/overlay+gain, **resize**, timeline in/out handles + ripple |
-| **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 / WebM / MKV preset sheet** **done**; **planned:** H.264/AAC transcode, VP9/AV1 WebM, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
+| **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 remux / MP4 H.264+AAC / WebM / MKV preset sheet** **done** (MP4 H.264+AAC is the guaranteed transcode path when remux fails); **planned:** VP9/AV1 WebM, HEVC MP4, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
 | **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **QuickTime-style** floating **volume + transport + scrub + times** over the **video** (auto-hide ~5 s idle); stepped speeds — see **U4** body |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
 
@@ -170,21 +170,21 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 **Exit criteria (not all met)**
 
-- [ ] User picks **named export configurations** aligned with **`docs/SUPPORTED_FORMATS.md`** — at minimum: **web** targets (e.g. **H.264 + AAC-LC MP4**, **VP9 or AV1 WebM** when codecs exist), **mobile-friendly** tiers (e.g. **HEVC + AAC** MP4 where supported), plus existing **remux** / **compatibility** paths; exact list ships with the preset picker.
+- [ ] User picks **named export configurations** aligned with **`docs/SUPPORTED_FORMATS.md`** — **shipped tiers:** MP4 remux, **MP4 — H.264 + AAC** (web-tier transcode), WebM VP8+Opus, MKV remux. **Remaining:** **VP9 / AV1 WebM**, **HEVC + AAC MP4** (mobile tier), and any resolution/bitrate knobs.
 - [ ] User picks **preset** (resolution / bitrate / format family) from the app (may merge with the row above).
 - [x] Long exports show **cancellable** ffmpeg work without killing the whole app (**Esc** / **Cancel export** on the progress modal).
 - [x] **Determinate export feedback** in the main window: status **%** plus a thin **progress strip** above the transport row (ffmpeg `out_time_ms` vs timeline duration).
 
 **Partial / shipped**
 
-- **Export** runs **off the UI thread**; **File → Export…** opens a **preset sheet** (MP4 remux, WebM VP8+Opus, MKV remux), then a filtered save dialog; status line shows **Exporting…**, then **Exporting… N%**, with the **strip** filling left→right, then result (see **`docs/FEATURES.md`**).
+- **Export** runs **off the UI thread**; **File → Export…** opens a **preset sheet** (**MP4 remux**, **MP4 — H.264 + AAC** transcode, **WebM VP8+Opus**, **MKV remux**), then a filtered save dialog; status line shows **Exporting…**, then **Exporting… N%**, with the **strip** filling left→right, then result (see **`docs/FEATURES.md`**). The **MP4 H.264+AAC** preset is the guaranteed MP4-side fallback when remux `-c copy` rejects a mix of codecs.
 
 **Not started (UI)**
 
-- **Rich preset catalog**: named tiers (e.g. **H.264 + AAC-LC** MP4 transcode, **VP9/AV1** WebM) + resolution / bitrate fields per **`SUPPORTED_FORMATS.md`** roadmap.
+- **Rich preset catalog extensions**: **VP9 / AV1** WebM, **HEVC + AAC** MP4 (mobile tier), resolution / bitrate fields per **`SUPPORTED_FORMATS.md`** roadmap.
 - **Batch** export.
 
-*Today:* preset sheet maps 1:1 to existing `WebExportFormat` variants; advanced transcodes remain **ffmpeg CLI / roadmap** work (see **`docs/SUPPORTED_FORMATS.md`**).
+*Today:* preset sheet maps 1:1 to `WebExportFormat` variants (Mp4Remux, Mp4H264Aac, WebmVp8Opus, MkvRemux); further advanced transcodes remain **roadmap** work (see **`docs/SUPPORTED_FORMATS.md`**).
 
 ---
 
@@ -273,7 +273,7 @@ Items live in **`docs/FEATURES.md`** until we carve **U6+**:
 Priorities change; this is **guidance for contributors**, not a commitment.
 
 1. **U2-e** — **audio** remove/replace/overlay with independent volume (depends on **U2-b** for mix/export). **Rotate/flip**, **Trim Clip…** sheet, **seek-bar range markers**, and **range-scoped export** are **shipped** (see **FEATURES.md**). Remaining under **U2-d**: **timeline in/out handles** so the markers also live on the scrub bar as drag handles.
-2. **U3** — **Export preset catalog** (H.264/AAC, VP9/AV1 tiers, etc.) from **`SUPPORTED_FORMATS.md`**; determinate **%** + strip already shipped — further **chrome** polish optional.
+2. **U3** — **Export preset catalog** per **`SUPPORTED_FORMATS.md`**. **Shipped:** MP4 remux, **MP4 H.264+AAC** transcode, WebM (VP8+Opus), MKV remux; **remaining:** **VP9 / AV1 WebM**, **HEVC + AAC MP4** (mobile tier), and resolution/bitrate fields. Determinate **%** + strip already shipped — further **chrome** polish optional.
 3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome). (**Open Recent**, **View** loop/zoom/fullscreen, timeline scrub reliability — shipped.)
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 

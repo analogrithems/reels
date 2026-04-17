@@ -24,7 +24,7 @@ tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 tracing-appender    = "0.2"
 ffmpeg-next         = { version = "7.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
-slint               = { version = "1.8", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
+slint               = { version = "1.8", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "compat-1-2"] }
 slint-build         = "1.8"
 cpal                = "0.15"
 clap                = { version = "4", features = ["derive"] }
@@ -41,6 +41,10 @@ assert_matches      = "1.5"
 insta               = { version = "1", features = ["json"] }
 mockall             = "0.12"
 pretty_assertions   = "1"
+# Slint's testing backend does NOT follow semver — the version must match the slint
+# crate exactly (see docs/phases-ui-test.md Phase 1). When bumping `slint` above,
+# bump this pin in lockstep.
+i-slint-backend-testing = "=1.16.0"
 
 [profile.dev]
 # ffmpeg decode is unusably slow at opt-level 0 on debug builds.

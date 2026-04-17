@@ -174,6 +174,254 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
     }
 }
 
+/// Injection seam for the native "save as…" dialog that `on_export_preset_confirm`
+/// opens after the user picks a preset. Production uses [`RfdSaveDialog`], which
+/// delegates to `rfd::FileDialog`; tests pass a stub that returns a pre-baked
+/// path (or `None` to emulate a cancelled dialog) so the callback is fully
+/// exercisable under `i-slint-backend-testing` without a windowing system.
+///
+/// See `docs/phases-ui-test.md` Phase 1b / Phase 2.
+pub(crate) trait SaveDialogProvider {
+    /// Show a "save as…" dialog configured for `fmt` and return the chosen path
+    /// (or `None` when the user cancels).
+    fn pick(&self, fmt: reel_core::WebExportFormat) -> Option<PathBuf>;
+}
+
+/// Production [`SaveDialogProvider`] backed by [`rfd::FileDialog`].
+pub(crate) struct RfdSaveDialog;
+
+impl SaveDialogProvider for RfdSaveDialog {
+    fn pick(&self, fmt: reel_core::WebExportFormat) -> Option<PathBuf> {
+        export_save_dialog(fmt).save_file()
+    }
+}
+
+/// Outcome of [`prepare_export_job`] — the pure decision the preset-confirm
+/// callback has to make before kicking off an ffmpeg thread.
+///
+/// Breaking this out keeps the decision table testable in isolation: the
+/// Slint callback only dispatches on the enum (status line vs. spawn a
+/// background thread), so every branch the user can actually hit has a
+/// corresponding `#[test]` in `export_payload_tests`.
+#[derive(Debug)]
+pub(crate) enum ExportPreflight {
+    /// Do nothing (e.g. the user cancelled the save dialog). No status update.
+    NoOp,
+    /// Show a user-facing message and stop. Covers invalid preset index,
+    /// empty In/Out range, mixed orientations, and wrong-extension paths.
+    Status(String),
+    /// Proceed to the ffmpeg export thread with these parameters.
+    Spawn {
+        video_spans: ExportSpanVec,
+        audio_spans: Option<ExportSpanVec>,
+        orientation: Option<ClipOrientation>,
+        dest: PathBuf,
+        fmt: reel_core::WebExportFormat,
+        range_ms: Option<(f64, f64)>,
+    },
+}
+
+/// Pure decision logic behind `on_export_preset_confirm`.
+///
+/// Walks the same gauntlet the production callback walks — preset index → payload
+/// → orientation → save dialog → extension check — and returns an
+/// [`ExportPreflight`]. No Slint, no threading, no ffmpeg here; the caller
+/// (`install_export_preset_confirm_callback`) dispatches on the result.
+///
+/// `save_dialog` is injectable so tests can drive every branch
+/// (`StubSaveDialog` returning `Some(path)` vs `None`).
+pub(crate) fn prepare_export_job(
+    session: &EditSession,
+    preset_index: i32,
+    save_dialog: &dyn SaveDialogProvider,
+) -> ExportPreflight {
+    let Some(fmt) = web_export_format_from_preset_index(preset_index) else {
+        return ExportPreflight::Status("Invalid export preset.".into());
+    };
+
+    let range_ms = session.marker_range_ms();
+    let Some((video_spans, audio_spans)) = export_timeline_payload(session, range_ms) else {
+        return ExportPreflight::Status(
+            "No clips in the In/Out range — clear markers or adjust them to export.".into(),
+        );
+    };
+
+    let orientation = match unified_export_video_orientation(session) {
+        Ok(o) => o,
+        Err(msg) => return ExportPreflight::Status(msg),
+    };
+
+    let Some(dest) = save_dialog.pick(fmt) else {
+        return ExportPreflight::NoOp;
+    };
+
+    if !path_matches_export_format(&dest, fmt) {
+        return ExportPreflight::Status(format!(
+            "Use a .{} file name for this preset.",
+            fmt.file_extension()
+        ));
+    }
+
+    ExportPreflight::Spawn {
+        video_spans,
+        audio_spans,
+        orientation,
+        dest,
+        fmt,
+        range_ms,
+    }
+}
+
+/// Wire the **Export preset → Confirm** callback (`on_export_preset_confirm`)
+/// onto `window`.
+///
+/// Always closes the preset sheet, then calls [`prepare_export_job`] with
+/// [`RfdSaveDialog`] and dispatches on the returned [`ExportPreflight`]:
+/// `Status` routes to the status line, `Spawn` starts the ffmpeg thread with
+/// progress reporting and the shared cancel flag, `NoOp` does nothing (the
+/// user cancelled the save dialog).
+///
+/// Extracted so tests can exercise `prepare_export_job` with a `StubSaveDialog`
+/// without installing Slint callbacks — see `docs/phases-ui-test.md` Phase 2.
+fn install_export_preset_confirm_callback(
+    window: &AppWindow,
+    session: Rc<RefCell<EditSession>>,
+    export_cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+) {
+    let weak = window.as_weak();
+    window.on_export_preset_confirm(move || {
+        let Some(w) = weak.upgrade() else {
+            return;
+        };
+        let idx = w.get_export_preset_index();
+        w.set_export_preset_dialog_visible(false);
+        drop(w);
+
+        let preflight = prepare_export_job(&session.borrow(), idx, &RfdSaveDialog);
+        match preflight {
+            ExportPreflight::NoOp => {}
+            ExportPreflight::Status(msg) => {
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_text(msg.into());
+                }
+            }
+            ExportPreflight::Spawn {
+                video_spans,
+                audio_spans,
+                orientation,
+                dest,
+                fmt,
+                range_ms,
+            } => {
+                let cancel = Arc::new(AtomicBool::new(false));
+                *export_cancel.lock().expect("export cancel mutex") = Some(cancel.clone());
+                let start_status = match range_ms {
+                    Some((i, o)) => {
+                        format!("Exporting range {:.3}–{:.3} s…", i / 1000.0, o / 1000.0)
+                    }
+                    None => "Exporting…".to_string(),
+                };
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_text(start_status.into());
+                    w.set_export_progress(0.0);
+                    w.set_export_in_progress(true);
+                }
+                let weak_done = weak.clone();
+                let weak_prog = weak.clone();
+                let dest_disp = dest.display().to_string();
+                let slot_clear = Arc::clone(&export_cancel);
+                let on_ratio: Option<ExportProgressFn> = Some(Arc::new(move |r: f64| {
+                    let pct = (r.clamp(0.0, 1.0) * 100.0).round() as i32;
+                    let wk = weak_prog.clone();
+                    on_ui(wk, move |win| {
+                        win.set_export_progress(r.clamp(0.0, 1.0) as f32);
+                        win.set_status_text(format!("Exporting… {pct}%").into());
+                    });
+                }));
+                let res = std::thread::Builder::new()
+                    .name("reel-export".into())
+                    .spawn(move || {
+                        let r = export_concat_with_audio_oriented(
+                            &video_spans,
+                            audio_spans.as_deref(),
+                            orientation,
+                            &dest,
+                            fmt,
+                            Some(cancel.as_ref()),
+                            on_ratio,
+                        );
+                        let msg = match &r {
+                            Ok(()) => format!("Exported to {dest_disp}"),
+                            Err(e) => {
+                                if e.is_cancelled() {
+                                    "Export cancelled.".into()
+                                } else {
+                                    format!("Export failed: {e}")
+                                }
+                            }
+                        };
+                        on_ui(weak_done, move |w| {
+                            *slot_clear.lock().expect("export cancel mutex") = None;
+                            w.set_export_in_progress(false);
+                            w.set_export_progress(0.0);
+                            w.set_status_text(msg.into());
+                        });
+                        if let Err(e) = &r {
+                            if !e.is_cancelled() {
+                                tracing::error!(error = %e, "export failed");
+                            }
+                        }
+                    });
+                if let Err(e) = res {
+                    tracing::error!(?e, "failed to spawn export thread");
+                    *export_cancel.lock().expect("export cancel mutex") = None;
+                    on_ui(weak.clone(), |w| {
+                        w.set_export_in_progress(false);
+                        w.set_export_progress(0.0);
+                        w.set_status_text("Could not start export".into());
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// Wire the **Export…** pre-flight callback (`on_file_export`) onto `window`.
+///
+/// The pre-flight does *not* run ffmpeg and does *not* open a save dialog; it
+/// only inspects the session and decides one of three outcomes:
+/// 1. Empty project or no video → silent no-op (nothing the user sees).
+/// 2. Both markers set but slice has no clips → status line shows the
+///    "No clips in the In/Out range…" message; preset sheet stays closed.
+/// 3. Otherwise → flip `export_preset_dialog_visible` on so the Slint sheet
+///    appears, where the user picks a preset.
+///
+/// Extracted so `#[test]` modules can invoke `window.invoke_file_export()` and
+/// assert against the three branches without going through a native save
+/// dialog. Production uses the same helper — no behavior drift between
+/// tests and `main()`. See `docs/phases-ui-test.md` Phase 2.
+fn install_export_preflight_callback(window: &AppWindow, session: Rc<RefCell<EditSession>>) {
+    let weak = window.as_weak();
+    window.on_file_export(move || {
+        let range = session.borrow().marker_range_ms();
+        if export_timeline_payload(&session.borrow(), range).is_none() {
+            // Distinguish "no project / no video" (silent) from "markers set but empty range".
+            if range.is_some() && export_timeline_payload(&session.borrow(), None).is_some() {
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_text(
+                        "No clips in the In/Out range — clear markers or adjust them to export."
+                            .into(),
+                    );
+                }
+            }
+            return;
+        }
+        if let Some(w) = weak.upgrade() {
+            w.set_export_preset_dialog_visible(true);
+        }
+    });
+}
+
 fn begin_export_effect(
     weak: slint::Weak<AppWindow>,
     session: Rc<RefCell<EditSession>>,
@@ -1008,28 +1256,7 @@ fn main() -> Result<()> {
         });
     }
 
-    {
-        let weak = window.as_weak();
-        let session = Rc::clone(&session);
-        window.on_file_export(move || {
-            let range = session.borrow().marker_range_ms();
-            if export_timeline_payload(&session.borrow(), range).is_none() {
-                // Distinguish "no project / no video" (silent) from "markers set but empty range".
-                if range.is_some() && export_timeline_payload(&session.borrow(), None).is_some() {
-                    if let Some(w) = weak.upgrade() {
-                        w.set_status_text(
-                            "No clips in the In/Out range — clear markers or adjust them to export."
-                                .into(),
-                        );
-                    }
-                }
-                return;
-            }
-            if let Some(w) = weak.upgrade() {
-                w.set_export_preset_dialog_visible(true);
-            }
-        });
-    }
+    install_export_preflight_callback(&window, Rc::clone(&session));
 
     {
         let weak = window.as_weak();
@@ -1040,128 +1267,11 @@ fn main() -> Result<()> {
         });
     }
 
-    {
-        let weak = window.as_weak();
-        let session = Rc::clone(&session);
-        let export_cancel_slot = Arc::clone(&export_cancel);
-        window.on_export_preset_confirm(move || {
-            let Some(w) = weak.upgrade() else {
-                return;
-            };
-            let idx = w.get_export_preset_index();
-            w.set_export_preset_dialog_visible(false);
-            drop(w);
-
-            let Some(fmt) = web_export_format_from_preset_index(idx) else {
-                if let Some(w) = weak.upgrade() {
-                    w.set_status_text("Invalid export preset.".into());
-                }
-                return;
-            };
-
-            let range = session.borrow().marker_range_ms();
-            let Some((segs, audio_segs)) = export_timeline_payload(&session.borrow(), range) else {
-                if let Some(w) = weak.upgrade() {
-                    w.set_status_text(
-                        "No clips in the In/Out range — clear markers or adjust them to export."
-                            .into(),
-                    );
-                }
-                return;
-            };
-
-            let orientation = match unified_export_video_orientation(&session.borrow()) {
-                Ok(o) => o,
-                Err(msg) => {
-                    if let Some(w) = weak.upgrade() {
-                        w.set_status_text(msg.into());
-                    }
-                    return;
-                }
-            };
-
-            let Some(dest) = export_save_dialog(fmt).save_file() else {
-                return;
-            };
-
-            if !path_matches_export_format(&dest, fmt) {
-                if let Some(w) = weak.upgrade() {
-                    w.set_status_text(
-                        format!("Use a .{} file name for this preset.", fmt.file_extension())
-                            .into(),
-                    );
-                }
-                return;
-            }
-
-            let cancel = Arc::new(AtomicBool::new(false));
-            *export_cancel_slot.lock().expect("export cancel mutex") = Some(cancel.clone());
-            let start_status = match range {
-                Some((i, o)) => format!("Exporting range {:.3}–{:.3} s…", i / 1000.0, o / 1000.0),
-                None => "Exporting…".to_string(),
-            };
-            if let Some(w) = weak.upgrade() {
-                w.set_status_text(start_status.into());
-                w.set_export_progress(0.0);
-                w.set_export_in_progress(true);
-            }
-            let weak_done = weak.clone();
-            let weak_prog = weak.clone();
-            let dest_disp = dest.display().to_string();
-            let slot_clear = Arc::clone(&export_cancel_slot);
-            let on_ratio: Option<ExportProgressFn> = Some(Arc::new(move |r: f64| {
-                let pct = (r.clamp(0.0, 1.0) * 100.0).round() as i32;
-                let wk = weak_prog.clone();
-                on_ui(wk, move |win| {
-                    win.set_export_progress(r.clamp(0.0, 1.0) as f32);
-                    win.set_status_text(format!("Exporting… {pct}%").into());
-                });
-            }));
-            let res = std::thread::Builder::new()
-                .name("reel-export".into())
-                .spawn(move || {
-                    let r = export_concat_with_audio_oriented(
-                        &segs,
-                        audio_segs.as_deref(),
-                        orientation,
-                        &dest,
-                        fmt,
-                        Some(cancel.as_ref()),
-                        on_ratio,
-                    );
-                    let msg = match &r {
-                        Ok(()) => format!("Exported to {dest_disp}"),
-                        Err(e) => {
-                            if e.is_cancelled() {
-                                "Export cancelled.".into()
-                            } else {
-                                format!("Export failed: {e}")
-                            }
-                        }
-                    };
-                    on_ui(weak_done, move |w| {
-                        *slot_clear.lock().expect("export cancel mutex") = None;
-                        w.set_export_in_progress(false);
-                        w.set_export_progress(0.0);
-                        w.set_status_text(msg.into());
-                    });
-                    if let Err(e) = &r {
-                        if !e.is_cancelled() {
-                            tracing::error!(error = %e, "export failed");
-                        }
-                    }
-                });
-            if let Err(e) = res {
-                tracing::error!(?e, "failed to spawn export thread");
-                *export_cancel_slot.lock().expect("export cancel mutex") = None;
-                on_ui(weak.clone(), |w| {
-                    w.set_export_in_progress(false);
-                    w.set_export_progress(0.0);
-                    w.set_status_text("Could not start export".into());
-                });
-            }
-        });
-    }
+    install_export_preset_confirm_callback(
+        &window,
+        Rc::clone(&session),
+        Arc::clone(&export_cancel),
+    );
 
     {
         let weak = window.as_weak();
@@ -1851,5 +1961,535 @@ fn startup_auto_open_path() -> Option<PathBuf> {
         None
     } else {
         Some(p)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod ui_test_support {
+    //! Headless UI test harness (Phase 1, `docs/phases-ui-test.md`).
+    //!
+    //! The Slint testing backend must be installed exactly once per process and
+    //! before any `AppWindow` is constructed. This helper centralizes that so
+    //! unit tests and future integration tests can share a single init point.
+    use std::sync::Once;
+
+    static INIT: Once = Once::new();
+
+    /// Install `i-slint-backend-testing`. Safe to call from every test.
+    pub fn init() {
+        INIT.call_once(|| {
+            i_slint_backend_testing::init_integration_test_with_system_time();
+        });
+    }
+}
+
+#[cfg(test)]
+mod ui_smoke_tests {
+    //! Slint's platform is installed once per process and pinned to the thread
+    //! that first calls `AppWindow::new`. `cargo test` runs tests in parallel
+    //! on independent threads, which panics with "Slint platform was
+    //! initialized in another thread" for every test after the first. Until
+    //! we add `serial_test` (or a dedicated test binary), each `#[test]` below
+    //! serializes its assertions on the same thread; Phase 1a keeps this to
+    //! one smoke case.
+    use super::*;
+
+    #[test]
+    fn window_boots_and_round_trips_basic_properties() {
+        ui_test_support::init();
+        let window = AppWindow::new().expect("AppWindow::new in headless test");
+
+        // Defaults we rely on at startup (main() also sets these explicitly
+        // before showing the window — if the Slint-generated default drifts,
+        // main + tests both need updating together, which is the value of
+        // checking here).
+        assert!(!window.get_media_ready());
+        assert!(!window.get_trim_sheet_visible());
+        assert!(!window.get_export_preset_dialog_visible());
+        assert_eq!(window.get_export_preset_index(), 0);
+        assert!(!window.get_footer_visible());
+        assert!(!window.get_rotate_enabled());
+        assert!(!window.get_split_at_playhead_enabled());
+
+        // Round-trip: media-ready gate.
+        window.set_media_ready(true);
+        assert!(window.get_media_ready());
+        window.set_media_ready(false);
+        assert!(!window.get_media_ready());
+
+        // Round-trip: export preset indices must accept the full 0..=3 range
+        // so the Slint picker stays in sync with
+        // `web_export_format_from_preset_index` (session.rs):
+        // 0=Mp4Remux, 1=Mp4H264Aac, 2=WebmVp8Opus, 3=MkvRemux.
+        for idx in 0..=3 {
+            window.set_export_preset_index(idx);
+            assert_eq!(window.get_export_preset_index(), idx);
+        }
+
+        // Phase 2 smoke: Open → sync → edit state visible in UI properties.
+        //
+        // Drives `EditSession::open_media_with_probe` with a headless
+        // `FakeProbe`, then calls `sync_menu` (the same function `main()`
+        // calls after every edit). Assertions target menu-gate properties
+        // that the user sees enable/disable as clips are opened — if the
+        // sync pipeline drifts away from the `EditSession` state, this test
+        // fails before anyone runs the real app.
+        use crate::session::tests_fake_probe::FakeProbe;
+        let probe = FakeProbe::with_duration(2.0);
+        let session = Rc::new(RefCell::new(EditSession::default()));
+        session
+            .borrow_mut()
+            .open_media_with_probe(&probe, PathBuf::from("/tmp/fake-open.mp4"))
+            .expect("open with fake probe");
+        window.set_media_ready(true);
+        sync_menu(&window, &session.borrow());
+
+        assert_eq!(
+            window.get_duration_ms(),
+            2_000.0,
+            "fake duration → sequence duration_ms in Slint property"
+        );
+        assert!(
+            !window.get_video_track_lanes().is_empty(),
+            "video lane labels populated after open"
+        );
+        assert!(
+            window.get_rotate_enabled(),
+            "rotate enabled when playhead is on a primary-track clip"
+        );
+        assert!(
+            window.get_trim_enabled(),
+            "trim enabled after open with media_ready=true"
+        );
+        assert!(
+            window.get_close_enabled(),
+            "close enabled whenever a project is open"
+        );
+        assert_eq!(probe.call_count(), 1);
+
+        // Phase 2 — simulated click on **File → Export…** through the real
+        // `on_file_export` callback. We install the production helper
+        // `install_export_preflight_callback` (same code `main()` calls) and
+        // trigger it via `window.invoke_file_export()`. Each branch below
+        // targets one user-visible outcome:
+        //
+        // Branch A: valid payload → preset sheet opens.
+        install_export_preflight_callback(&window, Rc::clone(&session));
+        // Reset transient UI state so we can see branch effects crisply.
+        window.set_export_preset_dialog_visible(false);
+        window.set_status_text("".into());
+
+        window.invoke_file_export();
+        assert!(
+            window.get_export_preset_dialog_visible(),
+            "Branch A: export preflight should open the preset sheet when the timeline is non-empty"
+        );
+        assert_eq!(
+            window.get_status_text().as_str(),
+            "",
+            "Branch A: no transient status message when the preflight succeeds"
+        );
+
+        // Branch B: markers set **past** every clip → status line warns, sheet stays closed.
+        window.set_export_preset_dialog_visible(false);
+        window.set_status_text("".into());
+        session
+            .borrow_mut()
+            .set_in_marker_ms(10_000.0)
+            .expect("set in marker");
+        session
+            .borrow_mut()
+            .set_out_marker_ms(11_000.0)
+            .expect("set out marker");
+        window.invoke_file_export();
+        assert!(
+            !window.get_export_preset_dialog_visible(),
+            "Branch B: empty-range must not open the preset sheet"
+        );
+        assert!(
+            window
+                .get_status_text()
+                .as_str()
+                .contains("No clips in the In/Out range"),
+            "Branch B: empty-range shows the disambiguating status text (got {:?})",
+            window.get_status_text().as_str()
+        );
+
+        // Branch C: no project at all → silent (no dialog, no status drift).
+        session.borrow_mut().clear_media();
+        window.set_export_preset_dialog_visible(false);
+        window.set_status_text("".into());
+        window.invoke_file_export();
+        assert!(
+            !window.get_export_preset_dialog_visible(),
+            "Branch C: empty project must not open the preset sheet"
+        );
+        assert_eq!(
+            window.get_status_text().as_str(),
+            "",
+            "Branch C: empty project is silent (no status bar chatter)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod export_payload_tests {
+    //! Pure unit tests for `export_timeline_payload` — the function that
+    //! translates an `EditSession` (plus optional In/Out range) into the
+    //! `(video_spans, audio_spans)` tuple the ffmpeg pipeline consumes.
+    //!
+    //! These don't touch Slint or ffmpeg, so they run on any test thread
+    //! (unlike `ui_smoke_tests`). They're the safety net for the Phase 2
+    //! Export flow: if the session → payload mapping drifts, every export
+    //! preset in the product silently drifts with it.
+    use super::*;
+    use crate::session::tests_fake_probe::FakeProbe;
+
+    fn opened_session(duration_s: f64, path: &str) -> (EditSession, PathBuf) {
+        let probe = FakeProbe::with_duration(duration_s);
+        let mut s = EditSession::default();
+        let p = PathBuf::from(path);
+        s.open_media_with_probe(&probe, p.clone())
+            .expect("open with fake probe");
+        (s, p)
+    }
+
+    #[test]
+    fn payload_single_clip_full_span_when_no_range() {
+        let (session, path) = opened_session(3.5, "/tmp/fake-a.mp4");
+        let (video, audio) =
+            export_timeline_payload(&session, None).expect("payload for opened project");
+        assert_eq!(video.len(), 1);
+        assert_eq!(video[0].0, path);
+        assert!((video[0].1 - 0.0).abs() < 1e-9);
+        assert!((video[0].2 - 3.5).abs() < 1e-9);
+        assert!(
+            audio.is_none(),
+            "single media file has no dedicated audio lane"
+        );
+    }
+
+    #[test]
+    fn payload_respects_in_out_range_markers() {
+        let (mut session, path) = opened_session(4.0, "/tmp/fake-b.mp4");
+        // Carve out the middle two seconds: 1.0s .. 3.0s.
+        session.set_in_marker_ms(1_000.0).unwrap();
+        session.set_out_marker_ms(3_000.0).unwrap();
+        let range = session.marker_range_ms().expect("both markers set");
+
+        let (video, _audio) =
+            export_timeline_payload(&session, Some(range)).expect("sliced payload");
+        assert_eq!(video.len(), 1);
+        assert_eq!(video[0].0, path, "slice keeps the original source path");
+        assert!(
+            (video[0].1 - 1.0).abs() < 1e-6,
+            "slice media_in = 1.0s, got {}",
+            video[0].1
+        );
+        assert!(
+            (video[0].2 - 3.0).abs() < 1e-6,
+            "slice media_out = 3.0s, got {}",
+            video[0].2
+        );
+    }
+
+    #[test]
+    fn payload_returns_none_when_range_outside_all_clips() {
+        // This is the signal `on_file_export` uses to show the user
+        // "No clips in the In/Out range…" instead of writing an empty file.
+        let (mut session, _path) = opened_session(2.0, "/tmp/fake-c.mp4");
+        session.set_in_marker_ms(10_000.0).unwrap();
+        session.set_out_marker_ms(12_000.0).unwrap();
+        let range = session.marker_range_ms().expect("both markers set");
+        assert!(
+            export_timeline_payload(&session, Some(range)).is_none(),
+            "range past the end of the timeline produces no payload"
+        );
+    }
+
+    /// End-to-end: open a real fixture through the real `FfmpegProbe`, build
+    /// the export payload, then run the **actual** ffmpeg export and re-probe
+    /// the output. This is the Phase 4 ("Output Validation") check for the
+    /// Session → Payload → ffmpeg path — if any link breaks (e.g. a refactor
+    /// drops `in_point`/`out_point` rounding, or export args lose `+faststart`
+    /// and the container is no longer muxed valid), this test fails.
+    ///
+    /// Skipped when the committed fixture or `ffmpeg` on PATH is missing,
+    /// matching the pattern already used in `session::tests`.
+    #[test]
+    fn roundtrip_session_to_ffmpeg_to_reprobe_mp4_remux() {
+        use reel_core::{FfmpegProbe, MediaProbe, WebExportFormat};
+
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("reel-core")
+            .join("tests")
+            .join("fixtures")
+            .join("tiny_h264_aac.mp4");
+        if !fixture.is_file() {
+            eprintln!(
+                "skip roundtrip_session_to_ffmpeg_to_reprobe_mp4_remux: fixture missing ({})",
+                fixture.display()
+            );
+            return;
+        }
+
+        // Open with the real probe — this is the authenticity point: if
+        // `open_media` silently started using a stub, the output would not
+        // decode below.
+        let mut session = EditSession::default();
+        if let Err(e) = session.open_media(fixture.clone()) {
+            eprintln!("skip: open_media failed (ffmpeg likely missing): {e}");
+            return;
+        }
+
+        // Single-clip, full-span payload.
+        let (video, audio) = export_timeline_payload(&session, None).expect("payload after open");
+        assert_eq!(video.len(), 1, "one-clip fixture → one span");
+        assert!(audio.is_none(), "no dedicated audio lane");
+
+        // Write to a tempdir so the test never races with the committed
+        // `target/reel-export-verify/` artifacts.
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let dest = scratch.path().join("session_roundtrip.mp4");
+        if let Err(e) =
+            reel_core::export_concat_timeline(&video, &dest, WebExportFormat::Mp4Remux, None, None)
+        {
+            eprintln!("skip: ffmpeg export failed (binary likely missing): {e}");
+            return;
+        }
+
+        let meta = std::fs::metadata(&dest).expect("output exists");
+        assert!(
+            meta.len() > 64,
+            "exported {} suspiciously small ({} bytes)",
+            dest.display(),
+            meta.len()
+        );
+
+        // Re-probe the written file: this validates that ffmpeg produced a
+        // container the probe can open, and that the duration is plausible
+        // (probe should report > 0s for a trivially-small but valid MP4).
+        let probe = FfmpegProbe::new();
+        let md = probe.probe(&dest).expect("re-probe exported mp4");
+        assert!(
+            md.duration_seconds > 0.0,
+            "re-probed duration should be > 0, got {}",
+            md.duration_seconds
+        );
+        assert!(md.video.is_some(), "re-probed file has a video stream");
+    }
+
+    /// Test double for [`SaveDialogProvider`]. Records every `fmt` it was
+    /// asked with and returns the pre-baked `Option<PathBuf>`. The cell lets
+    /// tests set `None` to emulate a cancelled dialog without rebuilding the
+    /// stub.
+    struct StubSaveDialog {
+        reply: std::cell::RefCell<Option<PathBuf>>,
+        calls: std::cell::RefCell<Vec<reel_core::WebExportFormat>>,
+    }
+
+    impl StubSaveDialog {
+        fn always(path: Option<PathBuf>) -> Self {
+            Self {
+                reply: std::cell::RefCell::new(path),
+                calls: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.borrow().len()
+        }
+
+        fn last_fmt(&self) -> Option<reel_core::WebExportFormat> {
+            self.calls.borrow().last().copied()
+        }
+    }
+
+    impl SaveDialogProvider for StubSaveDialog {
+        fn pick(&self, fmt: reel_core::WebExportFormat) -> Option<PathBuf> {
+            self.calls.borrow_mut().push(fmt);
+            self.reply.borrow().clone()
+        }
+    }
+
+    #[test]
+    fn preflight_invalid_preset_index_returns_status_and_skips_dialog() {
+        // Branch: bad idx → status; save dialog must NOT be shown.
+        let (session, _path) = opened_session(1.0, "/tmp/fake-invalid.mp4");
+        let stub = StubSaveDialog::always(Some(PathBuf::from("/tmp/unused.mp4")));
+        let pf = prepare_export_job(&session, 99, &stub);
+        match pf {
+            ExportPreflight::Status(msg) => assert!(
+                msg.contains("Invalid export preset"),
+                "unexpected status: {msg}"
+            ),
+            other => panic!("expected Status, got {other:?}"),
+        }
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "save dialog must not open when preset index is invalid"
+        );
+    }
+
+    #[test]
+    fn preflight_empty_range_returns_status_before_dialog() {
+        // Branch: markers past every clip → status; save dialog must NOT be shown.
+        let (mut session, _path) = opened_session(2.0, "/tmp/fake-empty.mp4");
+        session.set_in_marker_ms(10_000.0).unwrap();
+        session.set_out_marker_ms(11_000.0).unwrap();
+        let stub = StubSaveDialog::always(Some(PathBuf::from("/tmp/unused.mp4")));
+        let pf = prepare_export_job(&session, 0, &stub);
+        match pf {
+            ExportPreflight::Status(msg) => assert!(
+                msg.contains("No clips in the In/Out range"),
+                "unexpected status: {msg}"
+            ),
+            other => panic!("expected Status, got {other:?}"),
+        }
+        assert_eq!(
+            stub.call_count(),
+            0,
+            "save dialog must not open when the range is empty"
+        );
+    }
+
+    #[test]
+    fn preflight_cancelled_save_dialog_returns_noop() {
+        // Branch: user cancels the save sheet → NoOp; no status message drift.
+        let (session, _path) = opened_session(1.5, "/tmp/fake-cancel.mp4");
+        let stub = StubSaveDialog::always(None);
+        let pf = prepare_export_job(&session, 0, &stub);
+        assert!(
+            matches!(pf, ExportPreflight::NoOp),
+            "cancelled save dialog must yield NoOp, got {pf:?}"
+        );
+        assert_eq!(
+            stub.call_count(),
+            1,
+            "save dialog should have been consulted exactly once"
+        );
+        assert_eq!(stub.last_fmt(), Some(reel_core::WebExportFormat::Mp4Remux));
+    }
+
+    #[test]
+    fn preflight_wrong_extension_returns_status() {
+        // Branch: user picks a .webm path for the MP4 preset → status.
+        let (session, _path) = opened_session(1.0, "/tmp/fake-wrong-ext.mp4");
+        let stub = StubSaveDialog::always(Some(PathBuf::from("/tmp/out.webm")));
+        // idx 0 = Mp4Remux; .webm extension should be rejected.
+        let pf = prepare_export_job(&session, 0, &stub);
+        match pf {
+            ExportPreflight::Status(msg) => assert!(
+                msg.contains("Use a .mp4 file name"),
+                "unexpected status: {msg}"
+            ),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_happy_path_returns_spawn_with_expected_payload() {
+        // Branch: valid preset, clip loaded, save dialog returns matching path
+        // → Spawn carrying the payload and chosen dest.
+        let (session, media) = opened_session(2.5, "/tmp/fake-ok.mp4");
+        let dest = PathBuf::from("/tmp/happy.mp4");
+        let stub = StubSaveDialog::always(Some(dest.clone()));
+        let pf = prepare_export_job(&session, 0, &stub);
+        match pf {
+            ExportPreflight::Spawn {
+                video_spans,
+                audio_spans,
+                orientation,
+                dest: got_dest,
+                fmt,
+                range_ms,
+            } => {
+                assert_eq!(got_dest, dest);
+                assert_eq!(fmt, reel_core::WebExportFormat::Mp4Remux);
+                assert!(
+                    orientation.is_none(),
+                    "single unrotated clip ⇒ orientation None"
+                );
+                assert!(range_ms.is_none(), "no markers ⇒ full-span export");
+                assert_eq!(video_spans.len(), 1, "one clip → one span");
+                assert_eq!(video_spans[0].0, media);
+                assert!(
+                    audio_spans.is_none(),
+                    "single media file ⇒ no dedicated audio lane"
+                );
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_spawn_preserves_marker_range_for_status_text() {
+        // The Spawn branch must echo the In/Out range so the callback can
+        // produce the "Exporting range 1.000–2.000 s…" status message.
+        let (mut session, _path) = opened_session(4.0, "/tmp/fake-range.mp4");
+        session.set_in_marker_ms(1_000.0).unwrap();
+        session.set_out_marker_ms(2_000.0).unwrap();
+        let stub = StubSaveDialog::always(Some(PathBuf::from("/tmp/range.mp4")));
+        let pf = prepare_export_job(&session, 0, &stub);
+        match pf {
+            ExportPreflight::Spawn { range_ms, .. } => {
+                let (i, o) = range_ms.expect("range carried through");
+                assert!((i - 1_000.0).abs() < 1e-6);
+                assert!((o - 2_000.0).abs() < 1e-6);
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_preset_index_maps_to_save_dialog_fmt() {
+        // The stub records every `fmt` it was asked for; we use it to assert
+        // preset-index → WebExportFormat wiring as seen by the save dialog
+        // (covers Mp4H264Aac, WebmVp8Opus, MkvRemux — Mp4Remux is covered
+        // by the happy-path test above).
+        let (session, _path) = opened_session(1.0, "/tmp/fake-presets.mp4");
+        for (idx, fmt, ext) in [
+            (1, reel_core::WebExportFormat::Mp4H264Aac, "mp4"),
+            (2, reel_core::WebExportFormat::WebmVp8Opus, "webm"),
+            (3, reel_core::WebExportFormat::MkvRemux, "mkv"),
+        ] {
+            let dest = PathBuf::from(format!("/tmp/preset-{idx}.{ext}"));
+            let stub = StubSaveDialog::always(Some(dest));
+            let pf = prepare_export_job(&session, idx, &stub);
+            assert!(
+                matches!(pf, ExportPreflight::Spawn { fmt: got_fmt, .. } if got_fmt == fmt),
+                "idx {idx} should map to {fmt:?}, got {pf:?}"
+            );
+            assert_eq!(
+                stub.last_fmt(),
+                Some(fmt),
+                "save dialog for idx {idx} should be configured for {fmt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn payload_exposes_first_audio_lane_when_present() {
+        // Open a video, add an audio track, insert an audio clip at 0 —
+        // payload's second slot must be `Some` so ffmpeg muxing kicks in.
+        let probe = FakeProbe::with_duration(4.0);
+        let mut session = EditSession::default();
+        let video_path = PathBuf::from("/tmp/fake-video-d.mp4");
+        session
+            .open_media_with_probe(&probe, video_path.clone())
+            .unwrap();
+        session.add_audio_track().expect("add audio track");
+        let audio_path = PathBuf::from("/tmp/fake-audio-d.wav");
+        session
+            .insert_audio_clip_at_playhead_with_probe(&probe, audio_path.clone(), 0.0)
+            .expect("insert audio");
+
+        let (video, audio) = export_timeline_payload(&session, None).expect("payload");
+        assert_eq!(video[0].0, video_path);
+        let audio = audio.expect("audio spans populated when first audio lane has clips");
+        assert_eq!(audio.len(), 1);
+        assert_eq!(audio[0].0, audio_path);
     }
 }

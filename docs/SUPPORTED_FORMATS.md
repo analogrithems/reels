@@ -17,15 +17,16 @@ This document complements **`docs/MEDIA_FORMATS.md`**: that file explains *how* 
 
 ### Export (**File → Export…**)
 
-The app first asks for a **preset** (MP4 remux, WebM VP8+Opus, or MKV remux), then a **save path** filtered to that extension. Each maps to `reel_core::WebExportFormat` (`crates/reel-core/src/media/export.rs`):
+The app first asks for a **preset** (MP4 remux, **MP4 — H.264 + AAC**, WebM VP8+Opus, or MKV remux), then a **save path** filtered to that extension. Each maps to `reel_core::WebExportFormat` (`crates/reel-core/src/media/export.rs`):
 
 | Target | Container | ffmpeg behavior |
 |--------|-----------|-----------------|
-| **`.mp4`** | MP4 | **Stream copy** (`-c copy`, `+faststart`) when mux accepts the streams. |
+| **`.mp4` — remux** | MP4 | **Stream copy** (`-c copy`, `+faststart`) when mux accepts the streams. |
+| **`.mp4` — H.264 + AAC** | MP4 | **Always re-encode**: `libx264 -preset medium -crf 20 -pix_fmt yuv420p`, AAC **160 kbps**, `+faststart`. Use when remux fails on codec mismatch or you need a guaranteed baseline. |
 | **`.webm`** | WebM | **Always re-encode** to **VP8** + **Opus** (not VP9/AV1-out). |
 | **`.mkv`** | Matroska | **Stream copy** (`-c copy`). |
 
-**Remux** preserves source codecs when copy succeeds; **WebM** is the fixed **transcode** path. No dedicated **“export as H.264 + AAC-LC”** transcode control yet—see **Roadmap**.
+**Remux** preserves source codecs when copy succeeds; **MP4 H.264 + AAC** and **WebM** are the fixed **transcode** paths.
 
 When the project’s **first audio** lane has clips, export builds a **second** concat for audio and **muxes** it with the primary video concat (duration = primary **video** length). If that lane is empty, export behaves like **video-only** concat (audio may still come from **embedded** streams in the video files).
 
@@ -37,7 +38,7 @@ These platforms favor formats that **encode and stream efficiently** (H.264 as t
 
 | Track type | Formats & codecs | Role on platform | Reel playback | Reel export |
 | :-- | :-- | :-- | :-- | :-- |
-| **Video** | **H.264 (AVC)**, **H.265 (HEVC)**, **VP9**, **AV1** | H.264 is the usual **compat** choice; HEVC/VP9/AV1 for **efficiency** / quality tiers. | **Yes** (FFmpeg decode; HEVC/AV1 depend on build). | **Remux** to MP4/MKV when **`-c copy`** works; **WebM** → **VP8** only (not VP9/AV1-out). No **guaranteed** H.264 re-encode preset. |
+| **Video** | **H.264 (AVC)**, **H.265 (HEVC)**, **VP9**, **AV1** | H.264 is the usual **compat** choice; HEVC/VP9/AV1 for **efficiency** / quality tiers. | **Yes** (FFmpeg decode; HEVC/AV1 depend on build). | **Remux** to MP4/MKV when **`-c copy`** works; **MP4 — H.264 + AAC** preset forces a guaranteed H.264/AAC MP4 re-encode; **WebM** → **VP8** only (not VP9/AV1-out). |
 | **Audio** | **AAC (AAC-LC)**, **Opus**, **MP3** | AAC-LC is the common **social/delivery** default; Opus on YouTube at low bitrates. | **Yes** | **Remux** where mux allows; **WebM** → **Opus**. |
 | **Subtitles** | **SRT**, **WebVTT** (`.vtt`), **TTML** | SRT for simple captions; **WebVTT** for web-native styling/positioning. | **No (subs)** — not decoded or shown in the player. | **Not** in export UI (no timeline-driven subtitle mux). |
 
@@ -71,8 +72,8 @@ A practical **delivery default** for wide compatibility:
 
 | Layer | Recommendation | In Reel today |
 | :-- | :-- | :-- |
-| **Primary container** | **MP4** or **MOV** (interchangeable for many workflows) | **Open:** yes. **Save as project:** `.reel` JSON. **Export video:** **`.mp4`** / **`.mkv`** remux or **`.webm`** transcode—**no** dedicated **`.mov`** export menu target. |
-| **Video** | **H.264** for maximum compatibility; **HEVC** for 4K / high-quality reels when devices support it | Decode yes; **export** = remux or VP8 **WebM**, not a guided **H.264 encode** preset. |
+| **Primary container** | **MP4** or **MOV** (interchangeable for many workflows) | **Open:** yes. **Save as project:** `.reel` JSON. **Export video:** **`.mp4`** (remux or **H.264 + AAC** transcode) / **`.mkv`** remux / **`.webm`** transcode — **no** dedicated **`.mov`** export menu target. |
+| **Video** | **H.264** for maximum compatibility; **HEVC** for 4K / high-quality reels when devices support it | Decode yes; **export** = MP4 remux, **MP4 — H.264 + AAC** transcode (libx264 CRF 20 + AAC 160 kbps + `+faststart`), MKV remux, or VP8 **WebM**. HEVC encode not offered as a preset. |
 | **Audio** | **AAC-LC** stereo (e.g. 128 kbps+) | Decode/remux yes; no bitrate **preset** UI. |
 | **Subtitles** | **WebVTT** for styling/positioning (Reels-style captions); **ASS/SSA** for advanced typography/animation | **Not** in player or export pipeline yet. |
 
@@ -94,9 +95,9 @@ A practical **delivery default** for wide compatibility:
 
 ## Roadmap (gaps vs targets above — priority)
 
-1. **H.264 + AAC-LC MP4 transcode preset** — Matches **golden stack** and **YouTube-style** delivery when **remux** fails or sources are mixed.
-2. **VP9 and/or AV1** as **WebM** (or MP4) **export options** — Align **export** with **web platform** rows (today: **VP8 + Opus** only for `.webm`).
-3. **Clear remux errors** — When MP4 rejects HEVC/AC‑3/etc., surface a path to **transcode presets** (licensing / mux constraints).
+1. **VP9 and/or AV1** as **WebM** (or MP4) **export options** — Align **export** with **web platform** rows (today: **VP8 + Opus** only for `.webm`).
+2. **HEVC + AAC MP4** preset — **Mobile-tier** delivery (iPhone-style), complementing the **MP4 — H.264 + AAC** preset that now ships (**shipped:** libx264 CRF 20 + AAC 160 kbps + `+faststart`).
+3. **Clear remux errors** — When MP4 rejects HEVC/AC‑3/etc., surface a path to **transcode presets** (licensing / mux constraints). The **MP4 — H.264 + AAC** preset is the existing MP4-side fallback; update error copy to point users at it when remux stream-copy fails.
 4. **MOV export** and/or **ProRes / DNx** handoff — **iOS / pro** workflows.
 5. **Subtitles — WebVTT, SRT, TTML** (preview, edit, mux or burn-in); **ASS/SSA** as a follow-on for styled captions.
 6. **Multi-audio** stream selection — **First audio only** today.
