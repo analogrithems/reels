@@ -10,6 +10,9 @@ export component HelpWindow inherits Window {
     in property <string> body-text: "";
 
     ScrollView {
+        vertical-stretch: 1;
+        horizontal-stretch: 1;
+        width: 100%;
         VerticalBox {
             padding: 12px;
             Text {

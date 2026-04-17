@@ -17,7 +17,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 - [x] Cargo workspace: `reel-core`, `reel-app`, `reel-cli`
 - [x] Makefile: `setup`, `build`, `lint`, `test`, `run`, `run-cli`, `fixtures`, `clean`, `ci`, `check-tools`
 - [x] `uv`-managed Python sidecar (`sidecar/`, `facefusion_bridge.py`)
-- [x] `tracing` + `REEL_LOG*` environment variables; **session log file** (`reels.session.*.log` under `{data_local_dir}/reel/logs/`) with module path + file:line on every line
+- [x] `tracing` + `REEL_LOG*` environment variables; **session log file** (`reels.session.*.log` under `{data_local_dir}/reel/logs/`) as **NDJSON** with module path + file:line and structured `tracing` fields
 - [x] Child stdout/stderr piped into `tracing` (`spawn_logged_child` / sidecar)
 - [x] GitHub Actions: `macos-14`, `make setup lint test`
 

@@ -5,7 +5,7 @@ Headless binary built from **`crates/reel-cli`**. It uses **`reel_core`** for pr
 ## Build & run
 
 ```bash
-make run-cli ARGS='probe --help'    # or: cargo run -p reel-cli -- …
+make run-cli ARGS='probe --help'    # or: cargo run -p reel-cli -- … (make sets REEL_LOG_SESSION_DIR to cwd)
 ```
 
 From the **repository root**, `sidecar/` defaults to `./sidecar` for commands that spawn the bridge (unless overridden).
@@ -38,7 +38,7 @@ From the **repository root**, `sidecar/` defaults to `./sidecar` for commands th
 - **`FACE_FUSION_ROOT`:** Optional path to a FaceFusion checkout for the `facefusion` model (import check; full inference may still be stubbed—see repo docs).
 - **`REEL_SIDECAR_DIR`:** Not used by `reel-cli` today (only `reel-app`); the CLI uses `--sidecar-dir` or cwd.
 
-**Logging:** `reel_core::logging::init()` writes a **session log file** by default and respects **`REEL_LOG`**, **`REEL_LOG_FORMAT`**, **`REEL_LOG_FILE`**, **`REEL_LOG_SESSION_DIR`**, **`REEL_LOG_STDOUT`** (see `docs/architecture.md`).
+**Logging:** `reel_core::logging::init()` writes a **session log file** (always **NDJSON**) and respects **`REEL_LOG`**, **`REEL_LOG_FORMAT`** (stdout mirror only), **`REEL_LOG_FILE`**, **`REEL_LOG_SESSION_DIR`**, **`REEL_LOG_STDOUT`** (see `docs/architecture.md`).
 
 ---
 

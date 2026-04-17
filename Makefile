@@ -34,11 +34,12 @@ test:
 	cargo test --workspace --all-features
 	cd sidecar && uv run pytest -q
 
+# Session logs: reels.session.*.log next to where you invoked make (see docs/architecture.md).
 run:
-	cargo run -p reel-app
+	REEL_LOG_SESSION_DIR="$(CURDIR)" cargo run -p reel-app
 
 run-cli:
-	cargo run -p reel-cli -- $(ARGS)
+	REEL_LOG_SESSION_DIR="$(CURDIR)" cargo run -p reel-cli -- $(ARGS)
 
 fixtures:
 	bash scripts/generate_fixtures.sh

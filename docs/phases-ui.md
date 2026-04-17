@@ -75,7 +75,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, **keyboard shortcuts**, media formats, **supported formats (playback vs export)**, CLI, external AI & tools, developers, agents, UI phases).
 - **Timeline:** `Slider` scrub → same seek as transport.
 - **Footer:** single-line strip (**codecs** · **paths** · **saved / unsaved**) for the clip at the playhead, using per-clip probe metadata; recorded as completed **follow-on** work under **engineering Phase 1** in **`docs/phase-status.md`** (out of original engine scope).
-- **Logging:** Every run writes **`reels.session.<timestamp>.log`** under the OS data directory (`reel/logs/`); optional terminal mirror when stdout is a TTY. Lines include module (**target**) and **file:line** for debugging and automated review (see **`docs/architecture.md`**).
+- **Logging:** Every run writes **`reels.session.<timestamp>.log`** under the OS data directory (`reel/logs/`) as **NDJSON** (structured fields + module **target**, **file**, **line**); optional terminal mirror when stdout is a TTY (**pretty** or **json** per `REEL_LOG_FORMAT`). See **`docs/architecture.md`**.
 - **Tests:** Session, project I/O, shell, effects resolve path; reel-core export fixture tests.
 
 **Explicitly deferred**

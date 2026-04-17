@@ -1188,8 +1188,9 @@ fn main() -> Result<()> {
             if !w.get_media_ready() {
                 return;
             }
-            w.set_playhead_ms(v);
             let dur = w.get_duration_ms();
+            let v = timecode::clamp_playhead_ms(v, dur);
+            w.set_playhead_ms(v);
             w.set_timecode(timecode::format_pair(v, dur).into());
             sync_menu(&w, &session.borrow());
             p.send(player::Cmd::SeekSequence { seq_ms: v as u64 });
@@ -1209,7 +1210,7 @@ fn main() -> Result<()> {
             }
             let cur = w.get_playhead_ms();
             let dur = w.get_duration_ms();
-            let next = (cur + delta).clamp(0.0, dur);
+            let next = timecode::clamp_playhead_ms(cur + delta, dur);
             w.set_playhead_ms(next);
             w.set_timecode(timecode::format_pair(next, dur).into());
             sync_menu(&w, &session.borrow());

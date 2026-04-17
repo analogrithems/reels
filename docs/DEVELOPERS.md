@@ -39,8 +39,8 @@ make run      # desktop app (reel)
 | `make build` | `cargo build --workspace`. |
 | `make test` | Rust tests + `uv run pytest` in sidecar. |
 | `make lint` | `cargo fmt --check`, `clippy -D warnings`, `ruff`. |
-| `make run` | `cargo run -p reel-app`. |
-| `make run-cli ARGS='probe …'` | Run `reel-cli`. |
+| `make run` | `cargo run -p reel-app`; session log `reels.session.*.log` is written under the **directory you ran `make` from** (`REEL_LOG_SESSION_DIR`). |
+| `make run-cli ARGS='probe …'` | Run `reel-cli`; same session log directory rule as `make run`. |
 | `make ci` | Lint + test (CI parity). |
 
 ## Conventions

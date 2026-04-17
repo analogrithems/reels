@@ -16,7 +16,8 @@ export component AppWindow inherits Window {
 
     in property <image> current-frame;
     in property <float> duration-ms: 0;
-    in property <float> playhead-ms: 0;
+    /// Timeline position; **in-out** so the timeline `Slider` can two-way bind while Rust/player updates during playback.
+    in-out property <float> playhead-ms: 0;
     in property <bool> is-playing: false;
     in property <bool> media-ready: false;
     in property <string> status-text: "Ready";
@@ -649,7 +650,9 @@ export component AppWindow inherits Window {
                     enabled: root.media-ready;
                     minimum: 0;
                     maximum: max(root.duration-ms, 1);
-                    value: root.playhead-ms;
+                    /// `step: 0` disables the widget’s own ←/→ handling so **FocusScope** arrow keys keep **±1 s** seek (see `KEYBOARD.md`).
+                    step: 0;
+                    value <=> root.playhead-ms;
                     changed(v) => {
                         root.seek-timeline(v);
                     }

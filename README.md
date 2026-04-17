@@ -30,7 +30,7 @@ rustup-init -y
 make setup   # verify tools, fetch deps, sync sidecar venv
 make test    # cargo test --workspace
 make lint    # fmt + clippy + ruff
-make run     # launch the Slint desktop app
+make run     # launch the Slint desktop app (session log: reels.session.*.log in this directory)
 ```
 
 ## Crates

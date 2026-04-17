@@ -15,7 +15,7 @@
 |----------|---------|
 | `REEL_OPEN_PATH` | If set to a media file path, opens it on launch (dev/testing). |
 | `REEL_SIDECAR_DIR` | Override path to `sidecar/` for the desktop app’s Effects pipeline. |
-| `REEL_LOG`, `REEL_LOG_FORMAT`, `REEL_LOG_FILE`, `REEL_LOG_SESSION_DIR`, `REEL_LOG_STDOUT` | `tracing`: session log file, optional stdout mirror, filters (see `docs/architecture.md`). |
+| `REEL_LOG`, `REEL_LOG_FORMAT`, `REEL_LOG_FILE`, `REEL_LOG_SESSION_DIR`, `REEL_LOG_STDOUT` | `tracing`: session log is **always JSON** (NDJSON); `REEL_LOG_FORMAT` only affects **stdout** when mirrored (see `docs/architecture.md`). |
 | `FACE_FUSION_ROOT` | Optional FaceFusion checkout for sidecar `facefusion` model. |
 
 ## More topics (Help menu)

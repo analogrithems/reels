@@ -107,44 +107,70 @@ pub fn init() -> Result<LogInit> {
 
     let mirror_stdout = mirror_stdout_enabled();
 
-    // Session file: always JSON so fields/tags stay structured for tools and review.
-    let json_to_file = || {
-        tracing_subscriber::fmt::layer()
-            .json()
-            .flatten_event(true)
-            .with_target(true)
-            .with_file(true)
-            .with_line_number(true)
-            .with_current_span(false)
-            .with_ansi(false)
-    };
-
+    // Session file is always JSON (structured fields). Stdout mirror: pretty or json per REEL_LOG_FORMAT.
+    // Layers are inlined per arm so each `fmt::layer()` stacks on the correct inner subscriber type.
     let init_result = match (mirror_stdout, stdout_format.as_str()) {
         (true, "json") => tracing_subscriber::registry()
             .with(filter.clone())
-            .with(json_to_file().with_writer(file_writer.clone()))
             .with(
-                json_to_file()
-                    .with_writer(|| std::io::stdout())
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_target(true)
+                    .with_file(true)
+                    .with_line_number(true)
+                    .with_current_span(false)
+                    .with_writer(file_writer.clone())
+                    .with_ansi(false),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_target(true)
+                    .with_file(true)
+                    .with_line_number(true)
+                    .with_current_span(false)
+                    .with_writer(std::io::stdout)
                     .with_ansi(true),
             )
             .try_init(),
         (true, _) => tracing_subscriber::registry()
             .with(filter.clone())
-            .with(json_to_file().with_writer(file_writer.clone()))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_target(true)
+                    .with_file(true)
+                    .with_line_number(true)
+                    .with_current_span(false)
+                    .with_writer(file_writer.clone())
+                    .with_ansi(false),
+            )
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_target(true)
                     .with_file(true)
                     .with_line_number(true)
                     .with_thread_names(true)
-                    .with_writer(|| std::io::stdout())
+                    .with_writer(std::io::stdout)
                     .with_ansi(true),
             )
             .try_init(),
         (false, _) => tracing_subscriber::registry()
             .with(filter)
-            .with(json_to_file().with_writer(file_writer))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_target(true)
+                    .with_file(true)
+                    .with_line_number(true)
+                    .with_current_span(false)
+                    .with_writer(file_writer)
+                    .with_ansi(false),
+            )
             .try_init(),
     };
 
