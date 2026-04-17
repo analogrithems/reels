@@ -17,7 +17,7 @@ This document complements **`docs/MEDIA_FORMATS.md`**: that file explains *how* 
 
 ### Export (**File → Export…**)
 
-Three targets → `reel_core::WebExportFormat` (`crates/reel-core/src/media/export.rs`):
+The app first asks for a **preset** (MP4 remux, WebM VP8+Opus, or MKV remux), then a **save path** filtered to that extension. Each maps to `reel_core::WebExportFormat` (`crates/reel-core/src/media/export.rs`):
 
 | Target | Container | ffmpeg behavior |
 |--------|-----------|-----------------|
@@ -25,7 +25,9 @@ Three targets → `reel_core::WebExportFormat` (`crates/reel-core/src/media/expo
 | **`.webm`** | WebM | **Always re-encode** to **VP8** + **Opus** (not VP9/AV1-out). |
 | **`.mkv`** | Matroska | **Stream copy** (`-c copy`). |
 
-**Remux** preserves source codecs when copy succeeds; **WebM** is the fixed **transcode** path. No dedicated **“export as H.264 + AAC-LC”** control yet—see **Roadmap**.
+**Remux** preserves source codecs when copy succeeds; **WebM** is the fixed **transcode** path. No dedicated **“export as H.264 + AAC-LC”** transcode control yet—see **Roadmap**.
+
+When the project’s **first audio** lane has clips, export builds a **second** concat for audio and **muxes** it with the primary video concat (duration = primary **video** length). If that lane is empty, export behaves like **video-only** concat (audio may still come from **embedded** streams in the video files).
 
 ---
 
@@ -99,7 +101,9 @@ A practical **delivery default** for wide compatibility:
 5. **Subtitles — WebVTT, SRT, TTML** (preview, edit, mux or burn-in); **ASS/SSA** as a follow-on for styled captions.
 6. **Multi-audio** stream selection — **First audio only** today.
 
-Tracking: **`docs/phase-status.md`** → **Format support roadmap**.
+**Product alignment:** The **export preset picker** (see **`docs/phases-ui.md` Phase U3**, **`docs/FEATURES.md`**) should map user-visible options to the tiers above (web + mobile **golden stack**, compatibility remux).
+
+Tracking: **`docs/phase-status.md`** → **Format support roadmap** and **UI initiative checklist**.
 
 ---
 
@@ -108,3 +112,4 @@ Tracking: **`docs/phase-status.md`** → **Format support roadmap**.
 - **`docs/MEDIA_FORMATS.md`** — First-stream rules, rotation, `audio_disabled`, concat export.
 - **`crates/reel-core/src/media/export.rs`** — `WebExportFormat`, ffmpeg arguments.
 - **`docs/FEATURES.md`** — User-facing roadmap.
+- **`docs/phases-ui.md`** — U2–U4 milestones (**trim UI**, **View** chrome, **Open Recent**).

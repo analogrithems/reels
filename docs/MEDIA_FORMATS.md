@@ -34,7 +34,7 @@ Reel uses **FFmpeg** (via **ffmpeg-next 7.1**; development targets **ffmpeg@7**)
 ## Project model vs playback
 
 - `reel_core::project::TrackKind` includes **`Video`** and **`Audio`** for serialized projects.
-- The **desktop app** creates one **video** track when you open a file; you can **append additional empty video tracks** (**File → New Video Track**). **Insert Video** and playhead/split logic apply to the **first** video track in `Project::tracks` order (the primary lane).
+- The **desktop app** creates one **video** track when you open a file; you can **append additional empty video tracks** (**File → New Video Track**) and **empty audio tracks** (**File → New Audio Track**). **Insert Video** and playhead/split logic apply to the **first** video track in `Project::tracks` order (the primary lane). **Insert Audio** adds clips to the **first audio** track; when that track has clips, **preview uses its concatenated audio** (same sequence clock as the primary video); otherwise embedded audio from the video sources is used.
 - **Preview** decodes the **primary** track **in clip order**: the transport clock is **concatenated sequence time** (ms). At each clip boundary the player switches to the next clip’s source file. **Effects** that sample the playhead resolve **sequence time** to the correct source file and in-file timestamp. Extra empty video tracks (and **audio** `TrackKind` lanes) are not mixed into preview yet.
 
 ## Export

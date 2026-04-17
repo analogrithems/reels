@@ -18,6 +18,31 @@ pub(crate) struct PrimaryTimelineClip {
     pub seq_start_ms: f64,
 }
 
+/// First [`TrackKind::Audio`] track in project order (if any), concatenated like the primary video lane.
+pub(crate) fn clips_from_first_audio_track(p: &Project) -> Option<Vec<PrimaryTimelineClip>> {
+    let track = p.tracks.iter().find(|t| t.kind == TrackKind::Audio)?;
+    let mut seq = 0.0_f64;
+    let mut out = Vec::new();
+    for cid in &track.clip_ids {
+        let c = p.clips.iter().find(|x| x.id == *cid)?;
+        let dur_ms = (c.out_point - c.in_point) * 1000.0;
+        if dur_ms <= SEQ_MS_EPS {
+            continue;
+        }
+        out.push(PrimaryTimelineClip {
+            path: c.source_path.clone(),
+            media_in_s: c.in_point,
+            media_out_s: c.out_point,
+            seq_start_ms: seq,
+        });
+        seq += dur_ms;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
 pub(crate) fn clips_from_project(p: &Project) -> Option<Vec<PrimaryTimelineClip>> {
     let track = p.tracks.iter().find(|t| t.kind == TrackKind::Video)?;
     let mut seq = 0.0_f64;
@@ -151,6 +176,12 @@ pub(crate) fn timeline_sync_from_project(p: &Project) -> Option<Arc<TimelineSync
     TimelineSync::from_clips(&clips)
 }
 
+/// When the first **audio** track has clips, a separate concat timeline for the audio thread (preview uses this instead of embedded audio from video files).
+pub(crate) fn dedicated_audio_timeline_sync_from_project(p: &Project) -> Option<Arc<TimelineSync>> {
+    let clips = clips_from_first_audio_track(p)?;
+    TimelineSync::from_clips(&clips)
+}
+
 pub(crate) fn resolve_for_project(p: &Project, sequence_ms: f64) -> Option<(PathBuf, u64)> {
     let clips = clips_from_project(p)?;
     resolve_sequence_media_ms(&clips, sequence_ms)
@@ -230,6 +261,33 @@ mod tests {
         assert_eq!(primary_clip_id_at_seq_ms(&p, 500.0), Some(p.clips[0].id));
         assert_eq!(primary_clip_id_at_seq_ms(&p, 2500.0), Some(p.clips[1].id));
         assert_eq!(primary_clip_id_at_seq_ms(&p, 999_999.0), None);
+    }
+
+    #[test]
+    fn clips_from_first_audio_track_concat() {
+        let a = clip(1, "/a.wav", 2.0);
+        let b = clip(2, "/b.wav", 3.0);
+        let vid = Uuid::from_u128(10);
+        let aid = Uuid::from_u128(11);
+        let mut p = Project::new("t");
+        p.clips.push(a);
+        p.clips.push(b);
+        p.tracks.push(Track {
+            id: vid,
+            kind: TrackKind::Video,
+            clip_ids: vec![p.clips[0].id],
+            extensions: Default::default(),
+        });
+        p.tracks.push(Track {
+            id: aid,
+            kind: TrackKind::Audio,
+            clip_ids: vec![p.clips[0].id, p.clips[1].id],
+            extensions: Default::default(),
+        });
+        let c = clips_from_first_audio_track(&p).unwrap();
+        assert_eq!(c.len(), 2);
+        assert!((sequence_duration_ms(&c) - 5000.0).abs() < 0.1);
+        assert!(dedicated_audio_timeline_sync_from_project(&p).is_some());
     }
 
     #[test]

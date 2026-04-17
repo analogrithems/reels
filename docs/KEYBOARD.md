@@ -1,6 +1,6 @@
 # Reel — keyboard shortcuts (desktop)
 
-Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** cancels an **in-progress export** (same as **File → Cancel Export**). **Insert**, **Export**, and **New Video Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
+Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **File → Cancel Export**). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
 
 ## Help
 
@@ -16,9 +16,11 @@ Click the **video or timeline area** so the main view has focus for playback and
 | Save… | **Ctrl+S** (when Save is enabled) | **⌘S** |
 | Close | **Ctrl+W** (when Close is enabled) | **⌘W** |
 | Insert Video… | **Ctrl+I** (needs media ready) | **⌘I** |
-| Export… | **Ctrl+E** (needs media ready; disabled while exporting) | **⌘E** |
-| Cancel Export | **Esc** (while exporting) | **Esc** |
+| Insert Audio… | **Ctrl+Shift+I** (needs an audio track + media ready) | **⌘⇧I** |
+| Export… | **Ctrl+E** (needs media ready; disabled while exporting or while the export preset sheet is open) | **⌘E** |
+| Cancel Export / dismiss export preset | **Esc** (while exporting, or while the export preset sheet is open) | **Esc** |
 | New Video Track | **Ctrl+Shift+N** (needs media ready) | **⌘⇧N** |
+| New Audio Track | **Ctrl+Shift+A** (needs media ready) | **⌘⇧A** |
 
 ## Playback & timeline
 

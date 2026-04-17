@@ -30,11 +30,16 @@ export component AppWindow inherits Window {
     in property <bool> move-clip-up-enabled: false;
     in property <bool> split-at-playhead-enabled: false;
     in property <bool> export-in-progress: false;
+    /// 0.0–1.0 while exporting; reset when export ends.
+    in property <float> export-progress: 0.0;
+    in property <bool> insert-audio-enabled: false;
 
     /// Multi-track summary + preview rule (see session.timeline_summary_line).
     in property <string> timeline-info: "";
     /// One line per video track lane, newline-separated (see session.video_track_row_labels).
     in property <string> video-track-lanes: "";
+    /// One line per audio track lane, newline-separated (see session.audio_track_row_labels).
+    in property <string> audio-track-lanes: "";
     /// Playhead / duration (see `timecode::format_pair`).
     in property <string> timecode: "0:00.000 / 0:00.000";
 
@@ -44,9 +49,17 @@ export component AppWindow inherits Window {
     callback file-new-window();
     callback file-save();
     callback file-insert-video();
+    callback file-insert-audio();
     callback file-new-video-track();
+    callback file-new-audio-track();
     callback file-export();
     callback export-cancel();
+    callback export-preset-cancel();
+    callback export-preset-confirm();
+
+    in-out property <bool> export-preset-dialog-visible: false;
+    /// 0 = MP4 remux, 1 = WebM VP8+Opus, 2 = MKV remux (`docs/SUPPORTED_FORMATS.md`).
+    in-out property <int> export-preset-index: 0;
 
     callback edit-undo();
     callback edit-redo();
@@ -111,13 +124,23 @@ export component AppWindow inherits Window {
                 activated => { root.file-insert-video(); }
             }
             MenuItem {
+                title: "Insert Audio…";
+                enabled: root.insert-audio-enabled;
+                activated => { root.file-insert-audio(); }
+            }
+            MenuItem {
                 title: "New Video Track";
                 enabled: root.media-ready;
                 activated => { root.file-new-video-track(); }
             }
             MenuItem {
+                title: "New Audio Track";
+                enabled: root.media-ready;
+                activated => { root.file-new-audio-track(); }
+            }
+            MenuItem {
                 title: "Export…";
-                enabled: root.media-ready && !root.export-in-progress;
+                enabled: root.media-ready && !root.export-in-progress && !root.export-preset-dialog-visible;
                 activated => { root.file-export(); }
             }
             MenuItem {
@@ -265,7 +288,10 @@ export component AppWindow inherits Window {
                 root.help-overview();
                 accept
             } else if (event.text == Key.Escape) {
-                if (root.export-in-progress) {
+                if (root.export-preset-dialog-visible) {
+                    root.export-preset-cancel();
+                    accept
+                } else if (root.export-in-progress) {
                     root.export-cancel();
                     accept
                 } else {
@@ -276,11 +302,21 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.N && event.modifiers.control && event.modifiers.shift) {
                 root.file-new-video-track();
                 accept
+            } else if (event.text == Key.A && event.modifiers.control && event.modifiers.shift) {
+                root.file-new-audio-track();
+                accept
+            } else if (event.text == Key.I && event.modifiers.control && event.modifiers.shift) {
+                if (root.insert-audio-enabled) {
+                    root.file-insert-audio();
+                    accept
+                } else {
+                    reject
+                }
             } else if (event.text == Key.I && event.modifiers.control && !event.modifiers.shift) {
                 root.file-insert-video();
                 accept
             } else if (event.text == Key.E && event.modifiers.control && !event.modifiers.shift) {
-                if (!root.export-in-progress) {
+                if (!root.export-in-progress && !root.export-preset-dialog-visible) {
                     root.file-export();
                     accept
                 } else {
@@ -341,6 +377,9 @@ export component AppWindow inherits Window {
                 reject
             }
         }
+        Rectangle {
+            vertical-stretch: 1;
+            width: 100%;
         VerticalBox {
         spacing: 0px;
         padding: 0px;
@@ -392,6 +431,13 @@ export component AppWindow inherits Window {
                     wrap: word-wrap;
                     visible: root.video-track-lanes != "";
                 }
+                Text {
+                    text: root.audio-track-lanes;
+                    color: #7a9a8a;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    visible: root.audio-track-lanes != "";
+                }
                 Slider {
                     enabled: root.media-ready;
                     minimum: 0;
@@ -407,25 +453,183 @@ export component AppWindow inherits Window {
 
         Rectangle {
             background: #2a2a30;
-            height: 52px;
-            HorizontalBox {
-                padding: 8px;
-                spacing: 12px;
-                alignment: center;
-
-                Button {
-                    text: root.is-playing ? "Pause" : "Play";
-                    enabled: root.media-ready;
-                    clicked => { root.play-pause(); }
+            height: root.export-in-progress ? 56px : 52px;
+            VerticalBox {
+                padding: 0;
+                spacing: 0;
+                Rectangle {
+                    height: root.export-in-progress ? 4px : 0px;
+                    background: #1e1e24;
+                    clip: true;
+                    Rectangle {
+                        height: 4px;
+                        width: parent.width * min(1, max(0, root.export-progress));
+                        background: #4a9eff;
+                    }
                 }
-                Text {
-                    text: root.status-text;
-                    color: #ccc;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
+                HorizontalBox {
+                    padding: 8px;
+                    spacing: 12px;
+                    alignment: center;
+
+                    Button {
+                        text: root.is-playing ? "Pause" : "Play";
+                        enabled: root.media-ready;
+                        clicked => { root.play-pause(); }
+                    }
+                    Text {
+                        text: root.status-text;
+                        color: #ccc;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
                 }
             }
         }
-    }
+        }
+
+        if root.export-preset-dialog-visible: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: rgba(0, 0, 0, 55%);
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    root.export-preset-cancel();
+                }
+            }
+            VerticalBox {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                HorizontalBox {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: min(parent.width * 0.92, 440px);
+                        background: #2e2e36;
+                        border-radius: 8px;
+                        VerticalBox {
+                            padding: 16px;
+                            spacing: 10px;
+                            Text {
+                                text: "Export preset";
+                                color: #eee;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "Choose how ffmpeg writes the file (see Help → Supported formats).";
+                                color: #888;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            VerticalBox {
+                                spacing: 6px;
+                                TouchArea {
+                                    clicked => {
+                                        root.export-preset-index = 0;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 0 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 0 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "MP4 — remux (stream copy + faststart)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Fastest when codecs are compatible.";
+                                                color: #888;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.export-preset-index = 1;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 1 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 1 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "WebM — VP8 + Opus (re-encode)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Use when remux fails or you need this container.";
+                                                color: #888;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.export-preset-index = 2;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 2 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 2 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "MKV — remux (stream copy)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Flexible container; good for mixed codecs.";
+                                                color: #888;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalBox {
+                                spacing: 10px;
+                                alignment: end;
+                                Button {
+                                    text: "Cancel";
+                                    clicked => {
+                                        root.export-preset-cancel();
+                                    }
+                                }
+                                Button {
+                                    text: "Next…";
+                                    clicked => {
+                                        root.export-preset-confirm();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
     }
 }

@@ -19,8 +19,9 @@
 
 ### Project & timeline (minimal)
 
-- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** (**Ctrl+Shift+N** / **⌘⇧N** when media ready) appends an extra empty lane (not yet mixed into preview); the timeline strip shows a **summary line** plus **one label per video lane** (clip count and lane duration). Insert/split still targets the **primary** lane only. **Edit → Move Clip to Track Below** moves the clip under the playhead from the primary lane to the **next** video track (requires a second video track and the playhead on a clip, not in a gap). **Edit → Move Clip to Track Above** takes the **first** clip on the **second** video track and appends it to the **end** of the primary track (the lower lane is not in the preview timeline, so lane order is used instead of playhead-on-secondary). Undo/redo applies; if the primary lane becomes empty, preview stops until you add clips or undo.
+- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** (**Ctrl+Shift+N** / **⌘⇧N** when media ready) appends an extra empty **video** lane (not yet mixed into preview); **File → New Audio Track** (**Ctrl+Shift+A** / **⌘⇧A** when media ready) appends an empty **audio** lane. The timeline strip shows a **summary line** plus **one label per video lane** and **one label per audio lane** (clip count and summed duration per lane). **Playback sound** uses the **first audio track** when it has at least one clip (concatenated in sequence time, same clock as the primary video); otherwise sound comes from the **embedded audio** in each primary video clip’s file. If the dedicated audio ends before the video sequence, preview **pads silence** until the video ends. Insert/split for **video** still targets the **primary video** lane only. **Edit → Move Clip to Track Below** moves the clip under the playhead from the primary lane to the **next** video track (requires a second video track and the playhead on a clip, not in a gap). **Edit → Move Clip to Track Above** takes the **first** clip on the **second** video track and appends it to the **end** of the primary track (the lower lane is not in the preview timeline, so lane order is used instead of playhead-on-secondary). Undo/redo applies; if the primary lane becomes empty, preview stops until you add clips or undo.
 - **Insert Video…** at playhead: probes the file, appends or inserts a clip on the **primary** (first) video track. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts. **Ctrl+I** (**⌘I**) when **media ready**.
+- **Insert Audio…** (**File** menu): probes the file and inserts on the **first audio track** at the playhead (same sequence-time rules as insert video). Requires **File → New Audio Track** first. **Ctrl+Shift+I** (**⌘⇧I**) when **Insert Audio** is enabled.
 - **Split Clip at Playhead** (**Edit** menu, **Ctrl+B** / **⌘B** when enabled): cuts the primary-track clip at the playhead into two clips (same source, adjusted in/out). Only when the playhead lies **strictly inside** a clip—not in a gap or on a cut (same rule as insert-split).
 - **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter). **Ctrl+S** (**⌘S** on macOS) when **Save** is enabled (same as the menu).
 - **Revert** restores the last explicit save baseline, or re-probes the original opened media file if never saved.
@@ -29,7 +30,7 @@
 
 ### Export
 
-- **Export…** (**Ctrl+E** / **⌘E** when **media ready** and no export is running) remux/transcode the **primary video track** (all clips in order, respecting each clip’s in/out points) to MP4 / WebM / MKV via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list (`export_concat_timeline` in `reel_core`). Export runs **off the UI thread**; status shows **Exporting…** then success or error. **File → Cancel Export** or **Esc** requests cancellation (ffmpeg is interrupted; status shows **Export cancelled.**). Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
+- **Export…** (**Ctrl+E** / **⌘E** when **media ready** and no export is running) opens an **export preset** sheet: pick **MP4** (remux), **WebM** (VP8 + Opus re-encode), or **MKV** (remux), then **Next…** opens a save dialog filtered to that container. The flow remux/transcodes the **primary video track** (all clips in order, respecting each clip’s in/out points) via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list. When the **first audio** lane has clips, **`export_concat_with_audio`** muxes that concat with the video (`-map 0:v:0 -map 1:a:0`), capping duration to the **video** timeline; otherwise **`export_concat_timeline`** exports video only (embedded audio from each video file may still copy). Export runs **off the UI thread**; the bottom bar shows a **blue progress strip** plus status **Exporting… N%** (ffmpeg `-progress` vs timeline duration), then success or error. **File → Cancel Export** or **Esc** requests cancellation while encoding (ffmpeg is interrupted; status shows **Export cancelled.**); **Esc** also dismisses the preset sheet. Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
 
 ### Effects (experimental)
 
@@ -39,27 +40,48 @@
 
 ### Help
 
-- **Help** menu entries bundle markdown from `docs/` (overview, features, keyboard shortcuts, media formats, CLI, external AI & tools, developers, agents, UI phases). **F1** opens **Help → Overview**. **File → New Video Track** is described in **Features** and **Media formats & tracks** (**Ctrl+Shift+N** / **⌘⇧N** when media ready).
+- **Help** menu entries bundle markdown from `docs/` (overview, features, keyboard shortcuts, media formats, CLI, external AI & tools, developers, agents, UI phases). **F1** opens **Help → Overview**. **File** track shortcuts (**New Video Track**, **New Audio Track**, **Insert Audio**) are listed in **Keyboard shortcuts** and **Features**.
 
 ---
 
 ## Roadmap (not yet in the product)
 
-Priorities shift; this list is indicative. For **phased planning** (U2 sub-milestones, suggested next focus), see **`docs/phases-ui.md`**.
+Priorities shift; this list is indicative. For **phased planning** (U2 sub-milestones **U2-d** …, **U3** presets, **U4** view chrome), see **`docs/phases-ui.md`**.
 
-### Editing / timeline
+### File & project
 
-- **Multi-track** video (multiple `TrackKind::Video` lanes) and **separate audio tracks** in the UI: you can add video tracks and **move clips** from the primary lane to the next lane; preview and insert/split still use the **first** video track only (secondary lanes are not mixed into playback yet).
-- **Trim / ripple / roll** at playhead; blade tool; slip/slide.
+- **File → Open Recent** (**Phase U4** in **`docs/phases-ui.md`**) — mixed **Most Recently Used** list: recent **project** files (`.reel` / saved JSON) and recent **media** files (extensions consistent with **File → Open** and **`docs/SUPPORTED_FORMATS.md`**).
+
+### Editing / timeline (QuickTime-style)
+
+- **Edit → Rotate 90° Left** / **Rotate 90° Right**; **Flip Horizontal** / **Flip Vertical** (preview + project/export semantics TBD).
+- **Seek bar clip range** — **two markers** (in/out) on the timeline scrub bar to define a **begin** and **end** for the working range (export, trim, or preview scope—see **`docs/phases-ui.md` U2-d**).
+- **Double-click timeline** — opens **trim** UI: adjust begin/end, **Trim** (commit) or **Cancel** (QuickTime-like).
+- **Edit → Resize Video…** — scale to target resolution / preset dimensions.
+- **Multi-track** video (multiple `TrackKind::Video` lanes) and **separate audio tracks**: secondary **video** lanes are still not in the video preview; **mixing** multiple audio lanes, **gain**, and **J/L cuts** are open. **U2-b** preview now **switches** to the first audio lane when it has clips (see **Project & timeline** above).
+- **Trim / ripple / roll** at playhead beyond the trim sheet; blade tool; slip/slide.
 - **Subtitles / captions** import, edit, and burn-in export.
 - **Keyframes** and motion/effect parameters per clip.
 
+### Audio (Edit menu)
+
+- **Remove audio** — drop embedded audio from the selected clip(s) or timeline selection (export muxing must match).
+- **Replace audio** — substitute another audio file for the clip’s sound.
+- **Overlay audio** — mix in an additional track with **independent volume** vs the source (requires **U2-b** mixer work).
+
 ### Export & effects
 
-- Export **presets** (resolution, bitrate), **progress**, **cancel**.
+- **Export configuration presets** — named targets derived from **`docs/SUPPORTED_FORMATS.md`**: e.g. **web** (H.264 + AAC-LC MP4, VP9/AV1 WebM when implemented), **mobile-friendly** (HEVC + AAC MP4, etc.), **compatibility remux**, plus resolution/bitrate fields per preset.
+- Determinate **progress bar** in the window chrome (status **N%** exists today).
 - **Batch export**.
 - **Real FaceFusion** frame pipeline in the sidecar (beyond import check / stubs).
 - **Robust Video Matting (ONNX)** or equivalent for true matting (current `rvm_chroma` is chroma-style).
+
+### View & playback
+
+- **View → Loop Playback** — toggle; when on, **loop** the current sequence (or clip—product decision).
+- **View → Zoom** — **Zoom In**, **Zoom Out** (after zoom in), **Zoom to Fit**, **Actual Size** (1:1); optional **Zoom to Video** (see **`docs/phases-ui.md`**).
+- **Fullscreen** — control on the **playback** toolbar / chrome and/or **View → Enter Fullscreen**.
 
 ### UX / platform
 
@@ -70,6 +92,10 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 ### Project I/O
 
 - Optional deeper integration of **`ProjectStore`** from `reel-core` with the app (library already has debounced atomic saves for `project.json`-style usage).
+
+### AI / future
+
+- **AI upsampling / super-resolution** — increase output resolution (export or intermediate) using a model or external tool; complements **Edit → Resize** and **export presets** (see **`docs/phases-ui.md` U5**).
 
 ---
 

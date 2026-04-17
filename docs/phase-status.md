@@ -63,7 +63,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 
 ## Phase U1 — Desktop shell & documentation ✅
 
-*Aligned with **Phase U1** in `phases-ui.md` (menus, Help, timeline scrub).*
+*Aligned with **Phase U1** in `phases-ui.md` (menus, Help, timeline scrub). Product **U1** exit criteria there are **met**; follow-on shell items such as **File → Open Recent** live under **Product Phase U4** in `phases-ui.md`.*
 
 - [x] Menu bar: File / Edit / Effects / Window / Help
 - [x] File / Edit / Effects / Window behaviors (see `FEATURES.md`)
@@ -94,6 +94,20 @@ Source matrix: **`docs/SUPPORTED_FORMATS.md`**. These items track **first-class*
 - [ ] **Export — MOV mux** and/or **ProRes / DNx** intermediate paths for pro handoff
 - [ ] **Playback / export — Subtitles** — **WebVTT**, **SRT**, **TTML** (platform targets in `SUPPORTED_FORMATS.md`); **ASS/SSA** for advanced styling — not decoded, shown, or muxed today (see `MEDIA_FORMATS.md`)
 - [ ] **Playback — Multi-audio** stream selection (today: first decodable audio only)
+
+---
+
+## UI initiative checklist (product — see `phases-ui.md`)
+
+Implementation tracking for **menu- and timeline-visible** features described in **`docs/phases-ui.md`** (U2-d … U4, **U3** presets). Uncheck until shipped; update **`docs/FEATURES.md`** when done.
+
+- [ ] **File → Open Recent** (**U4**) — MRU **projects** and **media** (supported extensions per **`docs/SUPPORTED_FORMATS.md`** / open dialog)
+- [ ] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**)
+- [ ] **Timeline** — **two markers** on the seek bar (in/out range); **double-click** timeline opens **trim** sheet (Trim / Cancel)
+- [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
+- [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)
+- [ ] **View** — **Loop playback** toggle; **Zoom** (in, out, fit, actual size, optional zoom-to-video); **fullscreen** control + menu
+- [ ] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers, not only remux / VP8 WebM)
 
 ---
 

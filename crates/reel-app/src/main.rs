@@ -18,9 +18,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use reel_core::export_concat_timeline;
+use reel_core::TrackKind;
+use reel_core::{export_concat_with_audio, ExportProgressFn};
 use session::{
-    export_format_for_path, split_enabled_for_playhead, video_lane_indices, EditSession,
+    export_format_for_path, split_enabled_for_playhead, video_lane_indices,
+    web_export_format_from_preset_index, EditSession,
 };
 use slint::ComponentHandle;
 
@@ -28,6 +30,44 @@ use crate::project_io::save_project;
 use crate::ui_bridge::on_ui;
 
 slint::include_modules!();
+
+type ExportSpanVec = Vec<(PathBuf, f64, f64)>;
+
+/// Primary video spans + optional first-audio-track spans for ffmpeg export (empty timeline → `None`).
+fn export_timeline_payload(
+    session: &EditSession,
+) -> Option<(ExportSpanVec, Option<ExportSpanVec>)> {
+    let segs = session
+        .project()
+        .and_then(timeline::clips_from_project)
+        .map(|clips| {
+            clips
+                .into_iter()
+                .map(|c| (c.path, c.media_in_s, c.media_out_s))
+                .collect::<Vec<_>>()
+        })?;
+    if segs.is_empty() {
+        return None;
+    }
+    let audio_segs = session.project().and_then(|p| {
+        timeline::clips_from_first_audio_track(p).map(|clips| {
+            clips
+                .into_iter()
+                .map(|c| (c.path, c.media_in_s, c.media_out_s))
+                .collect::<Vec<_>>()
+        })
+    });
+    Some((segs, audio_segs))
+}
+
+fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
+    let d = rfd::FileDialog::new().set_title("Export media…");
+    match fmt {
+        reel_core::WebExportFormat::Mp4Remux => d.add_filter("MP4", &["mp4", "m4v"]),
+        reel_core::WebExportFormat::WebmVp8Opus => d.add_filter("WebM", &["webm"]),
+        reel_core::WebExportFormat::MkvRemux => d.add_filter("Matroska", &["mkv"]),
+    }
+}
 
 fn begin_export_effect(
     weak: slint::Weak<AppWindow>,
@@ -101,6 +141,13 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     window.set_redo_enabled(session.redo_enabled());
     window.set_timeline_info(session.timeline_summary_line().into());
     window.set_video_track_lanes(session.video_track_row_labels().join("\n").into());
+    window.set_audio_track_lanes(session.audio_track_row_labels().join("\n").into());
+    let insert_audio_ok = session
+        .project()
+        .map(|p| p.tracks.iter().any(|t| t.kind == TrackKind::Audio))
+        .unwrap_or(false)
+        && window.get_media_ready();
+    window.set_insert_audio_enabled(insert_audio_ok);
     if let Some(p) = session.project() {
         if let Some(clips) = timeline::clips_from_project(p) {
             let d = timeline::sequence_duration_ms(&clips);
@@ -139,8 +186,9 @@ fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSessio
         sender.send(player::Cmd::Close);
         return;
     };
-    if let Some(sync) = timeline::timeline_sync_from_project(p) {
-        sender.send(player::Cmd::LoadTimeline { sync });
+    if let Some(video) = timeline::timeline_sync_from_project(p) {
+        let audio = timeline::dedicated_audio_timeline_sync_from_project(p);
+        sender.send(player::Cmd::LoadTimeline { video, audio });
     } else {
         sender.send(player::Cmd::Close);
     }
@@ -178,6 +226,8 @@ fn main() -> Result<()> {
     window.set_timecode("0:00.000 / 0:00.000".into());
     window.set_timeline_info("".into());
     window.set_video_track_lanes("".into());
+    window.set_audio_track_lanes("".into());
+    window.set_insert_audio_enabled(false);
     window.set_move_clip_down_enabled(false);
     window.set_move_clip_up_enabled(false);
     window.set_split_at_playhead_enabled(false);
@@ -318,6 +368,46 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
+        window.on_file_insert_audio(move || match prompt_insert_audio_dialog() {
+            Some(insert_path) => {
+                let playhead_ms = weak
+                    .upgrade()
+                    .map(|w| w.get_playhead_ms() as f64)
+                    .unwrap_or(0.0);
+                let insert_result = session
+                    .borrow_mut()
+                    .insert_audio_clip_at_playhead(insert_path, playhead_ms);
+                match insert_result {
+                    Ok(()) => {
+                        if let Some(w) = weak.upgrade() {
+                            let n = session
+                                .borrow()
+                                .project()
+                                .map(|pr| pr.clips.len())
+                                .unwrap_or(0);
+                            sync_menu_and_autosave(&w, &session, &debouncer);
+                            w.set_status_text(
+                                format!("Inserted audio @ {playhead_ms:.0} ms ({n} clips)").into(),
+                            );
+                        }
+                        reload_player_timeline(&sender, &session.borrow());
+                    }
+                    Err(e) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text(format!("Insert audio failed: {e}").into());
+                        }
+                    }
+                }
+            }
+            None => tracing::debug!("insert audio cancelled"),
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
         window.on_file_insert_video(move || match prompt_insert_dialog() {
             Some(insert_path) => {
                 let playhead_ms = weak
@@ -378,79 +468,144 @@ fn main() -> Result<()> {
     {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
-        let export_cancel_slot = Arc::clone(&export_cancel);
+        let debouncer = Rc::clone(&debouncer);
+        window.on_file_new_audio_track(move || {
+            let r = session.borrow_mut().add_audio_track();
+            match r {
+                Ok(()) => {
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        w.set_status_text("Added audio track".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
         window.on_file_export(move || {
-            let segs = session
-                .borrow()
-                .project()
-                .and_then(timeline::clips_from_project)
-                .map(|clips| {
-                    clips
-                        .into_iter()
-                        .map(|c| (c.path, c.media_in_s, c.media_out_s))
-                        .collect::<Vec<_>>()
-                });
-            let Some(segs) = segs.filter(|s| !s.is_empty()) else {
+            if export_timeline_payload(&session.borrow()).is_none() {
+                return;
+            }
+            if let Some(w) = weak.upgrade() {
+                w.set_export_preset_dialog_visible(true);
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        window.on_export_preset_cancel(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_export_preset_dialog_visible(false);
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let export_cancel_slot = Arc::clone(&export_cancel);
+        window.on_export_preset_confirm(move || {
+            let Some(w) = weak.upgrade() else {
                 return;
             };
-            if let Some(dest) = rfd::FileDialog::new()
-                .set_title("Export media…")
-                .add_filter("MP4", &["mp4"])
-                .add_filter("WebM", &["webm"])
-                .add_filter("Matroska", &["mkv"])
-                .save_file()
-            {
-                let fmt = match export_format_for_path(&dest) {
-                    Some(f) => f,
-                    None => {
-                        if let Some(w) = weak.upgrade() {
-                            w.set_status_text("Choose .mp4, .webm, or .mkv".into());
-                        }
-                        return;
-                    }
-                };
-                let cancel = Arc::new(AtomicBool::new(false));
-                *export_cancel_slot.lock().expect("export cancel mutex") = Some(cancel.clone());
+            let idx = w.get_export_preset_index();
+            w.set_export_preset_dialog_visible(false);
+            drop(w);
+
+            let Some(fmt) = web_export_format_from_preset_index(idx) else {
                 if let Some(w) = weak.upgrade() {
-                    w.set_status_text("Exporting…".into());
-                    w.set_export_in_progress(true);
+                    w.set_status_text("Invalid export preset.".into());
                 }
-                let weak_done = weak.clone();
-                let dest_disp = dest.display().to_string();
-                let slot_clear = Arc::clone(&export_cancel_slot);
-                let res = std::thread::Builder::new()
-                    .name("reel-export".into())
-                    .spawn(move || {
-                        let r = export_concat_timeline(&segs, &dest, fmt, Some(cancel.as_ref()));
-                        let msg = match &r {
-                            Ok(()) => format!("Exported to {dest_disp}"),
-                            Err(e) => {
-                                if e.is_cancelled() {
-                                    "Export cancelled.".into()
-                                } else {
-                                    format!("Export failed: {e}")
-                                }
-                            }
-                        };
-                        on_ui(weak_done, move |w| {
-                            *slot_clear.lock().expect("export cancel mutex") = None;
-                            w.set_export_in_progress(false);
-                            w.set_status_text(msg.into());
-                        });
-                        if let Err(e) = &r {
-                            if !e.is_cancelled() {
-                                tracing::error!(error = %e, "export failed");
+                return;
+            };
+
+            let Some((segs, audio_segs)) = export_timeline_payload(&session.borrow()) else {
+                return;
+            };
+
+            let Some(dest) = export_save_dialog(fmt).save_file() else {
+                return;
+            };
+
+            if export_format_for_path(&dest) != Some(fmt) {
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_text(
+                        format!("Use a .{} file name for this preset.", fmt.file_extension())
+                            .into(),
+                    );
+                }
+                return;
+            }
+
+            let cancel = Arc::new(AtomicBool::new(false));
+            *export_cancel_slot.lock().expect("export cancel mutex") = Some(cancel.clone());
+            if let Some(w) = weak.upgrade() {
+                w.set_status_text("Exporting…".into());
+                w.set_export_progress(0.0);
+                w.set_export_in_progress(true);
+            }
+            let weak_done = weak.clone();
+            let weak_prog = weak.clone();
+            let dest_disp = dest.display().to_string();
+            let slot_clear = Arc::clone(&export_cancel_slot);
+            let on_ratio: Option<ExportProgressFn> = Some(Arc::new(move |r: f64| {
+                let pct = (r.clamp(0.0, 1.0) * 100.0).round() as i32;
+                let wk = weak_prog.clone();
+                on_ui(wk, move |win| {
+                    win.set_export_progress(r.clamp(0.0, 1.0) as f32);
+                    win.set_status_text(format!("Exporting… {pct}%").into());
+                });
+            }));
+            let res = std::thread::Builder::new()
+                .name("reel-export".into())
+                .spawn(move || {
+                    let r = export_concat_with_audio(
+                        &segs,
+                        audio_segs.as_deref(),
+                        &dest,
+                        fmt,
+                        Some(cancel.as_ref()),
+                        on_ratio,
+                    );
+                    let msg = match &r {
+                        Ok(()) => format!("Exported to {dest_disp}"),
+                        Err(e) => {
+                            if e.is_cancelled() {
+                                "Export cancelled.".into()
+                            } else {
+                                format!("Export failed: {e}")
                             }
                         }
-                    });
-                if let Err(e) = res {
-                    tracing::error!(?e, "failed to spawn export thread");
-                    *export_cancel_slot.lock().expect("export cancel mutex") = None;
-                    on_ui(weak.clone(), |w| {
+                    };
+                    on_ui(weak_done, move |w| {
+                        *slot_clear.lock().expect("export cancel mutex") = None;
                         w.set_export_in_progress(false);
-                        w.set_status_text("Could not start export".into());
+                        w.set_export_progress(0.0);
+                        w.set_status_text(msg.into());
                     });
-                }
+                    if let Err(e) = &r {
+                        if !e.is_cancelled() {
+                            tracing::error!(error = %e, "export failed");
+                        }
+                    }
+                });
+            if let Err(e) = res {
+                tracing::error!(?e, "failed to spawn export thread");
+                *export_cancel_slot.lock().expect("export cancel mutex") = None;
+                on_ui(weak.clone(), |w| {
+                    w.set_export_in_progress(false);
+                    w.set_export_progress(0.0);
+                    w.set_status_text("Could not start export".into());
+                });
             }
         });
     }
@@ -829,6 +984,25 @@ fn prompt_insert_dialog() -> Option<PathBuf> {
         rfd::FileDialog::new()
             .set_title("Insert video…")
             .add_filter("Video", &["mov", "mp4", "mkv", "m4v", "webm", "avi"])
+            .pick_file()
+    }));
+    result.unwrap_or_default()
+}
+
+fn prompt_insert_audio_dialog() -> Option<PathBuf> {
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        rfd::FileDialog::new()
+            .set_title("Insert audio…")
+            .add_filter(
+                "Audio",
+                &[
+                    "wav", "aiff", "aif", "mp3", "m4a", "aac", "flac", "ogg", "opus",
+                ],
+            )
+            .add_filter(
+                "Video (audio stream)",
+                &["mov", "mp4", "mkv", "m4v", "webm"],
+            )
             .pick_file()
     }));
     result.unwrap_or_default()

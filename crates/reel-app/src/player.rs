@@ -41,9 +41,11 @@ use crate::AppWindow;
 
 #[derive(Clone)]
 pub enum Cmd {
-    /// Primary video track: decode across multiple clip spans in sequence time.
+    /// Primary video track + optional dedicated audio concat (first audio lane with clips).
+    /// When `audio` is `None`, audio follows embedded streams in each **video** segment’s file.
     LoadTimeline {
-        sync: Arc<TimelineSync>,
+        video: Arc<TimelineSync>,
+        audio: Option<Arc<TimelineSync>>,
     },
     /// Drop the current source and reset transport (no decoder teardown of threads).
     Close,
@@ -191,7 +193,10 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
 
         if let Some(c) = cmd {
             match c {
-                Cmd::LoadTimeline { sync } => {
+                Cmd::LoadTimeline {
+                    video: sync,
+                    audio: _,
+                } => {
                     ctx = None;
                     playing = false;
                     clock.set_playing(false);
@@ -617,10 +622,13 @@ fn audio_loop<P, C>(
 
     let mut actx: Option<AudioCtx> = None;
     let mut playing = false;
-    let mut timeline: Option<Arc<TimelineSync>> = None;
+    let mut decode_timeline: Option<Arc<TimelineSync>> = None;
+    let mut video_master: Option<Arc<TimelineSync>> = None;
+    let mut dedicated_audio = false;
+    let mut silence_pad = false;
 
     loop {
-        let cmd = if playing && actx.is_some() {
+        let cmd = if playing && (actx.is_some() || silence_pad) {
             rx.try_recv().ok()
         } else {
             match rx.recv() {
@@ -631,34 +639,70 @@ fn audio_loop<P, C>(
 
         if let Some(c) = cmd {
             match c {
-                Cmd::LoadTimeline { sync } => {
+                Cmd::LoadTimeline { video, audio } => {
                     actx = None;
                     playing = false;
+                    silence_pad = false;
                     clock.set(0);
-                    timeline = Some(sync.clone());
-                    sync.active_index.store(0, Ordering::SeqCst);
-                    let s0 = &sync.segments[0];
+                    video_master = Some(video.clone());
+                    dedicated_audio = audio.is_some();
+                    let decode = audio.unwrap_or_else(|| video.clone());
+                    decode_timeline = Some(decode.clone());
+                    decode.active_index.store(0, Ordering::SeqCst);
+                    if decode.segments.is_empty() {
+                        decode_timeline = None;
+                        video_master = None;
+                        continue;
+                    }
+                    let s0 = &decode.segments[0];
                     match try_open_audio(&s0.path) {
                         Ok(mut a) => {
                             if let Err(e) = a.seek(s0.media_in_ms) {
                                 tracing::warn!(error = %e, "audio initial seek failed");
                             }
                             actx = Some(a);
+                            silence_pad = false;
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "audio open failed; continuing muted");
+                            tracing::warn!(error = %e, "audio open failed");
+                            actx = None;
+                            silence_pad = dedicated_audio && video.total_sequence_ms() > 0;
                         }
                     }
                 }
-                Cmd::Play => playing = actx.is_some(),
-                Cmd::Pause => playing = false,
+                Cmd::Play => {
+                    if decode_timeline.is_none() {
+                        continue;
+                    }
+                    if actx.is_none() && !silence_pad {
+                        continue;
+                    }
+                    playing = true;
+                    clock.set_playing(true);
+                }
+                Cmd::Pause => {
+                    playing = false;
+                }
                 Cmd::SeekSequence { seq_ms } => {
-                    let Some(ref t) = timeline else {
+                    let Some(ref vm) = video_master else {
                         continue;
                     };
-                    if let Some((idx, local_ms)) = t.resolve_seek(seq_ms) {
-                        t.active_index.store(idx, Ordering::SeqCst);
-                        let s = &t.segments[idx];
+                    let Some(ref dt) = decode_timeline else {
+                        continue;
+                    };
+                    let cap = vm.total_sequence_ms();
+                    let seq_ms = seq_ms.min(cap);
+                    if dedicated_audio && seq_ms >= dt.total_sequence_ms() {
+                        actx = None;
+                        silence_pad = true;
+                        if !dt.segments.is_empty() {
+                            dt.active_index
+                                .store(dt.segments.len() - 1, Ordering::SeqCst);
+                        }
+                    } else if let Some((idx, local_ms)) = dt.resolve_seek(seq_ms) {
+                        silence_pad = false;
+                        dt.active_index.store(idx, Ordering::SeqCst);
+                        let s = &dt.segments[idx];
                         match try_open_audio(&s.path) {
                             Ok(mut a) => {
                                 if let Err(e) = a.seek(local_ms) {
@@ -669,6 +713,7 @@ fn audio_loop<P, C>(
                             Err(e) => {
                                 tracing::warn!(error = %e, "audio reopen failed");
                                 actx = None;
+                                silence_pad = dedicated_audio;
                             }
                         }
                     }
@@ -677,7 +722,10 @@ fn audio_loop<P, C>(
                 }
                 Cmd::Close => {
                     actx = None;
-                    timeline = None;
+                    decode_timeline = None;
+                    video_master = None;
+                    dedicated_audio = false;
+                    silence_pad = false;
                     playing = false;
                 }
                 Cmd::Stop => return,
@@ -685,7 +733,36 @@ fn audio_loop<P, C>(
         }
 
         if playing {
-            if let Some(a) = actx.as_mut() {
+            let should_output_silence = silence_pad
+                || (dedicated_audio
+                    && actx.is_none()
+                    && video_master
+                        .as_ref()
+                        .map(|v| clock.get() < v.total_sequence_ms())
+                        .unwrap_or(false));
+
+            if should_output_silence {
+                let vm_end = video_master
+                    .as_ref()
+                    .map(|v| v.total_sequence_ms())
+                    .unwrap_or(0);
+                if clock.get() >= vm_end {
+                    playing = false;
+                    silence_pad = false;
+                    clock.set_playing(false);
+                    on_ui(weak.clone(), |w| w.set_is_playing(false));
+                } else {
+                    let chunk = (OUT_SAMPLE_RATE as usize / 25) * OUT_CHANNELS as usize;
+                    for _ in 0..chunk {
+                        while producer.try_push(0.0).is_err() {
+                            if !playing || !clock.is_playing() {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                    }
+                }
+            } else if let Some(a) = actx.as_mut() {
                 if let Some(samples) = a.next_packet_samples() {
                     for s in samples {
                         while producer.try_push(s).is_err() {
@@ -695,7 +772,7 @@ fn audio_loop<P, C>(
                             std::thread::sleep(Duration::from_millis(2));
                         }
                     }
-                } else if let Some(ref t) = timeline {
+                } else if let Some(ref t) = decode_timeline {
                     let idx = t.active_index.load(Ordering::SeqCst);
                     if idx + 1 < t.segments.len() {
                         t.active_index.store(idx + 1, Ordering::SeqCst);
@@ -717,6 +794,21 @@ fn audio_loop<P, C>(
                                 clock.set_playing(false);
                                 on_ui(weak.clone(), |w| w.set_is_playing(false));
                             }
+                        }
+                    } else if dedicated_audio {
+                        if let Some(vm) = video_master.as_ref() {
+                            if clock.get() < vm.total_sequence_ms() {
+                                actx = None;
+                                silence_pad = true;
+                            } else {
+                                playing = false;
+                                clock.set_playing(false);
+                                on_ui(weak.clone(), |w| w.set_is_playing(false));
+                            }
+                        } else {
+                            playing = false;
+                            clock.set_playing(false);
+                            on_ui(weak.clone(), |w| w.set_is_playing(false));
                         }
                     } else {
                         playing = false;

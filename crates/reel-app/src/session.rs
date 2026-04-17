@@ -23,20 +23,17 @@ pub(crate) enum InsertPlan {
     Split { clip_index: usize, local_ms: f64 },
 }
 
-/// Map playhead (concatenated sequence time, ms) to an insert or split plan.
-///
-/// Uses the **first** [`TrackKind::Video`] entry in [`Project::tracks`] order (the
-/// primary timeline lane). Additional video tracks are ignored here until U2+ editing.
+/// Map playhead (concatenated sequence time, ms) to an insert or split plan on `track`.
 ///
 /// Rules:
 /// - At or before a clip’s left edge → insert before that clip.
 /// - Strictly inside a clip’s span → split at playhead, insert between the two parts.
 /// - Past the end → append.
-pub(crate) fn insert_plan_for_playhead_ms(
+pub(crate) fn insert_plan_for_track_ms(
     project: &Project,
+    track: &Track,
     playhead_ms: f64,
 ) -> Option<InsertPlan> {
-    let track = project.tracks.iter().find(|t| t.kind == TrackKind::Video)?;
     if track.clip_ids.is_empty() {
         return Some(InsertPlan::AtIndex(0));
     }
@@ -61,6 +58,24 @@ pub(crate) fn insert_plan_for_playhead_ms(
         t_ms += dur_ms;
     }
     Some(InsertPlan::AtIndex(track.clip_ids.len()))
+}
+
+/// Uses the **first** [`TrackKind::Video`] track (primary timeline). Sequence time matches the primary video concat.
+pub(crate) fn insert_plan_for_playhead_ms(
+    project: &Project,
+    playhead_ms: f64,
+) -> Option<InsertPlan> {
+    let track = project.tracks.iter().find(|t| t.kind == TrackKind::Video)?;
+    insert_plan_for_track_ms(project, track, playhead_ms)
+}
+
+/// Insert plan on the **first** [`TrackKind::Audio`] track (same sequence clock as primary video).
+pub(crate) fn insert_plan_for_first_audio_track_ms(
+    project: &Project,
+    playhead_ms: f64,
+) -> Option<InsertPlan> {
+    let track = project.tracks.iter().find(|t| t.kind == TrackKind::Audio)?;
+    insert_plan_for_track_ms(project, track, playhead_ms)
 }
 
 /// True when **Split Clip at Playhead** can run (playhead strictly inside a primary-track clip).
@@ -91,6 +106,33 @@ fn video_track_row_lines(p: &Project) -> Vec<String> {
             let clip_word = if n == 1 { "clip" } else { "clips" };
             format!(
                 "V{} · {lane} · {n} {clip_word} · {}",
+                idx + 1,
+                timecode::format_ms_alone(dur_ms as f32)
+            )
+        })
+        .collect()
+}
+
+fn audio_track_row_lines(p: &Project) -> Vec<String> {
+    let atracks: Vec<&Track> = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .collect();
+    atracks
+        .iter()
+        .enumerate()
+        .map(|(idx, t)| {
+            let n = t.clip_ids.len();
+            let dur_ms: f64 = t
+                .clip_ids
+                .iter()
+                .filter_map(|id| p.clips.iter().find(|c| c.id == *id))
+                .map(|c| (c.out_point - c.in_point) * 1000.0)
+                .sum();
+            let clip_word = if n == 1 { "clip" } else { "clips" };
+            format!(
+                "A{} · audio · {n} {clip_word} · {}",
                 idx + 1,
                 timecode::format_ms_alone(dur_ms as f32)
             )
@@ -150,13 +192,29 @@ impl EditSession {
             .iter()
             .filter(|t| t.kind == TrackKind::Video)
             .collect();
+        let n_a = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .count();
         let n_v = vtracks.len();
         let n_primary = vtracks.first().map(|t| t.clip_ids.len()).unwrap_or(0);
         if n_v == 0 {
             return "No video tracks".into();
         }
+        let audio_from_lane = p
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Audio)
+            .map(|t| !t.clip_ids.is_empty())
+            .unwrap_or(false);
+        let audio_note = if audio_from_lane {
+            "audio from first audio track (concat)"
+        } else {
+            "audio embedded in primary video sources"
+        };
         format!(
-            "{n_v} video track(s) · {n_primary} clip(s) on primary · preview: primary track sequence (concat)"
+            "{n_v} video · {n_a} audio · {n_primary} clip(s) on primary · preview: primary video (concat); {audio_note}"
         )
     }
 
@@ -165,6 +223,14 @@ impl EditSession {
         self.project
             .as_ref()
             .map(video_track_row_lines)
+            .unwrap_or_default()
+    }
+
+    /// One label per **audio** track (in project order), for per-lane rows in the timeline UI.
+    pub fn audio_track_row_labels(&self) -> Vec<String> {
+        self.project
+            .as_ref()
+            .map(audio_track_row_lines)
             .unwrap_or_default()
     }
 
@@ -178,6 +244,25 @@ impl EditSession {
         proj.tracks.push(Track {
             id: Uuid::new_v4(),
             kind: TrackKind::Video,
+            clip_ids: Vec::new(),
+            extensions: Default::default(),
+        });
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Append an empty **audio** track. Undoable. Clips are not routed to preview yet (see timeline summary).
+    pub fn add_audio_track(&mut self) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        proj.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Audio,
             clip_ids: Vec::new(),
             extensions: Default::default(),
         });
@@ -479,6 +564,103 @@ impl EditSession {
         Ok(())
     }
 
+    /// Insert audio from disk on the **first** audio track at `playhead_ms` (primary video sequence time).
+    /// Requires **File → New Audio Track** (or an existing audio lane) first.
+    pub fn insert_audio_clip_at_playhead(
+        &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+
+        self.push_undo_snapshot();
+
+        let proj = self.project.as_mut().expect("project checked above");
+
+        let plan = insert_plan_for_first_audio_track_ms(proj, playhead_ms)
+            .context("add an audio track first (File → New Audio Track)")?;
+
+        let probe = FfmpegProbe::new();
+        let md = probe.probe(&path).context("probe insert")?;
+        let new_id = Uuid::new_v4();
+        let dur = md.duration_seconds;
+        let new_clip = Clip {
+            id: new_id,
+            source_path: path,
+            metadata: md,
+            in_point: 0.0,
+            out_point: dur,
+            extensions: Default::default(),
+        };
+
+        let track = proj
+            .tracks
+            .iter_mut()
+            .find(|t| t.kind == TrackKind::Audio)
+            .context("no audio track")?;
+
+        match plan {
+            InsertPlan::AtIndex(insert_at) => {
+                proj.clips.push(new_clip);
+                let insert_at = insert_at.min(track.clip_ids.len());
+                track.clip_ids.insert(insert_at, new_id);
+            }
+            InsertPlan::Split {
+                clip_index,
+                local_ms,
+            } => {
+                let old_id = *track.clip_ids.get(clip_index).context("split clip index")?;
+                let old = proj
+                    .clips
+                    .iter()
+                    .find(|c| c.id == old_id)
+                    .context("split clip missing")?
+                    .clone();
+
+                let split_sec = old.in_point + (local_ms / 1000.0).max(0.0);
+                debug_assert!(
+                    split_sec > old.in_point && split_sec < old.out_point,
+                    "InsertPlan::Split must target clip interior"
+                );
+
+                let left_id = Uuid::new_v4();
+                let right_id = Uuid::new_v4();
+                let left = Clip {
+                    id: left_id,
+                    source_path: old.source_path.clone(),
+                    metadata: old.metadata.clone(),
+                    in_point: old.in_point,
+                    out_point: split_sec,
+                    extensions: Default::default(),
+                };
+                let right = Clip {
+                    id: right_id,
+                    source_path: old.source_path.clone(),
+                    metadata: old.metadata.clone(),
+                    in_point: split_sec,
+                    out_point: old.out_point,
+                    extensions: Default::default(),
+                };
+
+                proj.clips.retain(|c| c.id != old_id);
+                proj.clips.push(left);
+                proj.clips.push(right);
+                proj.clips.push(new_clip);
+
+                track
+                    .clip_ids
+                    .splice(clip_index..=clip_index, [left_id, new_id, right_id]);
+            }
+        }
+
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
     fn push_undo_snapshot(&mut self) {
         if let Some(ref p) = self.project {
             if self.undo.len() >= MAX_UNDO {
@@ -619,6 +801,16 @@ pub fn export_format_for_path(path: &Path) -> Option<reel_core::WebExportFormat>
     }
 }
 
+/// Preset row from **Export** dialog (`0` = MP4, `1` = WebM, `2` = MKV). See `docs/SUPPORTED_FORMATS.md`.
+pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebExportFormat> {
+    match index {
+        0 => Some(reel_core::WebExportFormat::Mp4Remux),
+        1 => Some(reel_core::WebExportFormat::WebmVp8Opus),
+        2 => Some(reel_core::WebExportFormat::MkvRemux),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +924,23 @@ mod tests {
             export_format_for_path(Path::new("x.webm")),
             Some(reel_core::WebExportFormat::WebmVp8Opus)
         );
+    }
+
+    #[test]
+    fn export_preset_index_maps_web_formats() {
+        assert_eq!(
+            web_export_format_from_preset_index(0),
+            Some(reel_core::WebExportFormat::Mp4Remux),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(1),
+            Some(reel_core::WebExportFormat::WebmVp8Opus),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(2),
+            Some(reel_core::WebExportFormat::MkvRemux),
+        );
+        assert_eq!(web_export_format_from_preset_index(-1), None);
     }
 
     fn clip_sec(id: Uuid, path: &str, sec: f64) -> Clip {
@@ -883,6 +1092,40 @@ mod tests {
     }
 
     #[test]
+    fn add_audio_track_appends_empty_lane() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
+        );
+        s.add_audio_track().unwrap();
+        let rows = s.audio_track_row_labels();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].starts_with("A1 · audio · 0 clips"));
+        assert!(s.timeline_summary_line().contains("1 audio"));
+        assert!(s.undo());
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn add_video_track_appends_empty_lane() {
         let f = tiny_fixture();
         if !f.is_file() {
@@ -912,7 +1155,7 @@ mod tests {
             .collect();
         assert_eq!(v.len(), 2);
         assert!(v[1].clip_ids.is_empty());
-        assert!(s.timeline_summary_line().contains("2 video track"));
+        assert!(s.timeline_summary_line().contains("2 video"));
         assert!(s.undo());
         assert_eq!(
             s.project()
