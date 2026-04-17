@@ -1,24 +1,41 @@
-import { ScrollView, VerticalBox } from "std-widgets.slint";
+import { HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
 
 export component HelpWindow inherits Window {
     preferred-width: 560px;
     preferred-height: 640px;
+    icon: @image-url("../../../assets/icons/knotreels.png");
 
     in property <string> help-title: "Reel — Help";
     title: root.help-title;
 
     in property <string> body-text: "";
 
-    ScrollView {
-        vertical-stretch: 1;
-        horizontal-stretch: 1;
-        width: 100%;
-        VerticalBox {
-            padding: 12px;
-            Text {
-                text: root.body-text;
-                wrap: word-wrap;
-                width: 100%;
+    VerticalBox {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 12px;
+        padding-bottom: 0;
+        spacing: 10px;
+        HorizontalBox {
+            alignment: center;
+            Image {
+                width: 80px;
+                height: 80px;
+                source: @image-url("../../../assets/icons/knotreels.png");
+                image-fit: contain;
+            }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            width: 100%;
+            VerticalBox {
+                padding-bottom: 12px;
+                Text {
+                    text: root.body-text;
+                    wrap: word-wrap;
+                    width: 100%;
+                }
             }
         }
     }

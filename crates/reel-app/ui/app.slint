@@ -7,6 +7,7 @@ export component AppWindow inherits Window {
     preferred-width: 1280px;
     preferred-height: 720px;
     title: "Reel";
+    icon: @image-url("../../../assets/icons/knotreels.png");
 
     // Video fit: 0 = contain (fit), 1 = cover (fill)
     in-out property <int> video-fit-mode: 0;
@@ -168,6 +169,7 @@ export component AppWindow inherits Window {
     callback view-toggle-fullscreen();
     callback view-exit-fullscreen();
 
+    callback help-about();
     callback help-overview();
     callback help-features();
     callback help-keyboard();
@@ -476,6 +478,11 @@ export component AppWindow inherits Window {
         }
         Menu {
             title: "Help";
+            MenuItem {
+                title: "About Reel…";
+                activated => { root.help-about(); }
+            }
+            MenuSeparator { }
             MenuItem {
                 title: "Overview";
                 activated => { root.help-overview(); }

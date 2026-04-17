@@ -3,6 +3,8 @@
 /// Which bundled markdown topic to show in [`HelpWindow`](crate::HelpWindow).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HelpDoc {
+    /// Short credits / version (shown from **Help → About Reel…**).
+    About,
     Overview,
     Features,
     Keyboard,
@@ -18,6 +20,7 @@ pub enum HelpDoc {
 impl HelpDoc {
     pub fn title(self) -> &'static str {
         match self {
+            HelpDoc::About => "Reel — About",
             HelpDoc::Overview => "Reel — Overview",
             HelpDoc::Features => "Reel — Features & roadmap",
             HelpDoc::Keyboard => "Reel — Keyboard shortcuts",
@@ -33,6 +36,17 @@ impl HelpDoc {
 
     pub fn markdown(self) -> &'static str {
         match self {
+            HelpDoc::About => {
+                concat!(
+                    "Reel is a desktop video editor with a timeline-focused workflow.\n\n",
+                    "Version ",
+                    env!("CARGO_PKG_VERSION"),
+                    "\n\n",
+                    "The Knot Reels mark identifies this application. ",
+                    "Use Help for documentation topics, or open media and projects from the File menu.\n\n",
+                    "License and source: see the project repository.",
+                )
+            }
             HelpDoc::Overview => {
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/HELP.md"))
             }
@@ -110,6 +124,7 @@ mod tests {
     #[test]
     fn help_bundle_all_topics_non_empty() {
         for doc in [
+            HelpDoc::About,
             HelpDoc::Overview,
             HelpDoc::Features,
             HelpDoc::Keyboard,

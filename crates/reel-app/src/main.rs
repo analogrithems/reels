@@ -1777,6 +1777,9 @@ fn main() -> Result<()> {
     }
 
     {
+        window.on_help_about(move || show_help_window(shell::HelpDoc::About));
+    }
+    {
         window.on_help_overview(move || show_help_window(shell::HelpDoc::Overview));
     }
     {
