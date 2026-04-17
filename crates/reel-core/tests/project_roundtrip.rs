@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use pretty_assertions::assert_eq;
 use reel_core::media::{MediaMetadata, VideoStreamInfo};
-use reel_core::project::{migrate, SCHEMA_VERSION};
+use reel_core::project::{migrate, ClipOrientation, SCHEMA_VERSION};
 use reel_core::{Clip, Project, Track, TrackKind};
 use serde_json::json;
 use uuid::Uuid;
@@ -37,6 +37,7 @@ fn sample_project() -> Project {
             },
             in_point: 1.0,
             out_point: 10.0,
+            orientation: Default::default(),
             extensions: Default::default(),
         }],
         tracks: vec![Track {
@@ -115,6 +116,60 @@ fn clip_preserves_extension_keys() {
         p.clips[0].extensions.get("filters"),
         Some(&json!({ "rvm": { "strength": 0.9 } }))
     );
+}
+
+#[test]
+fn clip_orientation_roundtrips_non_identity() {
+    let mut p = sample_project();
+    p.clips[0].orientation = ClipOrientation {
+        rotation_quarter_turns: 1,
+        flip_h: true,
+        flip_v: false,
+    };
+    let s = serde_json::to_string_pretty(&p).unwrap();
+    assert!(
+        s.contains("\"orientation\""),
+        "non-identity orientation must serialize"
+    );
+    let back: Project = serde_json::from_str(&s).unwrap();
+    assert_eq!(p, back);
+}
+
+#[test]
+fn clip_orientation_default_is_omitted_from_json() {
+    let p = sample_project();
+    let s = serde_json::to_string(&p).unwrap();
+    assert!(
+        !s.contains("orientation"),
+        "identity orientation must not bloat the JSON"
+    );
+}
+
+#[test]
+fn clip_orientation_loads_without_field_in_json() {
+    let raw = r#"{
+        "schema_version": 2,
+        "name": "NoOrient",
+        "clips": [{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "source_path": "/a.mp4",
+            "metadata": {
+                "path": "/a.mp4",
+                "duration_seconds": 1.0,
+                "container": "mp4",
+                "video": null,
+                "audio": null,
+                "audio_disabled": false
+            },
+            "in_point": 0.0,
+            "out_point": 1.0
+        }],
+        "tracks": [],
+        "created_at": "2026-04-16T12:00:00Z",
+        "modified_at": "2026-04-16T12:00:00Z"
+    }"#;
+    let p: Project = serde_json::from_str(raw).unwrap();
+    assert_eq!(p.clips[0].orientation, ClipOrientation::default());
 }
 
 #[test]

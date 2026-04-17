@@ -38,6 +38,7 @@ use crate::timecode::apply_playhead_transport;
 use crate::timeline::TimelineSync;
 use crate::ui_bridge::on_ui;
 use crate::AppWindow;
+use reel_core::project::ClipOrientation;
 
 #[derive(Clone)]
 pub enum Cmd {
@@ -269,6 +270,7 @@ fn video_loop(
                     }
                     match try_open_video(&s0.path) {
                         Ok(mut new_ctx) => {
+                            new_ctx.set_orientation(s0.orientation);
                             if let Err(e) = new_ctx.seek(s0.media_in_ms) {
                                 tracing::warn!(error = %e, "video initial seek failed");
                             }
@@ -316,6 +318,7 @@ fn video_loop(
                         let s = &t.segments[idx];
                         match try_open_video(&s.path) {
                             Ok(mut c) => {
+                                c.set_orientation(s.orientation);
                                 if let Err(e) = c.seek(local_ms) {
                                     tracing::warn!(error = %e, seq_ms, "video seek failed");
                                 }
@@ -404,6 +407,7 @@ fn video_loop(
                                 let s = &t.segments[video_seg_idx];
                                 match try_open_video(&s.path) {
                                     Ok(mut nc) => {
+                                        nc.set_orientation(s.orientation);
                                         if let Err(e) = nc.seek(s.media_in_ms) {
                                             tracing::warn!(error = %e, "video segment seek");
                                         }
@@ -492,6 +496,7 @@ struct VideoCtx {
     time_base: ffmpeg::Rational,
     width: u32,
     height: u32,
+    orientation: ClipOrientation,
 }
 
 impl VideoCtx {
@@ -526,7 +531,12 @@ impl VideoCtx {
             time_base,
             width,
             height,
+            orientation: ClipOrientation::default(),
         })
+    }
+
+    fn set_orientation(&mut self, orientation: ClipOrientation) {
+        self.orientation = orientation;
     }
 
     fn seek(&mut self, target_ms: u64) -> Result<()> {
@@ -607,11 +617,20 @@ impl VideoCtx {
             let start = row * stride;
             rgba.extend_from_slice(&plane[start..start + width_bytes]);
         }
-        VideoFrame {
-            pts_ms,
-            width: self.width,
-            height: self.height,
-            rgba,
+
+        match self.orientation.apply_rgba(&rgba, self.width, self.height) {
+            Some((out_rgba, out_w, out_h)) => VideoFrame {
+                pts_ms,
+                width: out_w,
+                height: out_h,
+                rgba: out_rgba,
+            },
+            None => VideoFrame {
+                pts_ms,
+                width: self.width,
+                height: self.height,
+                rgba,
+            },
         }
     }
 }

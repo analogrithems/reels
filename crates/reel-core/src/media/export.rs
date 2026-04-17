@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::project::ClipOrientation;
+
 /// Web-friendly outputs we guarantee in tests (see `tests/export_web_formats.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebExportFormat {
@@ -109,6 +111,20 @@ pub fn export_concat_timeline(
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
+    export_concat_timeline_oriented(segments, None, output, format, cancel, on_ratio)
+}
+
+/// Like [`export_concat_timeline`] but applies `orientation` (rotate/flip) to the whole
+/// output via `-vf`. When non-identity, the preset is forced into a transcode path
+/// regardless of whether it would normally stream-copy.
+pub fn export_concat_timeline_oriented(
+    segments: &[(PathBuf, f64, f64)],
+    orientation: Option<ClipOrientation>,
+    output: &Path,
+    format: WebExportFormat,
+    cancel: Option<&AtomicBool>,
+    on_ratio: Option<ExportProgressFn>,
+) -> Result<(), ExportError> {
     if segments.is_empty() {
         return Err(ExportError {
             message: "timeline export: no segments".into(),
@@ -137,6 +153,7 @@ pub fn export_concat_timeline(
     let total_ms = timeline_total_ms(segments);
     let progress = map_progress_fn(on_ratio, total_ms);
     let progress_pack = pack_progress_tempfile(progress)?;
+    let vf_chain = orientation.and_then(|o| o.ffmpeg_filter_chain());
 
     if segments.len() == 1 {
         let (p, in_s, out_s) = &segments[0];
@@ -156,7 +173,7 @@ pub fn export_concat_timeline(
             .arg("-t")
             .arg(format!("{dur:.6}"))
             .stdout(Stdio::null());
-        append_format_args(&mut cmd, format);
+        append_format_args_with_vf(&mut cmd, format, vf_chain.as_deref());
         cmd.arg(output);
         return run_ffmpeg(cmd, output, cancel, progress_pack);
     }
@@ -182,7 +199,7 @@ pub fn export_concat_timeline(
         .arg("-i")
         .arg(&list_path)
         .stdout(Stdio::null());
-    append_format_args(&mut cmd, format);
+    append_format_args_with_vf(&mut cmd, format, vf_chain.as_deref());
     cmd.arg(output);
     run_ffmpeg(cmd, output, cancel, progress_pack)
 }
@@ -235,8 +252,38 @@ pub fn export_concat_with_audio(
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
+    export_concat_with_audio_oriented(
+        video_segments,
+        audio_segments,
+        None,
+        output,
+        format,
+        cancel,
+        on_ratio,
+    )
+}
+
+/// Like [`export_concat_with_audio`] but applies `orientation` (rotate/flip) to the
+/// mapped video stream via `-vf`. Non-identity orientation forces the video codec into
+/// a transcode; audio stays stream-copied for remux presets.
+pub fn export_concat_with_audio_oriented(
+    video_segments: &[(PathBuf, f64, f64)],
+    audio_segments: Option<&[(PathBuf, f64, f64)]>,
+    orientation: Option<ClipOrientation>,
+    output: &Path,
+    format: WebExportFormat,
+    cancel: Option<&AtomicBool>,
+    on_ratio: Option<ExportProgressFn>,
+) -> Result<(), ExportError> {
     let Some(audio_segments) = audio_segments.filter(|a| !a.is_empty()) else {
-        return export_concat_timeline(video_segments, output, format, cancel, on_ratio);
+        return export_concat_timeline_oriented(
+            video_segments,
+            orientation,
+            output,
+            format,
+            cancel,
+            on_ratio,
+        );
     };
 
     if video_segments.is_empty() {
@@ -289,6 +336,7 @@ pub fn export_concat_with_audio(
     let total_ms = timeline_total_ms(video_segments);
     let progress = map_progress_fn(on_ratio, total_ms);
     let progress_pack = pack_progress_tempfile(progress)?;
+    let vf_chain = orientation.and_then(|o| o.ffmpeg_filter_chain());
 
     let dir = tempfile::tempdir().map_err(|e| ExportError {
         message: format!("timeline export: temp dir: {e}"),
@@ -325,17 +373,39 @@ pub fn export_concat_with_audio(
         .arg("-t")
         .arg(format!("{video_dur:.6}"))
         .stdout(Stdio::null());
-    append_dual_mux_format_args(&mut cmd, format);
+    append_dual_mux_format_args_with_vf(&mut cmd, format, vf_chain.as_deref());
     cmd.arg(output);
     run_ffmpeg(cmd, output, cancel, progress_pack)
 }
 
-fn append_dual_mux_format_args(cmd: &mut Command, format: WebExportFormat) {
-    match format {
-        WebExportFormat::Mp4Remux => {
+/// Like [`append_format_args_with_vf`] but for two-input `-map 0:v:0 -map 1:a:0`
+/// concat (dedicated audio lane). Filters apply to the mapped **video** stream only.
+fn append_dual_mux_format_args_with_vf(
+    cmd: &mut Command,
+    format: WebExportFormat,
+    vf_chain: Option<&str>,
+) {
+    if let Some(chain) = vf_chain {
+        // Filter only the mapped video stream from input 0.
+        cmd.arg("-filter:v:0").arg(chain);
+    }
+    match (format, vf_chain.is_some()) {
+        (WebExportFormat::Mp4Remux, false) => {
             cmd.args(["-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart"]);
         }
-        WebExportFormat::WebmVp8Opus => {
+        (WebExportFormat::Mp4Remux, true) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+        (WebExportFormat::WebmVp8Opus, _) => {
             cmd.args([
                 "-c:v",
                 "libvpx",
@@ -349,8 +419,11 @@ fn append_dual_mux_format_args(cmd: &mut Command, format: WebExportFormat) {
                 "96k",
             ]);
         }
-        WebExportFormat::MkvRemux => {
+        (WebExportFormat::MkvRemux, false) => {
             cmd.args(["-c:v", "copy", "-c:a", "copy"]);
+        }
+        (WebExportFormat::MkvRemux, true) => {
+            cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy"]);
         }
     }
 }
@@ -381,11 +454,33 @@ fn ffconcat_quote_path(path: &Path) -> String {
 }
 
 fn append_format_args(cmd: &mut Command, format: WebExportFormat) {
-    match format {
-        WebExportFormat::Mp4Remux => {
+    append_format_args_with_vf(cmd, format, None);
+}
+
+/// `vf_chain` is an optional `-vf` ffmpeg filter chain (e.g. `"hflip,transpose=1"`).
+/// When present, `-c copy` presets are swapped to an H.264/AAC transcode so the filter
+/// can actually run (ffmpeg cannot apply a filter and stream-copy the same video stream).
+fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_chain: Option<&str>) {
+    if let Some(chain) = vf_chain {
+        cmd.arg("-vf").arg(chain);
+    }
+    match (format, vf_chain.is_some()) {
+        (WebExportFormat::Mp4Remux, false) => {
             cmd.args(["-c", "copy", "-movflags", "+faststart"]);
         }
-        WebExportFormat::WebmVp8Opus => {
+        (WebExportFormat::Mp4Remux, true) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+        (WebExportFormat::WebmVp8Opus, _) => {
             cmd.args([
                 "-c:v",
                 "libvpx",
@@ -399,8 +494,11 @@ fn append_format_args(cmd: &mut Command, format: WebExportFormat) {
                 "96k",
             ]);
         }
-        WebExportFormat::MkvRemux => {
+        (WebExportFormat::MkvRemux, false) => {
             cmd.args(["-c", "copy"]);
+        }
+        (WebExportFormat::MkvRemux, true) => {
+            cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]);
         }
     }
 }
@@ -529,5 +627,70 @@ mod tests {
     fn progress_parse_takes_max_out_time_ms() {
         let s = "progress=continue\nout_time_ms=100\nout_time_ms=2500\n";
         assert_eq!(super::max_out_time_ms_from_progress(s), Some(2500));
+    }
+
+    fn cmd_args_as_strings(cmd: &Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn mp4_remux_without_vf_keeps_stream_copy() {
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(&mut cmd, WebExportFormat::Mp4Remux, None);
+        let args = cmd_args_as_strings(&cmd);
+        assert!(!args.iter().any(|a| a == "-vf"));
+        assert!(args.iter().any(|a| a == "copy"));
+        assert!(!args.iter().any(|a| a == "libx264"));
+    }
+
+    #[test]
+    fn mp4_remux_with_vf_forces_libx264_transcode() {
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(&mut cmd, WebExportFormat::Mp4Remux, Some("transpose=1"));
+        let args = cmd_args_as_strings(&cmd);
+        let vf_idx = args.iter().position(|a| a == "-vf").expect("missing -vf");
+        assert_eq!(args[vf_idx + 1], "transpose=1");
+        assert!(args.iter().any(|a| a == "libx264"));
+        assert!(args.iter().any(|a| a == "yuv420p"));
+        assert!(!args.iter().any(|a| a == "copy"));
+    }
+
+    #[test]
+    fn mkv_remux_with_vf_forces_libx264_transcode() {
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(&mut cmd, WebExportFormat::MkvRemux, Some("hflip"));
+        let args = cmd_args_as_strings(&cmd);
+        assert!(args.iter().any(|a| a == "-vf"));
+        assert!(args.iter().any(|a| a == "libx264"));
+    }
+
+    #[test]
+    fn webm_with_vf_stays_libvpx() {
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(&mut cmd, WebExportFormat::WebmVp8Opus, Some("transpose=2"));
+        let args = cmd_args_as_strings(&cmd);
+        assert!(args.iter().any(|a| a == "-vf"));
+        assert!(args.iter().any(|a| a == "libvpx"));
+    }
+
+    #[test]
+    fn dual_mux_with_vf_filters_only_video_stream() {
+        let mut cmd = Command::new("ffmpeg");
+        append_dual_mux_format_args_with_vf(&mut cmd, WebExportFormat::Mp4Remux, Some("vflip"));
+        let args = cmd_args_as_strings(&cmd);
+        // Must scope the filter to the mapped video stream, not the muxed audio input.
+        let idx = args.iter().position(|a| a == "-filter:v:0").unwrap();
+        assert_eq!(args[idx + 1], "vflip");
+        // Audio still stream-copies in the remux preset.
+        let c_a = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[c_a + 1], "copy");
+    }
+
+    #[test]
+    fn orientation_driven_vf_chain_rejects_identity() {
+        let id = ClipOrientation::default();
+        assert!(id.ffmpeg_filter_chain().is_none());
     }
 }

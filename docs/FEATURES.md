@@ -30,6 +30,7 @@ Below the transport bar, a **single-line footer** shows three regions separated 
 - **Insert Video…** at playhead: probes the file, appends or inserts a clip on the **primary** (first) video track. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts. **Ctrl+I** (**⌘I**) when **media ready**.
 - **Insert Audio…** (**File** menu): probes the file and inserts on the **first audio track** at the playhead (same sequence-time rules as insert video). Requires **File → New Audio Track** first. **Ctrl+Shift+I** (**⌘⇧I**) when **Insert Audio** is enabled.
 - **Split Clip at Playhead** (**Edit** menu, **Ctrl+B** / **⌘B** when enabled): cuts the primary-track clip at the playhead into two clips (same source, adjusted in/out). Only when the playhead lies **strictly inside** a clip—not in a gap or on a cut (same rule as insert-split).
+- **Rotate / Flip** (**Edit** menu, enabled when the playhead is on a primary-track clip): **Rotate 90° Right** (**Ctrl+R** / **⌘R**), **Rotate 90° Left** (**Ctrl+Shift+R** / **⌘⇧R**), **Flip Horizontal**, **Flip Vertical**. Stored **per clip** in the project (survives save/load and splits). Preview applies the transform **after** the scaler; export re-encodes via ffmpeg `-vf` when any clip is non-identity. Mixed orientations across primary clips are **not** supported for export in one pass—align them or export separately.
 - **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter). **Ctrl+S** (**⌘S** on macOS) when **Save** is enabled (same as the menu).
 - **Revert** restores the last explicit save baseline, or re-probes the original opened media file if never saved.
 - **Undo / Redo** (document snapshots): insert and related edits; **explicit Save** clears undo/redo stacks.
@@ -61,7 +62,6 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 
 ### Editing / timeline (QuickTime-style)
 
-- **Edit → Rotate 90° Left** / **Rotate 90° Right**; **Flip Horizontal** / **Flip Vertical** (preview + project/export semantics TBD).
 - **Seek bar clip range** — **two markers** (in/out) on the timeline scrub bar to define a **begin** and **end** for the working range (export, trim, or preview scope—see **`docs/phases-ui.md` U2-d**).
 - **Double-click timeline** — opens **trim** UI: adjust begin/end, **Trim** (commit) or **Cancel** (QuickTime-like).
 - **Edit → Resize Video…** — scale to target resolution / preset dimensions.

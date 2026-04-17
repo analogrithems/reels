@@ -22,8 +22,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use reel_core::project::ClipOrientation;
 use reel_core::TrackKind;
-use reel_core::{export_concat_with_audio, ExportProgressFn};
+use reel_core::{export_concat_with_audio_oriented, ExportProgressFn};
 use session::{
     export_format_for_path, split_enabled_for_playhead, video_lane_indices,
     web_export_format_from_preset_index, EditSession,
@@ -47,6 +48,39 @@ fn save_preview_zoom_prefs(app_prefs: &RefCell<AppPrefs>, w: &AppWindow) {
     p.preview_zoom_percent = w.get_preview_zoom_percent().clamp(25.0, 400.0);
     p.preview_zoom_actual = w.get_preview_zoom_actual();
     p.save();
+}
+
+/// Returns the single [`ClipOrientation`] shared by every primary-track video clip in the project,
+/// or `Err` with a user-facing message when clips disagree. Identity-only returns `Ok(None)`, so
+/// the export path can skip `-vf` and keep stream-copy presets when nothing was rotated.
+///
+/// Mixed orientations are rejected rather than silently flattened: applying a single `-vf` chain
+/// to a concat of differently-oriented sources would produce a visibly broken output.
+fn unified_export_video_orientation(
+    session: &EditSession,
+) -> Result<Option<ClipOrientation>, String> {
+    let Some(p) = session.project() else {
+        return Ok(None);
+    };
+    let Some(clips) = timeline::clips_from_project(p) else {
+        return Ok(None);
+    };
+    let mut iter = clips.iter().map(|c| c.orientation);
+    let Some(first) = iter.next() else {
+        return Ok(None);
+    };
+    for o in iter {
+        if o != first {
+            return Err("Cannot export: primary video clips have different rotate/flip settings. \
+                        Apply the same orientation to all clips (or remove the outliers) and try again."
+                .into());
+        }
+    }
+    Ok(if first.is_identity() {
+        None
+    } else {
+        Some(first)
+    })
 }
 
 /// Primary video spans + optional first-audio-track spans for ffmpeg export (empty timeline → `None`).
@@ -200,11 +234,13 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_split_at_playhead_enabled(
             window.get_media_ready() && split_enabled_for_playhead(p, ph),
         );
+        window.set_rotate_enabled(window.get_media_ready() && session.rotate_enabled(ph));
     } else {
         window.set_duration_ms(0.0);
         window.set_move_clip_down_enabled(false);
         window.set_move_clip_up_enabled(false);
         window.set_split_at_playhead_enabled(false);
+        window.set_rotate_enabled(false);
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
@@ -322,6 +358,7 @@ fn main() -> Result<()> {
     window.set_move_clip_down_enabled(false);
     window.set_move_clip_up_enabled(false);
     window.set_split_at_playhead_enabled(false);
+    window.set_rotate_enabled(false);
     window.set_footer_codec_line("".into());
     window.set_footer_path_line("".into());
     window.set_footer_save_line("".into());
@@ -798,6 +835,16 @@ fn main() -> Result<()> {
                 return;
             };
 
+            let orientation = match unified_export_video_orientation(&session.borrow()) {
+                Ok(o) => o,
+                Err(msg) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(msg.into());
+                    }
+                    return;
+                }
+            };
+
             let Some(dest) = export_save_dialog(fmt).save_file() else {
                 return;
             };
@@ -834,9 +881,10 @@ fn main() -> Result<()> {
             let res = std::thread::Builder::new()
                 .name("reel-export".into())
                 .spawn(move || {
-                    let r = export_concat_with_audio(
+                    let r = export_concat_with_audio_oriented(
                         &segs,
                         audio_segs.as_deref(),
+                        orientation,
                         &dest,
                         fmt,
                         Some(cancel.as_ref()),
@@ -998,6 +1046,138 @@ fn main() -> Result<()> {
                         w.set_timecode(timecode::format_pair(ph, dur).into());
                         sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
                         w.set_status_text("Split clip at playhead".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_edit_rotate_right(move || {
+            let playhead_ms = weak
+                .upgrade()
+                .map(|w| w.get_playhead_ms() as f64)
+                .unwrap_or(0.0);
+            let r = session.borrow_mut().rotate_playhead_clip_right(playhead_ms);
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        sender.send(player::Cmd::SeekSequence {
+                            seq_ms: w.get_playhead_ms() as u64,
+                        });
+                        w.set_status_text("Rotated 90° right".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_edit_rotate_left(move || {
+            let playhead_ms = weak
+                .upgrade()
+                .map(|w| w.get_playhead_ms() as f64)
+                .unwrap_or(0.0);
+            let r = session.borrow_mut().rotate_playhead_clip_left(playhead_ms);
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        sender.send(player::Cmd::SeekSequence {
+                            seq_ms: w.get_playhead_ms() as u64,
+                        });
+                        w.set_status_text("Rotated 90° left".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_edit_flip_horizontal(move || {
+            let playhead_ms = weak
+                .upgrade()
+                .map(|w| w.get_playhead_ms() as f64)
+                .unwrap_or(0.0);
+            let r = session
+                .borrow_mut()
+                .flip_playhead_clip_horizontal(playhead_ms);
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        sender.send(player::Cmd::SeekSequence {
+                            seq_ms: w.get_playhead_ms() as u64,
+                        });
+                        w.set_status_text("Flipped horizontally".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_edit_flip_vertical(move || {
+            let playhead_ms = weak
+                .upgrade()
+                .map(|w| w.get_playhead_ms() as f64)
+                .unwrap_or(0.0);
+            let r = session
+                .borrow_mut()
+                .flip_playhead_clip_vertical(playhead_ms);
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        sender.send(player::Cmd::SeekSequence {
+                            seq_ms: w.get_playhead_ms() as u64,
+                        });
+                        w.set_status_text("Flipped vertically".into());
                     }
                 }
                 Err(e) => {

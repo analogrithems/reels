@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use reel_core::project::ClipOrientation;
 use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
 
@@ -428,6 +429,7 @@ impl EditSession {
             metadata: old.metadata.clone(),
             in_point: old.in_point,
             out_point: split_sec,
+            orientation: old.orientation,
             extensions: Default::default(),
         };
         let right = Clip {
@@ -436,6 +438,7 @@ impl EditSession {
             metadata: old.metadata.clone(),
             in_point: split_sec,
             out_point: old.out_point,
+            orientation: old.orientation,
             extensions: Default::default(),
         };
 
@@ -451,6 +454,64 @@ impl EditSession {
         self.redo.clear();
         self.recompute_dirty();
         Ok(())
+    }
+
+    /// Mutate the primary-track clip under `playhead_ms` with `mutate(&mut orientation)` and push an
+    /// undo snapshot. Fails (without pushing undo) when there is no project or the playhead isn't on
+    /// a primary-track clip.
+    fn mutate_playhead_clip_orientation(
+        &mut self,
+        playhead_ms: f64,
+        mutate: impl FnOnce(&mut ClipOrientation),
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        let clip_id = {
+            let p = self.project.as_ref().expect("checked");
+            crate::timeline::primary_clip_id_at_seq_ms(p, playhead_ms)
+                .context("playhead not on a clip — seek into the clip you want to rotate / flip")?
+        };
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        let clip = proj
+            .clips
+            .iter_mut()
+            .find(|c| c.id == clip_id)
+            .context("clip missing from project")?;
+        mutate(&mut clip.orientation);
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Rotate the clip under `playhead_ms` by 90° clockwise. Undoable.
+    pub fn rotate_playhead_clip_right(&mut self, playhead_ms: f64) -> anyhow::Result<()> {
+        self.mutate_playhead_clip_orientation(playhead_ms, |o| o.rotate_right())
+    }
+
+    /// Rotate the clip under `playhead_ms` by 90° counter-clockwise. Undoable.
+    pub fn rotate_playhead_clip_left(&mut self, playhead_ms: f64) -> anyhow::Result<()> {
+        self.mutate_playhead_clip_orientation(playhead_ms, |o| o.rotate_left())
+    }
+
+    /// Toggle horizontal flip on the clip under `playhead_ms`. Undoable.
+    pub fn flip_playhead_clip_horizontal(&mut self, playhead_ms: f64) -> anyhow::Result<()> {
+        self.mutate_playhead_clip_orientation(playhead_ms, |o| o.toggle_flip_h())
+    }
+
+    /// Toggle vertical flip on the clip under `playhead_ms`. Undoable.
+    pub fn flip_playhead_clip_vertical(&mut self, playhead_ms: f64) -> anyhow::Result<()> {
+        self.mutate_playhead_clip_orientation(playhead_ms, |o| o.toggle_flip_v())
+    }
+
+    /// True when the playhead lies on a primary-track clip (so rotate/flip can run).
+    pub fn rotate_enabled(&self, playhead_ms: f64) -> bool {
+        self.project
+            .as_ref()
+            .and_then(|p| crate::timeline::primary_clip_id_at_seq_ms(p, playhead_ms))
+            .is_some()
     }
 
     /// Load media or a saved **`.reel` / `.json` project**; clears undo/redo for a new media open,
@@ -513,6 +574,7 @@ impl EditSession {
             metadata: md,
             in_point: 0.0,
             out_point: dur,
+            orientation: Default::default(),
             extensions: Default::default(),
         };
 
@@ -554,6 +616,7 @@ impl EditSession {
                     metadata: old.metadata.clone(),
                     in_point: old.in_point,
                     out_point: split_sec,
+                    orientation: old.orientation,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -562,6 +625,7 @@ impl EditSession {
                     metadata: old.metadata.clone(),
                     in_point: split_sec,
                     out_point: old.out_point,
+                    orientation: old.orientation,
                     extensions: Default::default(),
                 };
 
@@ -610,6 +674,7 @@ impl EditSession {
             metadata: md,
             in_point: 0.0,
             out_point: dur,
+            orientation: Default::default(),
             extensions: Default::default(),
         };
 
@@ -651,6 +716,7 @@ impl EditSession {
                     metadata: old.metadata.clone(),
                     in_point: old.in_point,
                     out_point: split_sec,
+                    orientation: old.orientation,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -659,6 +725,7 @@ impl EditSession {
                     metadata: old.metadata.clone(),
                     in_point: split_sec,
                     out_point: old.out_point,
+                    orientation: old.orientation,
                     extensions: Default::default(),
                 };
 
@@ -916,6 +983,75 @@ mod tests {
     }
 
     #[test]
+    fn rotate_playhead_clip_right_pushes_undo_and_marks_dirty() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f.clone()).unwrap();
+        s.mark_saved_to_path(PathBuf::from("/tmp/rot.reel"));
+        assert!(!s.dirty);
+        s.rotate_playhead_clip_right(0.0).expect("rotate right");
+        assert_eq!(
+            s.project().unwrap().clips[0]
+                .orientation
+                .rotation_quarter_turns,
+            1
+        );
+        assert!(s.dirty);
+        assert!(s.undo_enabled());
+        s.undo();
+        assert_eq!(
+            s.project().unwrap().clips[0]
+                .orientation
+                .rotation_quarter_turns,
+            0
+        );
+        assert!(s.redo_enabled());
+    }
+
+    #[test]
+    fn flip_playhead_clip_toggles_independently() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f.clone()).unwrap();
+        s.flip_playhead_clip_horizontal(0.0).unwrap();
+        assert!(s.project().unwrap().clips[0].orientation.flip_h);
+        assert!(!s.project().unwrap().clips[0].orientation.flip_v);
+        s.flip_playhead_clip_vertical(0.0).unwrap();
+        assert!(s.project().unwrap().clips[0].orientation.flip_h);
+        assert!(s.project().unwrap().clips[0].orientation.flip_v);
+        s.flip_playhead_clip_horizontal(0.0).unwrap();
+        assert!(!s.project().unwrap().clips[0].orientation.flip_h);
+        assert!(s.project().unwrap().clips[0].orientation.flip_v);
+    }
+
+    #[test]
+    fn rotate_without_project_errors() {
+        let mut s = EditSession::default();
+        assert!(s.rotate_playhead_clip_right(0.0).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn rotate_in_gap_errors_without_pushing_undo() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f.clone()).unwrap();
+        // Past the end of the tiny fixture's single clip.
+        let far = 60.0 * 60.0 * 1000.0;
+        assert!(s.rotate_playhead_clip_right(far).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
     fn flush_autosave_writes_disk_and_keeps_undo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let reel = dir.path().join("doc.reel");
@@ -975,6 +1111,7 @@ mod tests {
             },
             in_point: 0.0,
             out_point: sec,
+            orientation: Default::default(),
             extensions: Default::default(),
         }
     }

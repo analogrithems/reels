@@ -30,6 +30,8 @@ export component AppWindow inherits Window {
     in property <bool> move-clip-down-enabled: false;
     in property <bool> move-clip-up-enabled: false;
     in property <bool> split-at-playhead-enabled: false;
+    /// True when the playhead is on a primary-track clip, so rotate/flip can run.
+    in property <bool> rotate-enabled: false;
     in property <bool> export-in-progress: false;
     /// 0.0–1.0 while exporting; reset when export ends.
     in property <float> export-progress: 0.0;
@@ -86,6 +88,10 @@ export component AppWindow inherits Window {
     callback edit-split-at-playhead();
     callback edit-move-clip-down();
     callback edit-move-clip-up();
+    callback edit-rotate-right();
+    callback edit-rotate-left();
+    callback edit-flip-horizontal();
+    callback edit-flip-vertical();
 
     callback effect-face-swap();
     callback effect-face-enhance();
@@ -287,6 +293,27 @@ export component AppWindow inherits Window {
                 title: "Move Clip to Track Above";
                 enabled: root.move-clip-up-enabled;
                 activated => { root.edit-move-clip-up(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Rotate 90° Right";
+                enabled: root.rotate-enabled;
+                activated => { root.edit-rotate-right(); }
+            }
+            MenuItem {
+                title: "Rotate 90° Left";
+                enabled: root.rotate-enabled;
+                activated => { root.edit-rotate-left(); }
+            }
+            MenuItem {
+                title: "Flip Horizontal";
+                enabled: root.rotate-enabled;
+                activated => { root.edit-flip-horizontal(); }
+            }
+            MenuItem {
+                title: "Flip Vertical";
+                enabled: root.rotate-enabled;
+                activated => { root.edit-flip-vertical(); }
             }
         }
         Menu {
@@ -528,6 +555,21 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.UpArrow && event.modifiers.control && event.modifiers.shift) {
                 if (root.move-clip-up-enabled) {
                     root.edit-move-clip-up();
+                    accept
+                } else {
+                    reject
+                }
+            // Ctrl+R / ⌘R rotate right; Ctrl+Shift+R / ⌘⇧R rotate left. Needs the playhead on a primary clip.
+            } else if (event.text == Key.R && event.modifiers.control && !event.modifiers.shift) {
+                if (root.rotate-enabled) {
+                    root.edit-rotate-right();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (event.text == Key.R && event.modifiers.control && event.modifiers.shift) {
+                if (root.rotate-enabled) {
+                    root.edit-rotate-left();
                     accept
                 } else {
                     reject

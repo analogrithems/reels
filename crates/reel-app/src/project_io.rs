@@ -49,6 +49,7 @@ pub fn project_from_media_path(media: &Path) -> anyhow::Result<Project> {
         metadata: md,
         in_point: 0.0,
         out_point: dur,
+        orientation: Default::default(),
         extensions: Default::default(),
     });
     p.tracks.push(Track {

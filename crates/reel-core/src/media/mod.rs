@@ -7,7 +7,8 @@ pub mod metadata;
 pub mod probe;
 
 pub use export::{
-    export_concat_timeline, export_concat_with_audio, export_with_ffmpeg, ffmpeg_args_for_format,
+    export_concat_timeline, export_concat_timeline_oriented, export_concat_with_audio,
+    export_concat_with_audio_oriented, export_with_ffmpeg, ffmpeg_args_for_format,
     ExportProgressFn, WebExportFormat,
 };
 pub use frame::grab_frame;

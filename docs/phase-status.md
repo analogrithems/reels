@@ -21,6 +21,8 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 - [x] Child stdout/stderr piped into `tracing` (`spawn_logged_child` / sidecar)
 - [x] GitHub Actions: `macos-14`, `make setup lint test`
 
+**Logging coverage (ongoing — not a phase gate):** Phase 0 delivers **where** logs go and how filters work. **What** we log in application and library code—**error** / **warn** / **info** / **debug** / **trace** at the right places—is a **standing requirement** for new and changed behavior, documented in **`docs/phases-ui.md`** → **Logging standards (requirement)**. PRs should add or extend **`tracing`** calls when they ship user-visible flows or failure paths that would otherwise be silent in the session log.
+
 ---
 
 ## Phase 1 — Media engine & TDD ✅
@@ -103,7 +105,7 @@ Source matrix: **`docs/SUPPORTED_FORMATS.md`**. These items track **first-class*
 Implementation tracking for **menu- and timeline-visible** features described in **`docs/phases-ui.md`** (U2-d … U4, **U3** presets). Uncheck until shipped; update **`docs/FEATURES.md`** when done.
 
 - [x] **File → Open Recent** (**U4**) — MRU **projects** and **media**; **Clear Recent**; persistence + prune on missing file (per-entry remove optional / not shipped)
-- [ ] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**)
+- [x] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**) — per-clip, **Ctrl+R** / **Ctrl+Shift+R**; preview post-scaler + ffmpeg `-vf` on export
 - [ ] **Timeline** — **two markers** on the seek bar (in/out range); **double-click** timeline opens **trim** sheet (Trim / Cancel)
 - [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
 - [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)

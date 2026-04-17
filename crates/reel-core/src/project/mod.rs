@@ -5,9 +5,11 @@
 //! open-ended compatibility workarounds until a stable release is declared.
 
 mod autosave;
+mod orientation;
 mod schema;
 
 pub use autosave::ProjectStore;
+pub use orientation::ClipOrientation;
 pub use schema::{migrate, MigrationError, SCHEMA_VERSION};
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +41,10 @@ pub struct Clip {
     pub in_point: f64,
     /// Out-point, seconds from the start of the source media.
     pub out_point: f64,
+    /// User-applied rotate/flip (QuickTime-style). Defaults to identity and is
+    /// omitted from JSON in that case so existing snapshots stay stable.
+    #[serde(default, skip_serializing_if = "ClipOrientation::is_identity")]
+    pub orientation: ClipOrientation,
     /// Future filter graphs, AI params, etc. Unknown keys round-trip here.
     #[serde(flatten)]
     pub extensions: Map<String, serde_json::Value>,

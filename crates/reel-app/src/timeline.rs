@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use reel_core::project::ClipOrientation;
 use reel_core::{Clip, Project, TrackKind};
 use uuid::Uuid;
 
@@ -16,6 +17,7 @@ pub(crate) struct PrimaryTimelineClip {
     pub media_in_s: f64,
     pub media_out_s: f64,
     pub seq_start_ms: f64,
+    pub orientation: ClipOrientation,
 }
 
 /// First [`TrackKind::Audio`] track in project order (if any), concatenated like the primary video lane.
@@ -34,6 +36,7 @@ pub(crate) fn clips_from_first_audio_track(p: &Project) -> Option<Vec<PrimaryTim
             media_in_s: c.in_point,
             media_out_s: c.out_point,
             seq_start_ms: seq,
+            orientation: c.orientation,
         });
         seq += dur_ms;
     }
@@ -58,6 +61,7 @@ pub(crate) fn clips_from_project(p: &Project) -> Option<Vec<PrimaryTimelineClip>
             media_in_s: c.in_point,
             media_out_s: c.out_point,
             seq_start_ms: seq,
+            orientation: c.orientation,
         });
         seq += dur_ms;
     }
@@ -108,6 +112,7 @@ pub(crate) struct TimelineSegment {
     pub media_in_ms: u64,
     pub media_out_ms: u64,
     pub seq_start_ms: u64,
+    pub orientation: ClipOrientation,
 }
 
 impl TimelineSegment {
@@ -117,6 +122,7 @@ impl TimelineSegment {
             media_in_ms: (c.media_in_s * 1000.0).round() as u64,
             media_out_ms: (c.media_out_s * 1000.0).round() as u64,
             seq_start_ms: c.seq_start_ms.round() as u64,
+            orientation: c.orientation,
         }
     }
 
@@ -278,6 +284,7 @@ mod tests {
             },
             in_point: 0.0,
             out_point: dur,
+            orientation: Default::default(),
             extensions: Default::default(),
         }
     }

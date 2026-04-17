@@ -56,6 +56,34 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 ---
 
+## Logging standards (requirement)
+
+**Infrastructure** (session NDJSON file, `REEL_LOG` / `RUST_LOG`, optional stdout mirror) is documented in **`docs/architecture.md`** and delivered under **engineering Phase 0** in **`docs/phase-status.md`**. This section is the **product/engineering requirement going forward**: new and changed code should make the **session log** useful for support and debugging—not only on crashes.
+
+### Levels (`tracing`)
+
+Use the **`tracing`** crate only (no ad-hoc `println!` in libraries). `tracing` does **not** define a **critical** level; use **`error!`** for failures that are fatal or must surface immediately.
+
+| Level | Use for |
+|-------|---------|
+| **error** | Unrecoverable or user-visible failure; broken invariants; operations that cannot complete |
+| **warn** | Recoverable problems, degraded mode, unexpected but handled conditions, child **stderr** (existing helpers) |
+| **info** | Process lifecycle, **user-visible actions** (open/save/export start and outcome), long-running work boundaries |
+| **debug** | Detailed diagnostics (per-operation detail, cancellation, state transitions) when **`REEL_LOG`** enables it (defaults often filter this) |
+| **trace** | Extremely verbose paths (e.g. per-tick)—**rare**; prefer **debug** unless noise would drown real issues |
+
+### What to log
+
+- **Failures:** Any path that returns `Err` to the user or leaves the app in a bad state should emit **warn** or **error** with context (`error = %e`, paths, ids)—not only `unwrap` sites.
+- **User flows:** Menu actions and dialogs that represent real work (**open**, **save**, **export**, **insert**, **effects**) should log **info** at start and on **success or failure** (export already has high-level hooks; extend **core** paths such as **`reel_core::media::export`** and **session** logic as those areas evolve).
+- **Hot loops:** Playback decode threads should **not** spam **info**; use **debug**/**trace** or sample if needed. **warn**/**error** remain appropriate for real failures.
+
+### Review expectation
+
+PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**, or **`reel-core`** should include **appropriate `tracing` calls** so a default **info** session log shows **what happened** and **what failed**. Pure refactors and mechanical fixes may omit new logs unless they touch error paths.
+
+---
+
 ## Phase U1 — Shell, menus, timeline scrub, Help ✅
 
 **Goal:** Usable window with native menus, transport, scrub, and discoverable documentation.
@@ -75,7 +103,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 - **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, **keyboard shortcuts**, media formats, **supported formats (playback vs export)**, CLI, external AI & tools, developers, agents, UI phases).
 - **Timeline:** `Slider` scrub → same seek as transport.
 - **Footer:** single-line strip (**codecs** · **paths** · **saved / unsaved**) for the clip at the playhead, using per-clip probe metadata; recorded as completed **follow-on** work under **engineering Phase 1** in **`docs/phase-status.md`** (out of original engine scope).
-- **Logging:** Every run writes **`reels.session.<timestamp>.log`** under the OS data directory (`reel/logs/`) as **NDJSON** (structured fields + module **target**, **file**, **line**); optional terminal mirror when stdout is a TTY (**pretty** or **json** per `REEL_LOG_FORMAT`). See **`docs/architecture.md`**.
+- **Logging:** Every run writes **`reels.session.<timestamp>.log`** under the OS data directory (`reel/logs/`) as **NDJSON** (structured fields + module **target**, **file**, **line**); optional terminal mirror when stdout is a TTY (**pretty** or **json** per `REEL_LOG_FORMAT`). See **`docs/architecture.md`**. **Going forward**, new work must follow **`Logging standards (requirement)`** above—not only session file plumbing, but **coverage** at the right **levels** for user flows and failures.
 - **Tests:** Session, project I/O, shell, effects resolve path; reel-core export fixture tests.
 
 **Explicitly deferred** (relative to original U1 scope)
@@ -109,7 +137,7 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; **move clip to next video track** (menu) **done**; remaining: richer per-lane visuals, draggable moves, preview/mix for secondary lanes.
 2. **U2-b — Audio in timeline:** **Partial:** **New Audio Track**, **Insert Audio…**, first-lane **concat preview** (switch from embedded video audio when the lane has clips; silence-pad if audio ends early); **open:** multiple audio lanes, mix, levels, trim-on-lane.
 3. **U2-c — Trim / ripple:** In/out handles or numeric trim; ripple optional.
-4. **U2-d — QuickTime-style Edit menu:** **Rotate 90° Left**, **Rotate 90° Right**, **Flip Horizontal**, **Flip Vertical** (preview + persist in project/export pipeline—implementation TBD). **Seek bar:** **two markers** (in/out) to define a **clip range** for operations and export (same spirit as QuickTime’s selection). **Double-click timeline** opens **trim controls** (begin/end, **Trim** / **Cancel**).
+4. **U2-d — QuickTime-style Edit menu:** **Rotate 90° Left** / **Rotate 90° Right** / **Flip Horizontal** / **Flip Vertical** — **shipped** (per-clip orientation persists in the project; applied in preview post-scaler and in ffmpeg export via `-vf`). Still open: **two seek-bar markers** (in/out) to define a **clip range** for operations and export (same spirit as QuickTime’s selection) and **double-click timeline** → **trim controls** (begin/end, **Trim** / **Cancel**).
 5. **U2-e — Audio (Edit menu):** **Remove** embedded audio from the current clip/selection; **Replace** with an audio file; **Overlay** additional audio with **independent volume** vs the source (builds on **U2-b** mixing/export).
 6. **U2-f — Resize:** **Edit → Resize Video…** (target resolution / scale). **AI-assisted upsampling** to higher resolution is **not** in this milestone—see **U5** / parking lot.
 
@@ -243,7 +271,7 @@ Revisit when **trim UI** or **export presets** land.
 
 | Document | Audience | Contents |
 |----------|----------|----------|
-| **`phases-ui.md`** (this file) | Product / UI roadmap | U1–U5, status, exit criteria, sequencing |
+| **`phases-ui.md`** (this file) | Product / UI roadmap | U1–U5, status, exit criteria, sequencing, **logging standards** |
 | **`phase-status.md`** | Engineering history | Phases 0–4 (infra, player, sidecar), doc milestones; **Phase 1** includes completed **status-footer** follow-on (probe metadata in UI) |
 | **`FEATURES.md`** | What ships today + backlog | Actionable feature bullets; keep in sync when U* moves |
 | **`CONTRIBUTING.md`** | New contributors | Workflow, links here and to **Suggested next focus** |

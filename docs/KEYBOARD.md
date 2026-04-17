@@ -50,8 +50,10 @@ Same actions as **Edit → Undo / Redo** when those menu items are enabled.
 | Undo | **Ctrl+Z** | **⌘Z** |
 | Redo | **Ctrl+Shift+Z** | **⌘⇧Z** |
 | Split clip at playhead | **Ctrl+B** (when enabled) | **⌘B** |
+| Rotate 90° right | **Ctrl+R** (when the playhead is on a primary-track clip) | **⌘R** |
+| Rotate 90° left | **Ctrl+Shift+R** | **⌘⇧R** |
 
-Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**.
+Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**. Rotate/Flip apply to the clip under the playhead and persist in the project; **Flip Horizontal / Flip Vertical** are in the **Edit** menu without keyboard shortcuts.
 
 ## Multi-track editing
 
