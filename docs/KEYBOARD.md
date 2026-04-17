@@ -55,8 +55,11 @@ Same actions as **Edit → Undo / Redo** when those menu items are enabled.
 | Rotate 90° right | **Ctrl+R** (when the playhead is on a primary-track clip) | **⌘R** |
 | Rotate 90° left | **Ctrl+Shift+R** | **⌘⇧R** |
 | **Trim Clip…** | **Edit → Trim Clip…** *(when trim is enabled — playhead on a primary-track clip)*; *no default shortcut* | same |
+| **Set In Point** (range marker) | **I** *(no modifier; when media ready)* | **I** |
+| **Set Out Point** (range marker) | **O** *(no modifier; when media ready)* | **O** |
+| **Clear Range Markers** | **Alt+X** *(when at least one marker is set)* | **⌥X** |
 
-Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**. **Trim Clip…** opens a sheet for begin/end in source-file seconds; click outside the sheet card or **Cancel** to dismiss. Rotate/Flip apply to the clip under the playhead and persist in the project; **Flip Horizontal / Flip Vertical** are in the **Edit** menu without keyboard shortcuts.
+Blade split only works when the playhead is **strictly inside** a clip on the primary track (not in a gap or on a cut). Same as **Edit → Split Clip at Playhead**. **Trim Clip…** opens a sheet for begin/end in source-file seconds; click outside the sheet card or **Cancel** to dismiss. Rotate/Flip apply to the clip under the playhead and persist in the project; **Flip Horizontal / Flip Vertical** are in the **Edit** menu without keyboard shortcuts. The **In/Out range markers** are ephemeral (not saved to the project), visible on the timeline slider (In = cyan, Out = magenta, with a tint spanning the range); setting In past the current Out (or Out before the current In) clears the conflicting marker.
 
 ## Multi-track editing
 

@@ -17,7 +17,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | Phase | Theme | Status | Notes |
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
-| **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); multi-lane **partial**; **planned:** clip markers, **audio** remove/replace/overlay+gain, **resize** |
+| **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); **seek-bar range markers** **shipped** (I/O keys + Edit menu; state-only for now); multi-lane **partial**; **planned:** range-scoped export, **audio** remove/replace/overlay+gain, **resize** |
 | **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 / WebM / MKV preset sheet** **done**; **planned:** H.264/AAC transcode, VP9/AV1 WebM, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
 | **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **QuickTime-style** floating **volume + transport + scrub + times** over the **video** (auto-hide ~5 s idle); stepped speeds — see **U4** body |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
@@ -132,7 +132,7 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 - [x] Non-destructive **project file** workflow with undo/redo and autosave (path-backed).
 - [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** / **New Audio Track** + **Move Clip to Track Below / Above** (Edit menu) move between primary and second **video** lane (below = playhead on primary clip; above = first clip on second lane to end of primary). **First** audio lane drives **preview sound** when it has clips (else embedded primary-track audio); additional audio lanes have **no** mix yet. Secondary **video** lanes are still **not** in the preview decode graph. Not a full per-lane visual editor (waveforms, drag) yet.
-- [ ] User can **trim** in the NLE sense (handles, ripple, range on the scrub bar). *Shipped:* **blade** (**Split at Playhead** / **Ctrl+B**); **per-clip numeric trim** (**Trim Clip…** — **`docs/FEATURES.md`**). *Still open:* timeline **in/out handles**, **ripple**, seek-bar **in/out markers** for export/trim scope.
+- [ ] User can **trim** in the NLE sense (handles, ripple, range on the scrub bar). *Shipped:* **blade** (**Split at Playhead** / **Ctrl+B**); **per-clip numeric trim** (**Trim Clip…** — **`docs/FEATURES.md`**); **seek-bar In/Out markers** (**I** / **O** / **Alt+X**, cyan/magenta overlay). *Still open:* timeline **in/out handles**, **ripple**, and **wiring the marker range through export / trim scope** (today markers are state-only).
 
 **Done**
 
@@ -151,14 +151,14 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; **move clip to next video track** (menu) **done**; remaining: richer per-lane visuals, draggable moves, preview/mix for secondary lanes.
 2. **U2-b — Audio in timeline:** **Partial:** **New Audio Track**, **Insert Audio…**, first-lane **concat preview** (switch from embedded video audio when the lane has clips; silence-pad if audio ends early); **open:** multiple audio lanes, mix, levels, trim-on-lane.
 3. **U2-c — Trim / ripple:** **Numeric trim** via **Trim Clip…** **shipped**; still open: **in/out handles** on the timeline, **ripple**, seek-bar **range markers** tied to trim/export scope.
-4. **U2-d — QuickTime-style Edit menu:** **Rotate 90° Left** / **Rotate 90° Right** / **Flip Horizontal** / **Flip Vertical** — **shipped** (per-clip orientation persists in the project; applied in preview post-scaler and in ffmpeg export via `-vf`). **Trim Clip…** sheet — **shipped** (**Edit → Trim Clip…**; numeric begin/end in source-file seconds, inline validation, undoable). Still open: **two seek-bar markers** (in/out) to define a **clip range** for operations and export (same spirit as QuickTime’s selection).
+4. **U2-d — QuickTime-style Edit menu:** **Rotate 90° Left** / **Rotate 90° Right** / **Flip Horizontal** / **Flip Vertical** — **shipped** (per-clip orientation persists in the project; applied in preview post-scaler and in ffmpeg export via `-vf`). **Trim Clip…** sheet — **shipped** (**Edit → Trim Clip…**; numeric begin/end in source-file seconds, inline validation, undoable). **Seek-bar range markers** — **shipped** (**Edit → Set In/Out Point** + **Clear Range Markers**; keys **I** / **O** / **Alt+X**; cyan/magenta overlay lines with a tinted range on the slider; ephemeral session state that clears on close / new project open). Still open: wire the captured range through **export / batch operations** so the markers actually limit scope — today the markers are state-only.
 5. **U2-e — Audio (Edit menu):** **Remove** embedded audio from the current clip/selection; **Replace** with an audio file; **Overlay** additional audio with **independent volume** vs the source (builds on **U2-b** mixing/export).
 6. **U2-f — Resize:** **Edit → Resize Video…** (target resolution / scale). **AI-assisted upsampling** to higher resolution is **not** in this milestone—see **U5** / parking lot.
 
 **Not yet**
 
 - **Multi-track** video: clips can be **moved to the next video track** via the Edit menu; there is still no **mix** or preview from secondary **video** lanes. **Audio:** the **first** lane can drive **preview sound** when it has clips; additional audio lanes have **no** mix yet.
-- **Ripple, roll**, slip/slide; multi-cam (blade **without** new media is **Split Clip at Playhead**). **U2-d**'s **double-click trim sheet** is **shipped** as the first pass; the **marker-based** range is still open.
+- **Ripple, roll**, slip/slide; multi-cam (blade **without** new media is **Split Clip at Playhead**). **U2-d**'s **double-click trim sheet** and **seek-bar range markers** are **shipped**; the remaining U2-d work is **range-scoped export / operations** (marker range → limits ffmpeg segments).
 - **Subtitles / captions** timeline (see **FEATURES** roadmap—may become **U6** or fold into U2/U3).
 - Optional: adopt **`ProjectStore`** from `reel-core` inside the app (library already implements debounced atomic writes).
 
@@ -272,7 +272,7 @@ Items live in **`docs/FEATURES.md`** until we carve **U6+**:
 
 Priorities change; this is **guidance for contributors**, not a commitment.
 
-1. **U2-d / U2-e** — Seek-bar **in/out markers** (remaining U2-d work); **audio** remove/replace/overlay (depends on **U2-b** for mix/export). **Rotate/flip** and **Trim Clip…** sheet are **shipped** (see **FEATURES.md**).
+1. **U2-d / U2-e** — **Range-scoped export** (wire In/Out markers through `export_concat_*`, remaining U2-d work); **audio** remove/replace/overlay (depends on **U2-b** for mix/export). **Rotate/flip**, **Trim Clip…** sheet, and **seek-bar range markers** are **shipped** (see **FEATURES.md**).
 2. **U3** — **Export preset catalog** (H.264/AAC, VP9/AV1 tiers, etc.) from **`SUPPORTED_FORMATS.md`**; determinate **%** + strip already shipped — further **chrome** polish optional.
 3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome). (**Open Recent**, **View** loop/zoom/fullscreen, timeline scrub reliability — shipped.)
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).

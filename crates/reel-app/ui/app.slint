@@ -46,6 +46,14 @@ export component AppWindow inherits Window {
     in property <float> trim-source-duration-s: 0.0;
     /// Error label under the fields; empty hides it.
     in property <string> trim-error: "";
+
+    // --- Seek-bar In/Out markers (ephemeral session state) ---
+    /// `-1` when unset; otherwise the sequence-ms position of the In marker.
+    /// (`Option<f64>` doesn't have a Slint representation, so we use sentinel `-1`.)
+    in property <float> marker-in-ms: -1;
+    in property <float> marker-out-ms: -1;
+    /// True when at least one marker is set — gates **Edit → Clear Range Markers**.
+    in property <bool> marker-any-set: false;
     in property <bool> export-in-progress: false;
     /// 0.0–1.0 while exporting; reset when export ends.
     in property <float> export-progress: 0.0;
@@ -115,6 +123,13 @@ export component AppWindow inherits Window {
     /// User pressed Trim in the sheet. Args are the entered begin / end seconds.
     callback trim-confirm(float, float);
     callback trim-cancel();
+
+    /// **Edit → Set In Point** (`I`): marks the current playhead as the range start.
+    callback edit-set-in-marker();
+    /// **Edit → Set Out Point** (`O`): marks the current playhead as the range end.
+    callback edit-set-out-marker();
+    /// **Edit → Clear Range Markers** (`Option+X` / `Alt+X`): removes both markers.
+    callback edit-clear-markers();
 
     callback effect-face-swap();
     callback effect-face-enhance();
@@ -361,6 +376,22 @@ export component AppWindow inherits Window {
                 title: "Trim Clip…";
                 enabled: root.trim-enabled;
                 activated => { root.edit-trim-clip(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Set In Point";
+                enabled: root.media-ready;
+                activated => { root.edit-set-in-marker(); }
+            }
+            MenuItem {
+                title: "Set Out Point";
+                enabled: root.media-ready;
+                activated => { root.edit-set-out-marker(); }
+            }
+            MenuItem {
+                title: "Clear Range Markers";
+                enabled: root.marker-any-set;
+                activated => { root.edit-clear-markers(); }
             }
         }
         Menu {
@@ -632,6 +663,20 @@ export component AppWindow inherits Window {
                 } else {
                     reject
                 }
+            // QuickTime-style range markers: plain `I` / `O` / `Alt+X` (no ctrl).
+            } else if (event.text == Key.I && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt) {
+                root.edit-set-in-marker();
+                accept
+            } else if (event.text == Key.O && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.alt) {
+                root.edit-set-out-marker();
+                accept
+            } else if (event.text == Key.X && event.modifiers.alt && !event.modifiers.control && !event.modifiers.shift) {
+                if (root.marker-any-set) {
+                    root.edit-clear-markers();
+                    accept
+                } else {
+                    reject
+                }
             } else {
                 reject
             }
@@ -852,19 +897,53 @@ export component AppWindow inherits Window {
                                 width: max(52px, scrub-row-w * 10 / 100);
                                 overflow: elide;
                             }
-                            Slider {
+                            Rectangle {
+                                // Wrapper so we can overlay In/Out range markers on top of the
+                                // Slider. The markers are purely decorative — they sit at the
+                                // marker's ms position mapped to slider width.
                                 width: scrub-row-w * 76 / 100;
-                                enabled: root.media-ready;
-                                minimum: 0;
-                                maximum: max(root.duration-ms, 1);
-                                step: 0;
-                                value <=> root.playhead-ms;
-                                changed(v) => {
-                                    main-view-focus.focus();
-                                    root.seek-timeline(v);
-                                    wake-transport-chrome();
-                                }
                                 height: 14px;
+                                Slider {
+                                    width: 100%;
+                                    height: 100%;
+                                    enabled: root.media-ready;
+                                    minimum: 0;
+                                    maximum: max(root.duration-ms, 1);
+                                    step: 0;
+                                    value <=> root.playhead-ms;
+                                    changed(v) => {
+                                        main-view-focus.focus();
+                                        root.seek-timeline(v);
+                                        wake-transport-chrome();
+                                    }
+                                }
+                                // In marker (cyan). `-1` ms sentinel means "unset" — hide.
+                                Rectangle {
+                                    visible: root.marker-in-ms >= 0 && root.duration-ms > 0;
+                                    width: 2px;
+                                    height: 100%;
+                                    background: #4ad6ff;
+                                    x: parent.width * (root.marker-in-ms / max(root.duration-ms, 1)) - self.width / 2;
+                                    y: 0;
+                                }
+                                // Out marker (magenta).
+                                Rectangle {
+                                    visible: root.marker-out-ms >= 0 && root.duration-ms > 0;
+                                    width: 2px;
+                                    height: 100%;
+                                    background: #ff7ad0;
+                                    x: parent.width * (root.marker-out-ms / max(root.duration-ms, 1)) - self.width / 2;
+                                    y: 0;
+                                }
+                                // Range tint between In and Out when both are set.
+                                Rectangle {
+                                    visible: root.marker-in-ms >= 0 && root.marker-out-ms >= 0 && root.duration-ms > 0;
+                                    height: 3px;
+                                    y: parent.height - self.height - 1px;
+                                    x: parent.width * (root.marker-in-ms / max(root.duration-ms, 1));
+                                    width: parent.width * ((root.marker-out-ms - root.marker-in-ms) / max(root.duration-ms, 1));
+                                    background: #4ad6ff66;
+                                }
                             }
                             Text {
                                 text: root.time-total;

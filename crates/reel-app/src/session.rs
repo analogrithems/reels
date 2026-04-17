@@ -186,6 +186,12 @@ pub struct EditSession {
     undo: Vec<Project>,
     redo: Vec<Project>,
     pub dirty: bool,
+    /// Seek-bar **In** marker (sequence ms). Ephemeral per session — **not** persisted in
+    /// the project JSON. `None` means "no in marker set"; when both markers are set we
+    /// guarantee `in_marker_ms < out_marker_ms` via [`set_in_marker_ms`] / [`set_out_marker_ms`].
+    in_marker_ms: Option<f64>,
+    /// Seek-bar **Out** marker (sequence ms). See [`in_marker_ms`] for semantics.
+    out_marker_ms: Option<f64>,
 }
 
 impl EditSession {
@@ -616,6 +622,71 @@ impl EditSession {
         Ok(())
     }
 
+    /// Current seek-bar **In** marker in sequence ms, or `None` when unset.
+    pub fn in_marker_ms(&self) -> Option<f64> {
+        self.in_marker_ms
+    }
+
+    /// Current seek-bar **Out** marker in sequence ms, or `None` when unset.
+    pub fn out_marker_ms(&self) -> Option<f64> {
+        self.out_marker_ms
+    }
+
+    /// Set the **In** marker at the given playhead position (ms). Rejects non-finite or
+    /// negative values. If an **Out** marker is already set and the new in is `>= out`,
+    /// the existing out is **cleared** (user is re-anchoring the range).
+    ///
+    /// Markers are ephemeral session state — **not** undoable and **not** persisted.
+    pub fn set_in_marker_ms(&mut self, seq_ms: f64) -> anyhow::Result<()> {
+        if !seq_ms.is_finite() || seq_ms < 0.0 {
+            anyhow::bail!("in marker must be >= 0");
+        }
+        self.in_marker_ms = Some(seq_ms);
+        if let Some(out) = self.out_marker_ms {
+            if seq_ms + SEQ_MS_EPS >= out {
+                self.out_marker_ms = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Set the **Out** marker at the given playhead position (ms). Rejects non-finite or
+    /// negative values. If an **In** marker is already set and the new out is `<= in`,
+    /// the existing in is **cleared** (user is re-anchoring the range).
+    pub fn set_out_marker_ms(&mut self, seq_ms: f64) -> anyhow::Result<()> {
+        if !seq_ms.is_finite() || seq_ms < 0.0 {
+            anyhow::bail!("out marker must be >= 0");
+        }
+        self.out_marker_ms = Some(seq_ms);
+        if let Some(in_ms) = self.in_marker_ms {
+            if seq_ms <= in_ms + SEQ_MS_EPS {
+                self.in_marker_ms = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Clears both markers. No-op when neither is set.
+    pub fn clear_markers(&mut self) {
+        self.in_marker_ms = None;
+        self.out_marker_ms = None;
+    }
+
+    /// True when at least one marker is set — used to gate **Edit → Clear Range Markers**.
+    pub fn has_any_marker(&self) -> bool {
+        self.in_marker_ms.is_some() || self.out_marker_ms.is_some()
+    }
+
+    /// Returns `(in_ms, out_ms)` when **both** markers are set and the in/out ordering
+    /// is valid — the caller should slice export / operations to this range.
+    /// `None` when either marker is unset or the ordering is invalid.
+    pub fn marker_range_ms(&self) -> Option<(f64, f64)> {
+        match (self.in_marker_ms, self.out_marker_ms) {
+            (Some(i), Some(o)) if o > i + SEQ_MS_EPS => Some((i, o)),
+            _ => None,
+        }
+    }
+
     /// Load media or a saved **`.reel` / `.json` project**; clears undo/redo for a new media open,
     /// or establishes a save baseline when opening a project file.
     pub fn open_media(&mut self, path: PathBuf) -> anyhow::Result<()> {
@@ -624,6 +695,7 @@ impl EditSession {
             self.current_media = primary_video_source_path(&p);
             self.project = Some(p);
             self.mark_saved_to_path(path);
+            self.clear_markers();
             return Ok(());
         }
         let p = project_from_media_path(&path)?;
@@ -633,6 +705,7 @@ impl EditSession {
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
+        self.clear_markers();
         Ok(())
     }
 
@@ -643,6 +716,7 @@ impl EditSession {
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
+        self.clear_markers();
     }
 
     pub fn has_media(&self) -> bool {
@@ -974,6 +1048,8 @@ impl EditSession {
             undo: vec![],
             redo: vec![],
             dirty: true,
+            in_marker_ms: None,
+            out_marker_ms: None,
         }
     }
 }
@@ -1563,5 +1639,102 @@ mod tests {
         assert!(s.trim_clip(first_id, f64::NAN, 1.0).is_err());
         assert!(s.trim_clip(first_id, 0.0, f64::INFINITY).is_err());
         assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn markers_default_to_none_and_no_range() {
+        let s = EditSession::default();
+        assert_eq!(s.in_marker_ms(), None);
+        assert_eq!(s.out_marker_ms(), None);
+        assert!(!s.has_any_marker());
+        assert_eq!(s.marker_range_ms(), None);
+    }
+
+    #[test]
+    fn set_in_then_out_builds_valid_range() {
+        let mut s = EditSession::default();
+        s.set_in_marker_ms(100.0).unwrap();
+        assert_eq!(s.in_marker_ms(), Some(100.0));
+        assert_eq!(s.marker_range_ms(), None); // out still unset
+        s.set_out_marker_ms(500.0).unwrap();
+        assert_eq!(s.marker_range_ms(), Some((100.0, 500.0)));
+        assert!(s.has_any_marker());
+    }
+
+    #[test]
+    fn set_in_past_existing_out_clears_out() {
+        let mut s = EditSession::default();
+        s.set_out_marker_ms(200.0).unwrap();
+        s.set_in_marker_ms(300.0).unwrap(); // past out → out cleared
+        assert_eq!(s.in_marker_ms(), Some(300.0));
+        assert_eq!(s.out_marker_ms(), None);
+        assert_eq!(s.marker_range_ms(), None);
+    }
+
+    #[test]
+    fn set_out_before_existing_in_clears_in() {
+        let mut s = EditSession::default();
+        s.set_in_marker_ms(500.0).unwrap();
+        s.set_out_marker_ms(100.0).unwrap(); // before in → in cleared
+        assert_eq!(s.in_marker_ms(), None);
+        assert_eq!(s.out_marker_ms(), Some(100.0));
+        assert_eq!(s.marker_range_ms(), None);
+    }
+
+    #[test]
+    fn set_in_equal_to_out_clears_out() {
+        let mut s = EditSession::default();
+        s.set_out_marker_ms(200.0).unwrap();
+        s.set_in_marker_ms(200.0).unwrap(); // equal → out cleared (no zero-length range)
+        assert_eq!(s.out_marker_ms(), None);
+    }
+
+    #[test]
+    fn markers_reject_non_finite_and_negative() {
+        let mut s = EditSession::default();
+        assert!(s.set_in_marker_ms(-1.0).is_err());
+        assert!(s.set_in_marker_ms(f64::NAN).is_err());
+        assert!(s.set_out_marker_ms(-1.0).is_err());
+        assert!(s.set_out_marker_ms(f64::INFINITY).is_err());
+        assert!(!s.has_any_marker());
+    }
+
+    #[test]
+    fn clear_markers_removes_both() {
+        let mut s = EditSession::default();
+        s.set_in_marker_ms(100.0).unwrap();
+        s.set_out_marker_ms(500.0).unwrap();
+        s.clear_markers();
+        assert!(!s.has_any_marker());
+        assert_eq!(s.marker_range_ms(), None);
+    }
+
+    #[test]
+    fn clear_markers_is_noop_when_none_set() {
+        let mut s = EditSession::default();
+        s.clear_markers();
+        assert!(!s.has_any_marker());
+    }
+
+    #[test]
+    fn clear_media_clears_markers() {
+        let mut s = EditSession::default();
+        s.set_in_marker_ms(100.0).unwrap();
+        s.set_out_marker_ms(500.0).unwrap();
+        s.clear_media();
+        assert!(!s.has_any_marker());
+    }
+
+    #[test]
+    fn open_media_clears_markers() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.set_in_marker_ms(100.0).unwrap();
+        s.set_out_marker_ms(500.0).unwrap();
+        s.open_media(f).unwrap();
+        assert!(!s.has_any_marker());
     }
 }

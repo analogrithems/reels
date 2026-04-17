@@ -286,6 +286,15 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     let dur = window.get_duration_ms();
     timecode::refresh_time_labels(window, ph, dur);
     sync_footer(window, session);
+    sync_marker_ui(window, session);
+}
+
+/// Push the session's In/Out marker state into Slint properties. Uses `-1.0` as the
+/// "unset" sentinel since Slint's `float` property can't represent `Option`.
+pub(crate) fn sync_marker_ui(window: &AppWindow, session: &EditSession) {
+    window.set_marker_in_ms(session.in_marker_ms().map(|v| v as f32).unwrap_or(-1.0));
+    window.set_marker_out_ms(session.out_marker_ms().map(|v| v as f32).unwrap_or(-1.0));
+    window.set_marker_any_set(session.has_any_marker());
 }
 
 fn sync_recent_menu(window: &AppWindow, recent: &RecentStore) {
@@ -417,6 +426,9 @@ fn main() -> Result<()> {
     window.set_rotate_enabled(false);
     window.set_trim_enabled(false);
     window.set_trim_sheet_visible(false);
+    window.set_marker_in_ms(-1.0);
+    window.set_marker_out_ms(-1.0);
+    window.set_marker_any_set(false);
     window.set_footer_visible(false);
     window.set_footer_codec_line("".into());
     window.set_footer_path_line("".into());
@@ -1447,6 +1459,53 @@ fn main() -> Result<()> {
                     w.set_trim_error(format!("{e:#}").into());
                 }
             }
+        });
+    }
+
+    {
+        // Set In Point: marks the current playhead as the range start. Clamped to timeline
+        // duration so markers can't land past the end of a shrunk sequence.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_edit_set_in_marker(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let dur = w.get_duration_ms() as f64;
+            let ph = (w.get_playhead_ms() as f64).clamp(0.0, dur);
+            match session.borrow_mut().set_in_marker_ms(ph) {
+                Ok(()) => {
+                    sync_marker_ui(&w, &session.borrow());
+                    w.set_status_text(format!("In point set at {:.3} s", ph / 1000.0).into());
+                }
+                Err(e) => w.set_status_text(format!("{e:#}").into()),
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_edit_set_out_marker(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let dur = w.get_duration_ms() as f64;
+            let ph = (w.get_playhead_ms() as f64).clamp(0.0, dur);
+            match session.borrow_mut().set_out_marker_ms(ph) {
+                Ok(()) => {
+                    sync_marker_ui(&w, &session.borrow());
+                    w.set_status_text(format!("Out point set at {:.3} s", ph / 1000.0).into());
+                }
+                Err(e) => w.set_status_text(format!("{e:#}").into()),
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_edit_clear_markers(move || {
+            let Some(w) = weak.upgrade() else { return };
+            session.borrow_mut().clear_markers();
+            sync_marker_ui(&w, &session.borrow());
+            w.set_status_text("Cleared range markers".into());
         });
     }
 
