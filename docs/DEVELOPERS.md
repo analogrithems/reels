@@ -46,7 +46,7 @@ make run      # desktop app (reel)
 ## Conventions
 
 - **Formatting:** `rustfmt` (`rustfmt.toml`). Python: **ruff** in `sidecar/`.
-- **Logging:** `tracing` only; no `println!` in library code except CLI output.
+- **Logging:** `tracing` only; no `println!` in library code except CLI output. Binaries call `reel_core::logging::init()` so each run gets a **session log file** (see `docs/architecture.md`).
 - **UI thread:** Only upgrade `Weak<AppWindow>` inside `slint::invoke_from_event_loop` (see `docs/architecture.md`).
 - **RefCell:** Avoid overlapping `borrow_mut` and `borrow` in one `match` scrutinee (see session handlers in `main.rs`).
 

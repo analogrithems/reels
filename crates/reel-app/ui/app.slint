@@ -1,5 +1,5 @@
 import { HelpWindow } from "help_window.slint";
-import { Button, HorizontalBox, Slider, VerticalBox } from "std-widgets.slint";
+import { Button, ComboBox, HorizontalBox, Slider, VerticalBox } from "std-widgets.slint";
 
 export { HelpWindow }
 
@@ -34,8 +34,6 @@ export component AppWindow inherits Window {
     in property <float> export-progress: 0.0;
     in property <bool> insert-audio-enabled: false;
 
-    /// Multi-track summary + preview rule (see session.timeline_summary_line).
-    in property <string> timeline-info: "";
     /// One line per video track lane, newline-separated (see session.video_track_row_labels).
     in property <string> video-track-lanes: "";
     /// One line per audio track lane, newline-separated (see session.audio_track_row_labels).
@@ -97,6 +95,27 @@ export component AppWindow inherits Window {
     callback win-center();
     callback win-toggle-on-top();
 
+    /// When true, playback restarts from the start at sequence end (saved in prefs).
+    in-out property <bool> loop-playback: false;
+    callback view-toggle-loop();
+
+    /// Last decoded frame size (pixels); used for zoom and **Actual Size**.
+    in property <float> preview-frame-width: 640.0;
+    in property <float> preview-frame-height: 360.0;
+    /// **25–400** — percent of **fit** (contain/cover) size; ignored when `preview-zoom-actual`.
+    in-out property <float> preview-zoom-percent: 100.0;
+    /// **True** = 1:1 logical pixels for the preview frame.
+    in-out property <bool> preview-zoom-actual: false;
+    /// Mirrors OS fullscreen when toggled from the app (Esc exits).
+    in-out property <bool> window-fullscreen: false;
+
+    callback view-zoom-in();
+    callback view-zoom-out();
+    callback view-zoom-fit();
+    callback view-zoom-actual-size();
+    callback view-toggle-fullscreen();
+    callback view-exit-fullscreen();
+
     callback help-overview();
     callback help-features();
     callback help-keyboard();
@@ -116,6 +135,13 @@ export component AppWindow inherits Window {
     /// Master preview volume **0..100** (persisted).
     in-out property <float> volume-percent: 100.0;
     callback volume-changed(float);
+
+    /// Speed preset index **0..=6** in the timeline speed dropdown (default **3** = 1×).
+    in-out property <int> playback-speed-index: 3;
+    callback playback-speed-changed(int);
+
+    /// Opacity of the timeline speed control (0 = hidden). Shown while the pointer is over the video viewport; hides after 5s idle.
+    property <float> playback-speed-opacity: 0;
 
     MenuBar {
         Menu {
@@ -281,6 +307,39 @@ export component AppWindow inherits Window {
             }
         }
         Menu {
+            title: "View";
+            MenuItem {
+                title: root.loop-playback ? "✓ Loop Playback" : "Loop Playback";
+                activated => { root.view-toggle-loop(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Zoom In";
+                enabled: root.media-ready && (root.preview-zoom-actual || root.preview-zoom-percent < 400.0);
+                activated => { root.view-zoom-in(); }
+            }
+            MenuItem {
+                title: "Zoom Out";
+                enabled: root.media-ready && (root.preview-zoom-actual || root.preview-zoom-percent > 25.0);
+                activated => { root.view-zoom-out(); }
+            }
+            MenuItem {
+                title: "Zoom to Fit";
+                enabled: root.media-ready;
+                activated => { root.view-zoom-fit(); }
+            }
+            MenuItem {
+                title: "Actual Size";
+                enabled: root.media-ready;
+                activated => { root.view-zoom-actual-size(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.window-fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                activated => { root.view-toggle-fullscreen(); }
+            }
+        }
+        Menu {
             title: "Window";
             MenuItem {
                 title: "Always on Top";
@@ -372,7 +431,10 @@ export component AppWindow inherits Window {
                 root.help-overview();
                 accept
             } else if (event.text == Key.Escape) {
-                if (root.export-preset-dialog-visible) {
+                if (root.window-fullscreen) {
+                    root.view-exit-fullscreen();
+                    accept
+                } else if (root.export-preset-dialog-visible) {
                     root.export-preset-cancel();
                     accept
                 } else if (root.export-in-progress) {
@@ -381,6 +443,18 @@ export component AppWindow inherits Window {
                 } else {
                     reject
                 }
+            } else if (event.text == Key.L && event.modifiers.control && !event.modifiers.shift) {
+                root.view-toggle-loop();
+                accept
+            } else if (event.text == "=" && event.modifiers.control && !event.modifiers.shift) {
+                root.view-zoom-in();
+                accept
+            } else if (event.text == "-" && event.modifiers.control && !event.modifiers.shift) {
+                root.view-zoom-out();
+                accept
+            } else if (event.text == "0" && event.modifiers.control && !event.modifiers.shift) {
+                root.view-zoom-fit();
+                accept
             } else if (!root.media-ready) {
                 reject
             } else if (event.text == Key.N && event.modifiers.control && event.modifiers.shift) {
@@ -468,14 +542,49 @@ export component AppWindow inherits Window {
         spacing: 0px;
         padding: 0px;
 
+        playback-speed-hide := Timer {
+            interval: 5s;
+            triggered => {
+                root.playback-speed-opacity = 0;
+            }
+        }
+
         Rectangle {
             background: #000;
             vertical-stretch: 1;
-            Image {
-                source: root.current-frame;
-                image-fit: root.video-fit-mode == 1 ? cover : contain;
-                width: parent.width;
-                height: parent.height;
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    root.playback-speed-opacity = 1;
+                    playback-speed-hide.restart();
+                }
+                moved => {
+                    root.playback-speed-opacity = 1;
+                    playback-speed-hide.restart();
+                }
+                preview-clip := Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    clip: true;
+                    property <float> vw: self.width / 1px;
+                    property <float> vh: self.height / 1px;
+                    property <float> fw: max(1.0, root.preview-frame-width);
+                    property <float> fh: max(1.0, root.preview-frame-height);
+                    property <float> s-contain: min(vw / fw, vh / fh);
+                    property <float> s-cover: max(vw / fw, vh / fh);
+                    property <float> s-base: root.video-fit-mode == 1 ? s-cover : s-contain;
+                    property <float> img-w: root.preview-zoom-actual ? fw : fw * s-base * (root.preview-zoom-percent / 100.0);
+                    property <float> img-h: root.preview-zoom-actual ? fh : fh * s-base * (root.preview-zoom-percent / 100.0);
+                    Image {
+                        x: (parent.width - img-w * 1px) / 2;
+                        y: (parent.height - img-h * 1px) / 2;
+                        width: img-w * 1px;
+                        height: img-h * 1px;
+                        source: root.current-frame;
+                        image-fit: fill;
+                    }
+                }
             }
         }
 
@@ -487,6 +596,8 @@ export component AppWindow inherits Window {
                 padding: 8px;
                 spacing: 4px;
                 HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
                     Text {
                         text: "Timeline";
                         color: #888;
@@ -500,13 +611,25 @@ export component AppWindow inherits Window {
                         horizontal-alignment: right;
                         horizontal-stretch: 1;
                     }
-                }
-                Text {
-                    text: root.timeline-info;
-                    color: #666;
-                    font-size: 10px;
-                    wrap: word-wrap;
-                    visible: root.timeline-info != "";
+                    Rectangle {
+                        horizontal-stretch: 0;
+                        opacity: root.playback-speed-opacity;
+                        animate opacity {
+                            duration: 200ms;
+                            easing: ease-out;
+                        }
+                        ComboBox {
+                            width: 108px;
+                            enabled: root.media-ready && root.playback-speed-opacity > 0.05;
+                            model: ["0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×"];
+                            current-index <=> root.playback-speed-index;
+                            selected(_) => {
+                                root.playback-speed-opacity = 1;
+                                playback-speed-hide.restart();
+                                root.playback-speed-changed(root.playback-speed-index);
+                            }
+                        }
+                    }
                 }
                 Text {
                     text: root.video-track-lanes;
@@ -556,11 +679,46 @@ export component AppWindow inherits Window {
                     spacing: 12px;
                     alignment: center;
 
-                    Button {
-                        text: root.is-playing ? "Pause" : "Play";
+                    play-ta := TouchArea {
                         enabled: root.media-ready;
-                        clicked => { root.play-pause(); }
+                        clicked => {
+                            root.play-pause();
+                        }
+                        Rectangle {
+                            width: 40px;
+                            height: 32px;
+                            border-radius: 6px;
+                            background: play-ta.pressed ? #3a3a46 : #35353e;
+                            border-width: 1px;
+                            border-color: #4a4a56;
+                            clip: true;
+                            if root.is-playing: HorizontalBox {
+                                alignment: center;
+                                spacing: 5px;
+                                Rectangle {
+                                    width: 5px;
+                                    height: 14px;
+                                    border-radius: 1px;
+                                    background: #ececf2;
+                                }
+                                Rectangle {
+                                    width: 5px;
+                                    height: 14px;
+                                    border-radius: 1px;
+                                    background: #ececf2;
+                                }
+                            }
+                            if !root.is-playing: Path {
+                                x: (parent.width - 14px) / 2;
+                                y: (parent.height - 16px) / 2;
+                                width: 14px;
+                                height: 16px;
+                                fill: #ececf2;
+                                commands: "M 0 0 L 14 8 L 0 16 Z";
+                            }
+                        }
                     }
+
                     VerticalBox {
                         alignment: center;
                         spacing: 2px;
@@ -594,30 +752,50 @@ export component AppWindow inherits Window {
 
         Rectangle {
             background: #1c1c22;
-            min-height: root.media-ready ? 52px : 0px;
+            min-height: root.media-ready ? 30px : 0px;
             visible: root.media-ready;
             vertical-stretch: 0;
             clip: true;
-            VerticalBox {
-                padding: 6px;
-                spacing: 4px;
+            HorizontalBox {
+                padding-top: 6px;
+                padding-bottom: 6px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 12px;
+                alignment: center;
                 Text {
                     text: root.footer-codec-line;
                     color: #b8b8c2;
                     font-size: 10px;
-                    wrap: word-wrap;
+                    wrap: no-wrap;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 1px;
+                    height: 12px;
+                    background: #4a4a58;
                 }
                 Text {
                     text: root.footer-path-line;
                     color: #7a8490;
                     font-size: 9px;
                     wrap: word-wrap;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 1px;
+                    height: 12px;
+                    background: #4a4a58;
                 }
                 Text {
                     text: root.footer-save-line;
                     color: root.footer-unsaved ? #e0a030 : #6aab7a;
                     font-size: 10px;
-                    wrap: word-wrap;
+                    wrap: no-wrap;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
                 }
             }
         }

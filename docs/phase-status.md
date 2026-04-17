@@ -17,7 +17,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 - [x] Cargo workspace: `reel-core`, `reel-app`, `reel-cli`
 - [x] Makefile: `setup`, `build`, `lint`, `test`, `run`, `run-cli`, `fixtures`, `clean`, `ci`, `check-tools`
 - [x] `uv`-managed Python sidecar (`sidecar/`, `facefusion_bridge.py`)
-- [x] `tracing` + `REEL_LOG*` environment variables
+- [x] `tracing` + `REEL_LOG*` environment variables; **session log file** (`reels.session.*.log` under `{data_local_dir}/reel/logs/`) with module path + file:line on every line
 - [x] Child stdout/stderr piped into `tracing` (`spawn_logged_child` / sidecar)
 - [x] GitHub Actions: `macos-14`, `make setup lint test`
 
@@ -31,6 +31,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 - [x] `Project` serde v2, migration, insta snapshot, extension maps
 - [x] `ProjectStore` debounced atomic autosave (library; tests)
 - [x] `reel-cli probe` JSON output
+- [x] **Desktop status footer** — single-line strip (codecs · paths · save/dirty) driven by per-clip probe metadata at the playhead; *follow-on to Phase 1 probe/clip model, originally out of scope for the engine milestone* (see **`docs/FEATURES.md`**)
 
 ---
 
@@ -106,7 +107,9 @@ Implementation tracking for **menu- and timeline-visible** features described in
 - [ ] **Timeline** — **two markers** on the seek bar (in/out range); **double-click** timeline opens **trim** sheet (Trim / Cancel)
 - [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
 - [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)
-- [ ] **View** — **Loop playback** toggle; **Zoom** (in, out, fit, actual size, optional zoom-to-video); **fullscreen** control + menu
+- [x] **View** — **Loop Playback** (primary-track sequence; **prefs** + **Ctrl+L** / **⌘L**)
+- [x] **View** — **Zoom** (in / out / fit / actual size; **prefs** + **Ctrl+=** / **+-** / **0**); **Enter/Exit Fullscreen** (menu; **Esc**)
+- [ ] **View** (optional) — **Zoom to Video**; **pan** when zoomed; **fullscreen** on playback toolbar
 - [ ] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers, not only remux / VP8 WebM)
 
 ---

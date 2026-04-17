@@ -1,6 +1,6 @@
 # Reel — keyboard shortcuts (desktop)
 
-Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **File → Cancel Export**). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
+Click the **video or timeline area** so the main view has focus for playback and editing shortcuts. **Open**, **Save** (when enabled), and **Close** (when enabled) work even before **media ready**. **F1** opens **Help → Overview** anytime the main view has focus. **Esc** exits **fullscreen** when the window is fullscreen; otherwise **Esc** closes the **export preset** sheet if it is open; otherwise it cancels an **in-progress export** (same as **File → Cancel Export**). **Insert Video**, **Insert Audio** (when enabled), **Export**, **New Video Track**, and **New Audio Track** need the timeline/player ready (same as the **File** menu). If a shortcut does nothing, click the preview or timeline strip and try again.
 
 ## Help
 
@@ -22,6 +22,16 @@ Click the **video or timeline area** so the main view has focus for playback and
 | Cancel Export / dismiss export preset | **Esc** (while exporting, or while the export preset sheet is open) | **Esc** |
 | New Video Track | **Ctrl+Shift+N** (needs media ready) | **⌘⇧N** |
 | New Audio Track | **Ctrl+Shift+A** (needs media ready) | **⌘⇧A** |
+
+## View
+
+| Action | Windows / Linux | macOS |
+|--------|-----------------|-------|
+| Toggle **Loop Playback** | **Ctrl+L** (works without media ready) | **⌘L** |
+| **Zoom In** | **Ctrl+=** (works without media ready) | **⌘=** |
+| **Zoom Out** | **Ctrl+-** (works without media ready) | **⌘-** |
+| **Zoom to Fit** | **Ctrl+0** (works without media ready) | **⌘0** |
+| Exit **fullscreen** | **Esc** when fullscreen | **Esc** |
 
 ## Playback & timeline
 

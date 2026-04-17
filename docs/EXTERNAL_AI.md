@@ -10,7 +10,7 @@ Reel does **not** require a fixed vendor SDK or a single blessed HTTP API for AI
 
 1. **Fast iteration** — New effects can ship by editing the **sidecar** (or pointing `REEL_SIDECAR_DIR` at a fork) instead of threading a new C API through `ffmpeg-next` for every experiment.
 2. **No API lock-in** — The app speaks **line-delimited JSON** and **paths to raw pixels**, not “only TensorFlow” or “only FaceFusion’s REST shape.” External code decides how to load models or call other tools.
-3. **Observable failures** — Sidecar **stderr** is forwarded into `tracing`; timeouts and crashes surface as structured errors in Rust (`SidecarError`).
+3. **Observable failures** — Sidecar **stderr** is forwarded into `tracing`; timeouts and crashes surface as structured errors in Rust (`SidecarError`). Every run also writes a **session log file** (`reels.session.*.log` under the app data directory by default) with **module path + file:line** on each line so failures map back to source (see **`docs/architecture.md`**).
 4. **Same path for CLI and GUI** — `reel-cli swap` and the **Effects** menu use the same `reel_core::SidecarClient` + `grab_frame` pipeline.
 
 ---

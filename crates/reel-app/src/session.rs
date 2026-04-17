@@ -191,7 +191,8 @@ impl EditSession {
         })
     }
 
-    /// Short line for the timeline strip: track/clip counts and the preview rule.
+    /// Track/clip counts and preview rule (used by crate tests; not shown in the main timeline UI).
+    #[allow(dead_code)]
     pub fn timeline_summary_line(&self) -> String {
         let Some(p) = self.project.as_ref() else {
             return String::new();

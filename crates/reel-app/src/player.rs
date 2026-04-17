@@ -97,6 +97,9 @@ pub struct PlayerHandle {
     audio_thread: Option<JoinHandle<()>>,
     /// Master gain **0..=1000** (linear; 1000 = unity). Applied in the cpal output callback.
     pub master_volume_1000: Arc<AtomicU32>,
+    /// Preview speed **250..=4000** where **1000 = 1.0×**. Shared with the audio thread + cpal callback.
+    #[allow(dead_code)] // Reserved for transport speed UI (same handle passed at spawn).
+    pub playback_speed_milli: Arc<AtomicU32>,
 }
 
 impl PlayerHandle {
@@ -126,6 +129,16 @@ impl PlayerCmdSender {
     }
 }
 
+/// When loop is enabled, seek to the start and keep playing instead of stopping at EOF.
+fn loop_seek_restart(loop_enabled: &Arc<AtomicBool>, restart: &PlayerCmdSender) -> bool {
+    if !loop_enabled.load(Ordering::Relaxed) {
+        return false;
+    }
+    restart.send(Cmd::SeekSequence { seq_ms: 0 });
+    restart.send(Cmd::Play);
+    true
+}
+
 impl Drop for PlayerHandle {
     fn drop(&mut self) {
         let _ = self.tx_video.send(Cmd::Stop);
@@ -142,9 +155,13 @@ impl Drop for PlayerHandle {
 /// Start the player; returns a handle plus the AudioClock for external wiring.
 ///
 /// `master_volume_1000` is shared with the UI; **0** = mute, **1000** = full level.
+/// `playback_loop` is read when playback reaches the end of the sequence (both threads).
+/// `playback_speed_milli` is preview rate **250..=4000** (**1000** = 1.0×).
 pub fn spawn_player(
     window: &AppWindow,
     master_volume_1000: Arc<AtomicU32>,
+    playback_speed_milli: Arc<AtomicU32>,
+    playback_loop: Arc<AtomicBool>,
 ) -> Result<PlayerHandle> {
     // Initialize ffmpeg once.
     ffmpeg::init().context("ffmpeg::init")?;
@@ -158,19 +175,41 @@ pub fn spawn_player(
     let rb: HeapRb<f32> = HeapRb::new((OUT_SAMPLE_RATE as usize) * OUT_CHANNELS as usize / 2);
     let (producer, consumer) = rb.split();
 
+    let restart = PlayerCmdSender {
+        tx_video: tx_video.clone(),
+        tx_audio: tx_audio.clone(),
+    };
+
     let weak = window.as_weak();
     let weak_v = weak.clone();
     let clock_v = clock.clone();
+    let restart_v = restart.clone();
+    let loop_v = playback_loop.clone();
     let video_thread = std::thread::Builder::new()
         .name("reel-video".into())
-        .spawn(move || video_loop(rx_video, weak_v, clock_v))?;
+        .spawn(move || video_loop(rx_video, weak_v, clock_v, restart_v, loop_v))?;
 
     let weak_a = weak.clone();
     let clock_a = clock.clone();
     let vol_stream = master_volume_1000.clone();
+    let speed_stream = playback_speed_milli.clone();
+    let restart_a = restart;
+    let loop_a = playback_loop;
     let audio_thread = std::thread::Builder::new()
         .name("reel-audio".into())
-        .spawn(move || audio_loop(rx_audio, clock_a, producer, consumer, weak_a, vol_stream))?;
+        .spawn(move || {
+            audio_loop(
+                rx_audio,
+                clock_a,
+                producer,
+                consumer,
+                weak_a,
+                vol_stream,
+                speed_stream,
+                restart_a,
+                loop_a,
+            )
+        })?;
 
     Ok(PlayerHandle {
         tx_video,
@@ -178,12 +217,19 @@ pub fn spawn_player(
         video_thread: Some(video_thread),
         audio_thread: Some(audio_thread),
         master_volume_1000,
+        playback_speed_milli,
     })
 }
 
 // ---------- video thread ----------
 
-fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
+fn video_loop(
+    rx: Receiver<Cmd>,
+    weak: Weak<AppWindow>,
+    clock: AudioClock,
+    restart: PlayerCmdSender,
+    loop_playback: Arc<AtomicBool>,
+) {
     let mut ctx: Option<VideoCtx> = None;
     let mut playing = false;
     let mut timeline: Option<Arc<TimelineSync>> = None;
@@ -215,11 +261,10 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                     sync.active_index.store(0, Ordering::SeqCst);
                     let s0 = &sync.segments[0];
                     {
-                        let disp = s0.path.display().to_string();
                         on_ui(weak.clone(), move |w| {
                             w.set_media_ready(false);
                             w.set_is_playing(false);
-                            w.set_status_text(format!("Loading {disp}…").into());
+                            w.set_status_text("Loading…".into());
                         });
                     }
                     match try_open_video(&s0.path) {
@@ -230,10 +275,9 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                             if let Some(frame) = new_ctx.next_presentable_frame() {
                                 present(&weak, frame);
                             }
-                            let total = sync.total_sequence_ms();
                             ctx = Some(new_ctx);
                             on_ui(weak.clone(), move |w| {
-                                w.set_status_text(format!("Ready ({total} ms sequence)").into());
+                                w.set_status_text("Ready".into());
                                 w.set_media_ready(true);
                                 apply_playhead_transport(&w, 0.0);
                             });
@@ -343,6 +387,9 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                         };
                         let n = t.segments.len();
                         if video_seg_idx >= n.saturating_sub(1) {
+                            if loop_seek_restart(&loop_playback, &restart) {
+                                continue;
+                            }
                             playing = false;
                             clock.set_playing(false);
                             on_ui(weak.clone(), |w| w.set_is_playing(false));
@@ -424,6 +471,8 @@ fn present(weak: &Weak<AppWindow>, frame: VideoFrame) {
         frame.height,
     );
     on_ui(weak.clone(), move |w| {
+        w.set_preview_frame_width(frame.width as f32);
+        w.set_preview_frame_height(frame.height as f32);
         w.set_current_frame(Image::from_rgba8(pixbuf));
     });
 }
@@ -567,8 +616,72 @@ impl VideoCtx {
     }
 }
 
+/// Stereo `f32` interleaved buffer + fractional read position for variable playback speed.
+#[derive(Default)]
+struct AudioSpeedCarry {
+    carry: Vec<f32>,
+    pos: f64,
+}
+
+impl AudioSpeedCarry {
+    fn reset(&mut self) {
+        self.carry.clear();
+        self.pos = 0.0;
+    }
+
+    /// Consumes decoded stereo samples and pushes speed-adjusted pairs to `producer`.
+    fn push_speed_samples<P: Producer<Item = f32>>(
+        &mut self,
+        chunk: Vec<f32>,
+        speed: f64,
+        producer: &mut P,
+        clock_playing: impl Fn() -> bool,
+    ) {
+        self.carry.extend(chunk);
+        const MAX_CARRY: usize = 48000 * 8 * 2;
+        loop {
+            if self.pos + 2.0 * speed > self.carry.len() as f64 {
+                break;
+            }
+            let pair_base = (self.pos / 2.0).floor() as usize * 2;
+            if pair_base + 2 > self.carry.len() {
+                break;
+            }
+            let l = self.carry[pair_base];
+            let r = self.carry[pair_base + 1];
+            while producer.try_push(l).is_err() {
+                if !clock_playing() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            while producer.try_push(r).is_err() {
+                if !clock_playing() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            self.pos += 2.0 * speed;
+        }
+        let drop = (self.pos / 2.0).floor() as usize * 2;
+        let drop = drop.min(self.carry.len());
+        if drop > 0 {
+            self.carry.drain(..drop);
+            self.pos -= drop as f64;
+        }
+        if self.carry.len() > MAX_CARRY {
+            let excess = self.carry.len() - MAX_CARRY / 2;
+            if excess > 0 && excess < self.carry.len() {
+                self.carry.drain(..excess);
+                self.pos = (self.pos - excess as f64).max(0.0);
+            }
+        }
+    }
+}
+
 // ---------- audio thread ----------
 
+#[allow(clippy::too_many_arguments)]
 fn audio_loop<P, C>(
     rx: Receiver<Cmd>,
     clock: AudioClock,
@@ -576,6 +689,9 @@ fn audio_loop<P, C>(
     mut consumer: C,
     weak: Weak<AppWindow>,
     master_volume_1000: Arc<AtomicU32>,
+    playback_speed_milli: Arc<AtomicU32>,
+    restart: PlayerCmdSender,
+    loop_playback: Arc<AtomicBool>,
 ) where
     P: Producer<Item = f32> + Send + 'static,
     C: Consumer<Item = f32> + Send + 'static,
@@ -601,6 +717,7 @@ fn audio_loop<P, C>(
     // on a cpal-owned thread. `HeapConsumer` is `Send`.
     let clock_cb = clock.clone();
     let vol_cb = master_volume_1000;
+    let speed_cb = playback_speed_milli.clone();
     let stream = device.build_output_stream(
         &config,
         move |data: &mut [f32], _| {
@@ -612,7 +729,9 @@ fn audio_loop<P, C>(
                 let written = data.len() as u64 / OUT_CHANNELS as u64;
                 let ms = written * 1000 / OUT_SAMPLE_RATE as u64;
                 let cur = clock_cb.get();
-                clock_cb.set(cur + ms);
+                let sp = (speed_cb.load(Ordering::Relaxed) as f64).clamp(250.0, 4000.0) / 1000.0;
+                let adv = ((ms as f64) * sp).round() as u64;
+                clock_cb.set(cur.saturating_add(adv));
             }
         },
         |err| tracing::error!(error = %err, "audio stream error"),
@@ -632,6 +751,8 @@ fn audio_loop<P, C>(
         return;
     }
 
+    let mut speed_carry = AudioSpeedCarry::default();
+    let clock_playing = clock.clone();
     let mut actx: Option<AudioCtx> = None;
     let mut playing = false;
     let mut decode_timeline: Option<Arc<TimelineSync>> = None;
@@ -655,6 +776,7 @@ fn audio_loop<P, C>(
                     actx = None;
                     playing = false;
                     silence_pad = false;
+                    speed_carry.reset();
                     clock.set(0);
                     video_master = Some(video.clone());
                     dedicated_audio = audio.is_some();
@@ -730,6 +852,7 @@ fn audio_loop<P, C>(
                         }
                     }
                     clock.set(seq_ms);
+                    speed_carry.reset();
                     let _ = producer.try_push(0.0);
                 }
                 Cmd::Close => {
@@ -739,6 +862,7 @@ fn audio_loop<P, C>(
                     dedicated_audio = false;
                     silence_pad = false;
                     playing = false;
+                    speed_carry.reset();
                 }
                 Cmd::Stop => return,
             }
@@ -759,10 +883,12 @@ fn audio_loop<P, C>(
                     .map(|v| v.total_sequence_ms())
                     .unwrap_or(0);
                 if clock.get() >= vm_end {
-                    playing = false;
-                    silence_pad = false;
-                    clock.set_playing(false);
-                    on_ui(weak.clone(), |w| w.set_is_playing(false));
+                    if !loop_seek_restart(&loop_playback, &restart) {
+                        playing = false;
+                        silence_pad = false;
+                        clock.set_playing(false);
+                        on_ui(weak.clone(), |w| w.set_is_playing(false));
+                    }
                 } else {
                     let chunk = (OUT_SAMPLE_RATE as usize / 25) * OUT_CHANNELS as usize;
                     for _ in 0..chunk {
@@ -776,14 +902,12 @@ fn audio_loop<P, C>(
                 }
             } else if let Some(a) = actx.as_mut() {
                 if let Some(samples) = a.next_packet_samples() {
-                    for s in samples {
-                        while producer.try_push(s).is_err() {
-                            if !playing || !clock.is_playing() {
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(2));
-                        }
-                    }
+                    let sp = (playback_speed_milli.load(Ordering::Relaxed) as f64)
+                        .clamp(250.0, 4000.0)
+                        / 1000.0;
+                    speed_carry.push_speed_samples(samples, sp, &mut producer, || {
+                        clock_playing.is_playing()
+                    });
                 } else if let Some(ref t) = decode_timeline {
                     let idx = t.active_index.load(Ordering::SeqCst);
                     if idx + 1 < t.segments.len() {
@@ -797,6 +921,7 @@ fn audio_loop<P, C>(
                                     clock.set_playing(false);
                                     on_ui(weak.clone(), |w| w.set_is_playing(false));
                                 } else {
+                                    speed_carry.reset();
                                     actx = Some(na);
                                 }
                             }
@@ -811,18 +936,19 @@ fn audio_loop<P, C>(
                         if let Some(vm) = video_master.as_ref() {
                             if clock.get() < vm.total_sequence_ms() {
                                 actx = None;
+                                speed_carry.reset();
                                 silence_pad = true;
-                            } else {
+                            } else if !loop_seek_restart(&loop_playback, &restart) {
                                 playing = false;
                                 clock.set_playing(false);
                                 on_ui(weak.clone(), |w| w.set_is_playing(false));
                             }
-                        } else {
+                        } else if !loop_seek_restart(&loop_playback, &restart) {
                             playing = false;
                             clock.set_playing(false);
                             on_ui(weak.clone(), |w| w.set_is_playing(false));
                         }
-                    } else {
+                    } else if !loop_seek_restart(&loop_playback, &restart) {
                         playing = false;
                         clock.set_playing(false);
                         on_ui(weak.clone(), |w| w.set_is_playing(false));

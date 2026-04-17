@@ -4284,7 +4284,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_matches",
+ "chrono",
  "crossbeam-channel",
+ "dirs",
  "ffmpeg-next",
  "insta",
  "mockall",

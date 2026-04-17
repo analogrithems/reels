@@ -19,7 +19,7 @@ Reel’s UI work is grouped into **U1–U5**: shell & help (**done** for core sc
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
 | **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; multi-lane **partial**; **planned:** rotate/flip, clip markers, trim-on-double-click, **audio** remove/replace/overlay+gain, **resize** |
 | **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 / WebM / MKV preset sheet** **done**; **planned:** H.264/AAC transcode, VP9/AV1 WebM, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
-| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View:** **loop**, **zoom**, **fullscreen** **open**; transport + clip-move keys |
+| **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **View** — **Loop** (prefs + **Ctrl+L** / **⌘L**), **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done** (prefs for zoom); optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **opportunistic:** preview **playback speed** dropdown + icon play/pause — see **U4** body |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
 
 ---
@@ -67,13 +67,15 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 
 **Delivered**
 
-- **MenuBar:** File, Edit, Effects, Window, Help.
+- **MenuBar:** File, Edit, Effects, View, Window, Help.
 - **File:** Open (media or **`.reel` / `.json` project**), **Open Recent** (MRU + **Clear Recent**), Close, Revert, New Window, Save (`.reel` JSON), Insert Video (playhead-aware, **split** when inside a clip), Insert Audio (first audio lane; **U2-b**), New Video Track (empty lane; **U2-a**), New Audio Track (empty lane; **U2-b**), Export (ffmpeg **primary-track** concat / trim).
 - **Edit:** Undo / redo (project snapshots).
 - **Window:** Always on top; Fit / Fill / Center viewport.
 - **Effects:** Menu hooks to sidecar (see **U5**).
 - **Help:** Secondary window; topics bundled from `docs/` via `crates/reel-app/src/shell.rs` (overview, features, **keyboard shortcuts**, media formats, **supported formats (playback vs export)**, CLI, external AI & tools, developers, agents, UI phases).
 - **Timeline:** `Slider` scrub → same seek as transport.
+- **Footer:** single-line strip (**codecs** · **paths** · **saved / unsaved**) for the clip at the playhead, using per-clip probe metadata; recorded as completed **follow-on** work under **engineering Phase 1** in **`docs/phase-status.md`** (out of original engine scope).
+- **Logging:** Every run writes **`reels.session.<timestamp>.log`** under the OS data directory (`reel/logs/`); optional terminal mirror when stdout is a TTY. Lines include module (**target**) and **file:line** for debugging and automated review (see **`docs/architecture.md`**).
 - **Tests:** Session, project I/O, shell, effects resolve path; reel-core export fixture tests.
 
 **Explicitly deferred**
@@ -151,10 +153,21 @@ When you ship something, **move or add bullets in `FEATURES.md`** and adjust the
 **Exit criteria (draft)**
 
 - [x] **File → Open Recent** — MRU list of **recent projects** (`.reel` / `.json`) and **recent media** (same kinds as **File → Open**); **Clear Recent**; missing files pruned on pick. *Optional:* per-entry remove only (not shipped).
-- [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **F1** (Help overview), **Ctrl+O** / **Ctrl+S** / **Ctrl+W** (open / save / close when enabled), **Ctrl+I** / **Ctrl+Shift+I** / **Ctrl+E** / **Ctrl+Shift+N** / **Ctrl+Shift+A** (insert video / insert audio when enabled / export / new video track / new audio track when **media-ready**), **Ctrl+B** (split at playhead when enabled), **Space** (play/pause), **← / →** (±1 s seek), **Home** / **End** (sequence start/end), **Ctrl+Z** / **Ctrl+Shift+Z** (undo/redo when enabled), **Ctrl+Shift+↓/↑** (move clip between primary and second video lane when enabled; **⌘⇧↓/↑** on macOS). Transport and edit shortcuts expect the main view focused; **Open** works from an empty window; **Insert**/**Export**/**New Video Track**/**New Audio Track** need decode ready.
-- [ ] **View** menu (new or extended): **Loop Playback** — boolean; when enabled, **loop** the current playback scope (sequence or clip—product decision). **Zoom:** **Zoom In**, **Zoom Out** (enabled when zoomed), **Zoom to Fit** (align with current **Window → Fit** behavior), **Actual Size** (1:1 pixels); optional **Zoom to Video** (semantic TBD—may match **Fill** or max dimension). *Today:* **Window → Fit / Fill / Center** exists; roadmap may consolidate viewport zoom under **View**.
-- [ ] **Fullscreen** — a **fullscreen** control on the **playback** chrome (and/or **View → Enter Fullscreen**) using platform-appropriate behavior.
+- [ ] Core actions reachable via **keyboard** (parity with common editors where feasible). *Progress:* **F1** (Help overview), **Ctrl+O** / **Ctrl+S** / **Ctrl+W** (open / save / close when enabled), **Ctrl+I** / **Ctrl+Shift+I** / **Ctrl+E** / **Ctrl+Shift+N** / **Ctrl+Shift+A** (insert video / insert audio when enabled / export / new video track / new audio track when **media-ready**), **Ctrl+B** (split at playhead when enabled), **Space** (play/pause), **Ctrl+L** (toggle **View → Loop Playback**; works without media), **Ctrl+=** / **Ctrl+-** / **Ctrl+0** (zoom in / out / zoom to fit — work without media), **← / →** (±1 s seek), **Home** / **End** (sequence start/end), **Ctrl+Z** / **Ctrl+Shift+Z** (undo/redo when enabled), **Ctrl+Shift+↓/↑** (move clip between primary and second video lane when enabled; **⌘⇧↓/↑** on macOS). Transport and edit shortcuts expect the main view focused; **Open** works from an empty window; **Insert**/**Export**/**New Video Track**/**New Audio Track** need decode ready.
+- [x] **View** menu: **Loop Playback** — when enabled, playback **seeks to the start** and continues at the **end of the primary-track sequence** (same scope as export’s primary video concat). State is saved in **`prefs.json`**; shortcut **Ctrl+L** (**⌘L** on macOS).
+- [x] **View** menu — **Zoom In** / **Zoom Out** (25% steps, 25%–400% of **fit** size), **Zoom to Fit** (contain + 100%; aligns with **Window → Fit**), **Actual Size** (1:1 logical pixels for the decoded frame). **Window → Fit / Fill / Center** also resets zoom to **100%** non-actual. Zoom state is saved in **`prefs.json`**. Shortcuts **Ctrl+=** / **Ctrl+-** / **Ctrl+0** (**⌘** on macOS).
+- [x] **View → Enter Fullscreen** / **Exit Fullscreen** — platform window fullscreen (**Esc** exits). Optional: duplicate control on the **playback** chrome — not shipped.
+- [ ] **View** (optional / polish): **Zoom to Video** (semantic TBD); **pan** when zoomed past the viewport (today overflow is **clipped**).
 - [ ] **Accessibility** audit pass on main window + dialogs (labels, focus order—scope TBD).
+
+**Opportunistic / ahead of formal U4 chrome (not original exit criteria)**
+
+These were **not** planned as named U4 deliverables; they improve everyday preview without blocking other milestones:
+
+- **Preview playback speed (0.25×–2×):** A compact speed **dropdown** on the **far right of the timeline header** (timecode row). It **appears** when the pointer moves or clicks over the **video viewport** and **auto-hides after ~5 seconds** of idle time (unchanged timing). Changing the preset updates preview **audio + clock** speed in `reel-app`’s player; **export** is unchanged.
+- **Transport play control:** The bottom bar uses **icon-style play (triangle) and pause (bars)** instead of text-only **Play** / **Pause** labels.
+
+Treat these as **nice-to-have polish** overlapping **U4** (transport feel) that does **not** close remaining **U4** items (a11y audit, optional zoom pan / toolbar fullscreen, etc.).
 
 **Scope**
 
@@ -214,7 +227,7 @@ Priorities change; this is **guidance for contributors**, not a commitment.
 
 1. **U2-d / U2-e** — **QuickTime-style** Edit (rotate, flip, markers, trim sheet) + **audio** remove/replace/overlay (depends on **U2-b** for mix/export).
 2. **U3** — **Export preset catalog** from **`SUPPORTED_FORMATS.md`** + determinate **progress bar**.
-3. **U4** — **View:** loop, **zoom** ladder, **fullscreen** (Open Recent MRU is shipped).
+3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome); **Open Recent** MRU + **View** loop/zoom/fullscreen shipped.
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 
 Revisit when **trim UI** or **export presets** land.
@@ -226,7 +239,7 @@ Revisit when **trim UI** or **export presets** land.
 | Document | Audience | Contents |
 |----------|----------|----------|
 | **`phases-ui.md`** (this file) | Product / UI roadmap | U1–U5, status, exit criteria, sequencing |
-| **`phase-status.md`** | Engineering history | Phases 0–4 (infra, player, sidecar), doc milestones |
+| **`phase-status.md`** | Engineering history | Phases 0–4 (infra, player, sidecar), doc milestones; **Phase 1** includes completed **status-footer** follow-on (probe metadata in UI) |
 | **`FEATURES.md`** | What ships today + backlog | Actionable feature bullets; keep in sync when U* moves |
 | **`CONTRIBUTING.md`** | New contributors | Workflow, links here and to **Suggested next focus** |
 

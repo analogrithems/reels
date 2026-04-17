@@ -59,13 +59,16 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let _guard = match reel_core::logging::init() {
+    let _log = match reel_core::logging::init() {
         Ok(g) => g,
         Err(e) => {
             eprintln!("logging init failed: {e}");
             return ExitCode::from(2);
         }
     };
+    if let Some(ref p) = _log.session_log_path {
+        tracing::info!(session_log = %p.display(), "reel-cli starting");
+    }
 
     let cli = Cli::parse();
     match run(cli) {

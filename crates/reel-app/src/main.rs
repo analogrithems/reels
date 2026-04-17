@@ -2,6 +2,7 @@
 
 mod autosave;
 mod effects;
+mod footer;
 mod media_extensions;
 mod player;
 mod prefs;
@@ -23,7 +24,6 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use reel_core::TrackKind;
 use reel_core::{export_concat_with_audio, ExportProgressFn};
-use reel_core::Project;
 use session::{
     export_format_for_path, split_enabled_for_playhead, video_lane_indices,
     web_export_format_from_preset_index, EditSession,
@@ -41,6 +41,13 @@ use crate::ui_bridge::on_ui;
 slint::include_modules!();
 
 type ExportSpanVec = Vec<(PathBuf, f64, f64)>;
+
+fn save_preview_zoom_prefs(app_prefs: &RefCell<AppPrefs>, w: &AppWindow) {
+    let mut p = app_prefs.borrow_mut();
+    p.preview_zoom_percent = w.get_preview_zoom_percent().clamp(25.0, 400.0);
+    p.preview_zoom_actual = w.get_preview_zoom_actual();
+    p.save();
+}
 
 /// Primary video spans + optional first-audio-track spans for ffmpeg export (empty timeline → `None`).
 fn export_timeline_payload(
@@ -142,90 +149,19 @@ fn begin_export_effect(
     }
 }
 
-fn format_footer_codec_line(p: &Project, seq_ms: f64) -> String {
-    let Some(vclip) = timeline::primary_clip_ref_at_seq_ms(p, seq_ms) else {
-        return "No clip at playhead".to_string();
-    };
-    let vcodec = vclip
-        .metadata
-        .video
-        .as_ref()
-        .map(|x| x.codec.as_str())
-        .unwrap_or("—");
-
-    let has_dedicated = timeline::clips_from_first_audio_track(p).is_some();
-    if has_dedicated {
-        if let Some(aid) = timeline::first_audio_clip_id_at_seq_ms(p, seq_ms) {
-            let aclip = p.clips.iter().find(|c| c.id == aid);
-            let audio_str = aclip
-                .map(|ac| {
-                    if ac.metadata.audio_disabled {
-                        "disabled".to_string()
-                    } else {
-                        ac.metadata
-                            .audio
-                            .as_ref()
-                            .map(|a| a.codec.clone())
-                            .unwrap_or_else(|| "none".into())
-                    }
-                })
-                .unwrap_or_else(|| "—".into());
-            format!("Video: {vcodec} · Audio: {audio_str} (first audio track)")
-        } else {
-            format!("Video: {vcodec} · Audio: silence (dedicated track — no clip at playhead)")
-        }
-    } else {
-        let audio_str = if vclip.metadata.audio_disabled {
-            "unavailable".to_string()
-        } else {
-            vclip
-                .metadata
-                .audio
-                .as_ref()
-                .map(|a| a.codec.clone())
-                .unwrap_or_else(|| "none".into())
-        };
-        format!("Video: {vcodec} · Audio: {audio_str} (embedded in video file)")
-    }
-}
-
 fn sync_footer(window: &AppWindow, session: &EditSession) {
-    if !window.get_media_ready() {
-        window.set_footer_codec_line("".into());
-        window.set_footer_path_line("".into());
-        window.set_footer_save_line("".into());
-        window.set_footer_unsaved(false);
-        return;
-    }
-    let Some(p) = session.project() else {
-        window.set_footer_codec_line("".into());
-        window.set_footer_path_line("".into());
-        window.set_footer_save_line("".into());
-        window.set_footer_unsaved(false);
-        return;
-    };
     let ph = window.get_playhead_ms() as f64;
-    window.set_footer_codec_line(format_footer_codec_line(p, ph).into());
-    let media_path = timeline::resolve_for_project(p, ph)
-        .map(|(path, _)| path.display().to_string())
-        .unwrap_or_else(|| "—".into());
-    let proj_line = p
-        .path
-        .as_ref()
-        .map(|x| x.display().to_string())
-        .unwrap_or_else(|| "Not saved to disk".to_string());
-    window.set_footer_path_line(
-        format!("Current clip: {media_path} · Project file: {proj_line}").into(),
-    );
-    window.set_footer_unsaved(session.dirty);
-    window.set_footer_save_line(
-        (if session.dirty {
-            "Unsaved changes"
-        } else {
-            "All changes saved"
-        })
-        .into(),
-    );
+    if let Some(f) = footer::compute_footer_lines(session.project(), ph, session.dirty) {
+        window.set_footer_codec_line(f.codec_line.into());
+        window.set_footer_path_line(f.path_line.into());
+        window.set_footer_save_line(f.save_line.into());
+        window.set_footer_unsaved(f.unsaved);
+    } else {
+        window.set_footer_codec_line("".into());
+        window.set_footer_path_line("".into());
+        window.set_footer_save_line("".into());
+        window.set_footer_unsaved(false);
+    }
 }
 
 pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
@@ -234,7 +170,6 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     window.set_save_enabled(session.save_enabled());
     window.set_undo_enabled(session.undo_enabled());
     window.set_redo_enabled(session.redo_enabled());
-    window.set_timeline_info(session.timeline_summary_line().into());
     window.set_video_track_lanes(session.video_track_row_labels().join("\n").into());
     window.set_audio_track_lanes(session.audio_track_row_labels().join("\n").into());
     let insert_audio_ok = session
@@ -370,13 +305,17 @@ fn show_help_window(doc: shell::HelpDoc) {
 }
 
 fn main() -> Result<()> {
-    let _log_guard = reel_core::logging::init()?;
-    tracing::info!("reel starting");
+    // Session logs always go to a file (see `reel_core::logging`); stdout mirroring is optional.
+    let _log = reel_core::logging::init()?;
+    if let Some(ref p) = _log.session_log_path {
+        tracing::info!(session_log = %p.display(), "reel starting");
+    } else {
+        tracing::info!("reel starting (tracing was already initialized)");
+    }
 
     let window = AppWindow::new()?;
     window.set_media_ready(false);
     window.set_timecode("0:00.000 / 0:00.000".into());
-    window.set_timeline_info("".into());
     window.set_video_track_lanes("".into());
     window.set_audio_track_lanes("".into());
     window.set_insert_audio_enabled(false);
@@ -394,13 +333,24 @@ fn main() -> Result<()> {
     let master_vol = (app_prefs.borrow().master_volume.clamp(0.0, 1.0) * 1000.0).round() as u32;
     let vol_arc = Arc::new(AtomicU32::new(master_vol));
     window.set_volume_percent(app_prefs.borrow().master_volume * 100.0);
+    let playback_loop = Arc::new(AtomicBool::new(app_prefs.borrow().playback_loop));
+    window.set_loop_playback(app_prefs.borrow().playback_loop);
+    window.set_preview_zoom_percent(app_prefs.borrow().preview_zoom_percent);
+    window.set_preview_zoom_actual(app_prefs.borrow().preview_zoom_actual);
+    window.set_window_fullscreen(false);
+    let playback_speed_milli = Arc::new(AtomicU32::new(1000));
 
     let session = Rc::new(RefCell::new(EditSession::default()));
     let debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
     let recent = Rc::new(RefCell::new(RecentStore::load()));
     let export_cancel = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
 
-    let player = match player::spawn_player(&window, vol_arc) {
+    let player = match player::spawn_player(
+        &window,
+        vol_arc,
+        playback_speed_milli.clone(),
+        playback_loop.clone(),
+    ) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "failed to start player threads");
@@ -418,6 +368,125 @@ fn main() -> Result<()> {
             vol.store((p * 1000.0).round() as u32, Ordering::Relaxed);
             app_prefs.borrow_mut().master_volume = p as f32;
             app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let spd = playback_speed_milli.clone();
+        window.on_playback_speed_changed(move |idx| {
+            let milli = match idx {
+                0 => 250,
+                1 => 500,
+                2 => 750,
+                3 => 1000,
+                4 => 1250,
+                5 => 1500,
+                6 => 2000,
+                _ => 1000,
+            };
+            spd.store(milli, Ordering::Relaxed);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        let loop_flag = playback_loop.clone();
+        window.on_view_toggle_loop(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let new = !w.get_loop_playback();
+            w.set_loop_playback(new);
+            loop_flag.store(new, Ordering::Relaxed);
+            app_prefs.borrow_mut().playback_loop = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_zoom_in(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            if w.get_preview_zoom_actual() {
+                w.set_preview_zoom_actual(false);
+                w.set_preview_zoom_percent(200.0);
+            } else {
+                let p = (w.get_preview_zoom_percent() + 25.0).min(400.0);
+                w.set_preview_zoom_percent(p);
+            }
+            save_preview_zoom_prefs(&app_prefs, &w);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_zoom_out(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            if w.get_preview_zoom_actual() {
+                w.set_preview_zoom_actual(false);
+                w.set_preview_zoom_percent(100.0);
+            } else {
+                let p = (w.get_preview_zoom_percent() - 25.0).max(25.0);
+                w.set_preview_zoom_percent(p);
+            }
+            save_preview_zoom_prefs(&app_prefs, &w);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_zoom_fit(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            w.set_video_fit_mode(0);
+            w.set_preview_zoom_actual(false);
+            w.set_preview_zoom_percent(100.0);
+            save_preview_zoom_prefs(&app_prefs, &w);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_zoom_actual_size(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            w.set_preview_zoom_actual(true);
+            save_preview_zoom_prefs(&app_prefs, &w);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        window.on_view_toggle_fullscreen(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let win = w.window();
+            let next = !win.is_fullscreen();
+            win.set_fullscreen(next);
+            w.set_window_fullscreen(next);
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        window.on_view_exit_fullscreen(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            w.window().set_fullscreen(false);
+            w.set_window_fullscreen(false);
         });
     }
 
@@ -1010,27 +1079,39 @@ fn main() -> Result<()> {
 
     {
         let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
         window.on_win_fit(move || {
             if let Some(w) = weak.upgrade() {
                 w.set_video_fit_mode(0);
+                w.set_preview_zoom_actual(false);
+                w.set_preview_zoom_percent(100.0);
+                save_preview_zoom_prefs(&app_prefs, &w);
             }
         });
     }
 
     {
         let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
         window.on_win_fill(move || {
             if let Some(w) = weak.upgrade() {
                 w.set_video_fit_mode(1);
+                w.set_preview_zoom_actual(false);
+                w.set_preview_zoom_percent(100.0);
+                save_preview_zoom_prefs(&app_prefs, &w);
             }
         });
     }
 
     {
         let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
         window.on_win_center(move || {
             if let Some(w) = weak.upgrade() {
                 w.set_video_fit_mode(0);
+                w.set_preview_zoom_actual(false);
+                w.set_preview_zoom_percent(100.0);
+                save_preview_zoom_prefs(&app_prefs, &w);
             }
         });
     }

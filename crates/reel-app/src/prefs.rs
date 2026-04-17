@@ -11,15 +11,33 @@ pub struct AppPrefs {
     /// Linear master gain **0.0..=1.0** for preview audio.
     #[serde(default = "default_master_volume")]
     pub master_volume: f32,
+    /// When true, playback seeks to the start and continues at sequence end.
+    #[serde(default)]
+    pub playback_loop: bool,
+    /// Preview zoom **25..=400** as a percent of **fit** (contain/cover) size; ignored when `preview_zoom_actual`.
+    #[serde(default = "default_preview_zoom_percent")]
+    pub preview_zoom_percent: f32,
+    /// When true, preview draws the frame at **1:1** logical pixels.
+    #[serde(default)]
+    pub preview_zoom_actual: bool,
 }
 
 fn default_master_volume() -> f32 {
     1.0
 }
 
+fn default_preview_zoom_percent() -> f32 {
+    100.0
+}
+
 impl Default for AppPrefs {
     fn default() -> Self {
-        Self { master_volume: 1.0 }
+        Self {
+            master_volume: 1.0,
+            playback_loop: false,
+            preview_zoom_percent: 100.0,
+            preview_zoom_actual: false,
+        }
     }
 }
 
@@ -38,6 +56,7 @@ impl AppPrefs {
         match serde_json::from_slice::<AppPrefs>(&bytes) {
             Ok(mut v) => {
                 v.master_volume = v.master_volume.clamp(0.0, 1.0);
+                v.preview_zoom_percent = v.preview_zoom_percent.clamp(25.0, 400.0);
                 v
             }
             Err(e) => {

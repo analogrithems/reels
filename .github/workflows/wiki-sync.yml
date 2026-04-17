@@ -1,0 +1,89 @@
+# Syncs `docs/*.md` to the repository GitHub Wiki (Home = `docs/README.md`).
+#
+# Requires: **Wiki** enabled on the repo (Settings → General → Features → Wikis).
+# The default `GITHUB_TOKEN` can push to the wiki for this repository when
+# `contents: write` is granted (see job permissions below).
+#
+# Wiki is treated as a mirror of `docs/`: extra `.md` files in the wiki not
+# present in `docs/` are removed on each sync.
+
+name: Sync docs to Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Push docs to GitHub Wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+          WIKI_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+          WIKI_DIR="wiki-worktree"
+
+          if git clone --depth=1 "${WIKI_URL}" "${WIKI_DIR}" 2>/dev/null; then
+            echo "Cloned existing wiki"
+          else
+            echo "Wiki clone failed (first run or wiki disabled); initializing new wiki worktree"
+            mkdir -p "${WIKI_DIR}"
+            cd "${WIKI_DIR}"
+            git init
+            git remote add origin "${WIKI_URL}"
+            cd ..
+          fi
+
+          cd "${WIKI_DIR}"
+
+          # Replace wiki content with current docs (markdown only at repo root).
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          shopt -s nullglob
+          for f in ../docs/*.md; do
+            cp "${f}" "./$(basename "${f}")"
+          done
+          shopt -u nullglob
+
+          if [ -f README.md ]; then
+            mv -f README.md Home.md
+          else
+            echo "::warning::docs/README.md missing; wiki will have no Home.md"
+          fi
+
+          git add -A
+
+          if git diff --staged --quiet; then
+            echo "Wiki already matches docs; nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "docs: sync from ${GITHUB_REPOSITORY}@${GITHUB_SHA:0:7}"
+
+          if git show-ref --verify --quiet refs/heads/master; then
+            git push origin HEAD:master
+          else
+            git branch -M master
+            git push -u origin master
+          fi

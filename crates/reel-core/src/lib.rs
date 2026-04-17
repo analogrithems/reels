@@ -1,7 +1,8 @@
 //! `reel-core` — shared library for the Reel video editor.
 //!
 //! Hosts the media engine wrapper over `ffmpeg-next`, the serializable
-//! `Project` model, and the `tracing` initialization used by every binary.
+//! `Project` model, and the `tracing` initialization used by every binary (session log file under the
+//! OS data directory; module path + file:line in each line — see `logging` module).
 
 pub mod error;
 pub mod logging;
