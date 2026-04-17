@@ -366,10 +366,13 @@ export component AppWindow inherits Window {
             title: "File";
             MenuItem {
                 title: "Open…";
+                icon: @image-url("icons/lucide/folder-open.svg");
+                shortcut: @keys(Control + O);
                 activated => { root.file-open(); }
             }
             Menu {
                 title: "Open Recent";
+                icon: @image-url("icons/lucide/clock.svg");
                 MenuItem {
                     title: root.recent-line0;
                     enabled: root.recent-line0 != "";
@@ -423,107 +426,153 @@ export component AppWindow inherits Window {
                 MenuSeparator { }
                 MenuItem {
                     title: "Clear Recent";
+                    icon: @image-url("icons/lucide/trash-2.svg");
                     enabled: root.recent-has-entries;
                     activated => { root.file-clear-recent(); }
                 }
             }
+            MenuSeparator { }
             MenuItem {
-                title: "Close Window";
+                title: "Close";
+                icon: @image-url("icons/lucide/x.svg");
+                shortcut: @keys(Control + W);
                 enabled: root.close-enabled && !root.export-in-progress;
                 activated => { root.file-close(); }
             }
             MenuItem {
                 title: "Revert";
+                icon: @image-url("icons/lucide/undo-2.svg");
                 enabled: root.revert-enabled;
                 activated => { root.file-revert(); }
             }
             MenuSeparator { }
             MenuItem {
                 title: "New Window";
+                icon: @image-url("icons/lucide/app-window.svg");
                 activated => { root.file-new-window(); }
             }
             MenuItem {
                 title: "Save…";
+                icon: @image-url("icons/lucide/save.svg");
+                shortcut: @keys(Control + S);
                 enabled: root.save-enabled;
                 activated => { root.file-save(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "Insert Video…";
+                icon: @image-url("icons/lucide/file-video.svg");
+                shortcut: @keys(Control + I);
                 activated => { root.file-insert-video(); }
             }
             MenuItem {
                 title: "Insert Audio…";
+                icon: @image-url("icons/lucide/file-audio.svg");
+                shortcut: @keys(Control + Shift + I);
                 enabled: root.insert-audio-enabled;
                 activated => { root.file-insert-audio(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "New Video Track";
+                icon: @image-url("icons/lucide/film.svg");
+                shortcut: @keys(Control + Shift + N);
                 enabled: root.media-ready;
                 activated => { root.file-new-video-track(); }
             }
             MenuItem {
                 title: "New Audio Track";
+                icon: @image-url("icons/lucide/music.svg");
+                shortcut: @keys(Control + Shift + A);
                 enabled: root.media-ready;
                 activated => { root.file-new-audio-track(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "Export…";
+                icon: @image-url("icons/lucide/download.svg");
+                shortcut: @keys(Control + E);
                 enabled: root.media-ready && !root.export-in-progress && !root.export-preset-dialog-visible;
                 activated => { root.file-export(); }
+            }
+            MenuItem {
+                title: "Cancel Export";
+                icon: @image-url("icons/lucide/x.svg");
+                shortcut: @keys(Escape);
+                enabled: root.export-in-progress;
+                activated => { root.export-cancel(); }
             }
         }
         Menu {
             title: "Edit";
             MenuItem {
                 title: "Undo";
+                icon: @image-url("icons/lucide/undo-2.svg");
+                shortcut: @keys(Control + Z);
                 enabled: root.undo-enabled;
                 activated => { root.edit-undo(); }
             }
             MenuItem {
                 title: "Redo";
+                icon: @image-url("icons/lucide/redo-2.svg");
+                shortcut: @keys(Control + Shift + Z);
                 enabled: root.redo-enabled;
                 activated => { root.edit-redo(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "Split Clip at Playhead";
+                icon: @image-url("icons/lucide/scissors.svg");
+                shortcut: @keys(Control + B);
                 enabled: root.split-at-playhead-enabled;
                 activated => { root.edit-split-at-playhead(); }
             }
             MenuSeparator { }
             MenuItem {
                 title: "Move Clip to Track Below";
+                icon: @image-url("icons/lucide/arrow-down.svg");
+                shortcut: @keys(Control + Shift + DownArrow);
                 enabled: root.move-clip-down-enabled;
                 activated => { root.edit-move-clip-down(); }
             }
             MenuItem {
                 title: "Move Clip to Track Above";
+                icon: @image-url("icons/lucide/arrow-up.svg");
+                shortcut: @keys(Control + Shift + UpArrow);
                 enabled: root.move-clip-up-enabled;
                 activated => { root.edit-move-clip-up(); }
             }
             MenuSeparator { }
             MenuItem {
                 title: "Rotate 90° Right";
+                icon: @image-url("icons/lucide/rotate-cw.svg");
+                shortcut: @keys(Control + R);
                 enabled: root.rotate-enabled;
                 activated => { root.edit-rotate-right(); }
             }
             MenuItem {
                 title: "Rotate 90° Left";
+                icon: @image-url("icons/lucide/rotate-ccw.svg");
+                shortcut: @keys(Control + Shift + R);
                 enabled: root.rotate-enabled;
                 activated => { root.edit-rotate-left(); }
             }
             MenuItem {
                 title: "Flip Horizontal";
+                icon: @image-url("icons/lucide/flip-horizontal-2.svg");
                 enabled: root.rotate-enabled;
                 activated => { root.edit-flip-horizontal(); }
             }
             MenuItem {
                 title: "Flip Vertical";
+                icon: @image-url("icons/lucide/flip-vertical-2.svg");
                 enabled: root.rotate-enabled;
                 activated => { root.edit-flip-vertical(); }
             }
             MenuSeparator { }
             MenuItem {
                 title: "Trim Clip…";
+                icon: @image-url("icons/lucide/crop.svg");
                 enabled: root.trim-enabled;
                 activated => { root.edit-trim-clip(); }
             }
@@ -548,47 +597,57 @@ export component AppWindow inherits Window {
             title: "Effects";
             MenuItem {
                 title: "Face Swap (FaceFusion)…";
+                icon: @image-url("icons/lucide/user.svg");
                 enabled: root.media-ready;
                 activated => { root.effect-face-swap(); }
             }
             MenuItem {
                 title: "Face Enhance…";
+                icon: @image-url("icons/lucide/wand-2.svg");
                 enabled: root.media-ready;
                 activated => { root.effect-face-enhance(); }
             }
             MenuItem {
                 title: "Remove Background (RVM-style)…";
+                icon: @image-url("icons/lucide/eraser.svg");
                 enabled: root.media-ready;
                 activated => { root.effect-remove-background(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "AI Upscale…";
+                icon: @image-url("icons/lucide/sparkles.svg");
+                enabled: false;
             }
         }
         Menu {
             title: "View";
             MenuItem {
-                title: root.loop-playback ? "✓ Loop Playback" : "Loop Playback";
+                title: "Loop Playback";
+                checkable: true;
+                checked: root.loop-playback;
+                icon: @image-url("icons/lucide/repeat.svg");
+                shortcut: @keys(Control + L);
                 activated => { root.view-toggle-loop(); }
-            }
-            MenuItem {
-                title: root.view-show-status ? "✓ Show Status" : "Show Status";
-                activated => { root.view-toggle-show-status(); }
-            }
-            MenuItem {
-                title: root.controls-overlay-always-visible ? "✓ Always Show Controls" : "Always Show Controls";
-                activated => { root.view-toggle-controls-always-visible(); }
             }
             MenuSeparator { }
             MenuItem {
                 title: "Zoom In";
+                icon: @image-url("icons/lucide/zoom-in.svg");
+                shortcut: @keys(Control + "+");
                 enabled: root.media-ready && (root.preview-zoom-actual || root.preview-zoom-percent < 400.0);
                 activated => { root.view-zoom-in(); }
             }
             MenuItem {
                 title: "Zoom Out";
+                icon: @image-url("icons/lucide/zoom-out.svg");
+                shortcut: @keys(Control + "-");
                 enabled: root.media-ready && (root.preview-zoom-actual || root.preview-zoom-percent > 25.0);
                 activated => { root.view-zoom-out(); }
             }
             MenuItem {
                 title: "Zoom to Fit";
+                shortcut: @keys(Control + Digit0);
                 enabled: root.media-ready;
                 activated => { root.view-zoom-fit(); }
             }
@@ -600,13 +659,33 @@ export component AppWindow inherits Window {
             MenuSeparator { }
             MenuItem {
                 title: root.window-fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+                icon: root.window-fullscreen ? @image-url("icons/lucide/minimize.svg") : @image-url("icons/lucide/maximize.svg");
+                shortcut: @keys(Escape);
                 activated => { root.view-toggle-fullscreen(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Show Status";
+                checkable: true;
+                checked: root.view-show-status;
+                icon: root.view-show-status ? @image-url("icons/lucide/eye.svg") : @image-url("icons/lucide/eye-off.svg");
+                activated => { root.view-toggle-show-status(); }
+            }
+            MenuItem {
+                title: "Always Show Controls";
+                checkable: true;
+                checked: root.controls-overlay-always-visible;
+                icon: @image-url("icons/lucide/layers.svg");
+                activated => { root.view-toggle-controls-always-visible(); }
             }
         }
         Menu {
             title: "Window";
             MenuItem {
                 title: "Always on Top";
+                checkable: true;
+                checked: root.stay-on-top;
+                icon: @image-url("icons/lucide/panel-top.svg");
                 activated => { root.win-toggle-on-top(); }
             }
             MenuSeparator { }
@@ -632,6 +711,8 @@ export component AppWindow inherits Window {
             MenuSeparator { }
             MenuItem {
                 title: "Overview";
+                icon: @image-url("icons/lucide/help-circle.svg");
+                shortcut: @keys(F1);
                 activated => { root.help-overview(); }
             }
             MenuItem {
@@ -642,6 +723,7 @@ export component AppWindow inherits Window {
                 title: "Keyboard shortcuts";
                 activated => { root.help-keyboard(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "Media formats & tracks";
                 activated => { root.help-media-formats(); }
@@ -650,6 +732,7 @@ export component AppWindow inherits Window {
                 title: "Supported formats (playback vs export)";
                 activated => { root.help-supported-formats(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "CLI (reel-cli)";
                 activated => { root.help-cli(); }
@@ -658,6 +741,7 @@ export component AppWindow inherits Window {
                 title: "External AI & tools";
                 activated => { root.help-external-ai(); }
             }
+            MenuSeparator { }
             MenuItem {
                 title: "Developers";
                 activated => { root.help-developers(); }
@@ -894,7 +978,9 @@ export component AppWindow inherits Window {
 
             // Compact floating transport: ≤150px tall and ≤42% of preview height (well under half the viewport).
             // Opacity is applied only to the backdrop — not the interactive root — so Slint hit-testing stays correct.
+            // `z` above the full-viewport wake TouchArea so play/step/skip controls receive clicks (see lib.rs play-pause).
             if root.media-ready && (root.controls-overlay-always-visible || root.transport-chrome-opacity > 0.001): Rectangle {
+                z: 100;
                 property <length> chrome-max-h: min(168px, parent.height * 46 / 100);
                 // v0 mock: ~60% width, centered, ~10% from bottom (QuickTime-style overlay).
                 width: min(parent.width * 60 / 100, 640px);
@@ -958,7 +1044,9 @@ export component AppWindow inherits Window {
                         }
                         // Center: single-arrow step back + play + step forward (not multi-triangle rewind/ff).
                         HorizontalBox {
-                            spacing: 12px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 22px;
                             alignment: center;
                             rw-ta := TouchArea {
                                 enabled: root.media-ready;
