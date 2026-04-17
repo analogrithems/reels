@@ -1,14 +1,16 @@
 # Reel — guide for AI coding agents (Cursor, Claude, …)
 
-This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, **Claude** in IDE or CI) that modify the AiVideoEditor / Reel codebase. Humans can read it too; **`docs/DEVELOPERS.md`** is the fuller human-oriented setup guide.
+This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, **Claude** in IDE or CI) that modify the AiVideoEditor / Reel codebase. Humans start with **`docs/CONTRIBUTING.md`** and **`docs/DEVELOPERS.md`**.
 
 ## Read first
 
-1. **`docs/DEVELOPERS.md`** — toolchain, `make` targets, repo layout.
-2. **`docs/architecture.md`** — crates, threading, sidecar IPC.
-3. **`docs/FEATURES.md`** — **source of truth** for shipped vs planned user-facing behavior.
-4. **`docs/MEDIA_FORMATS.md`** — containers, streams, and limitations (update when format behavior changes).
-5. **`docs/EXTERNAL_AI.md`** — how effects hand off to external tools (update if stdin/JSON contract, tempfile rules, or env vars change).
+1. **`docs/CONTRIBUTING.md`** — contributor workflow (humans; points to roadmap and doc-update rules).
+2. **`docs/DEVELOPERS.md`** — toolchain, `make` targets, repo layout.
+3. **`docs/architecture.md`** — crates, threading, sidecar IPC.
+4. **`docs/FEATURES.md`** — **source of truth** for shipped vs planned user-facing behavior.
+5. **`docs/MEDIA_FORMATS.md`** — containers, streams, and limitations (update when format behavior changes).
+6. **`docs/EXTERNAL_AI.md`** — how effects hand off to external tools (update if stdin/JSON contract, tempfile rules, or env vars change).
+7. **`docs/phases-ui.md`** — UI phase roadmap (U1–U5), exit criteria, sub-milestones, **suggested next focus**.
 
 ## Responsibilities when landing changes
 
@@ -20,6 +22,7 @@ This document is for **automated assistants** (e.g. **Cursor** Composer/Agent, *
 | **Sidecar protocol**, new `op`/`params` semantics, or handoff to non-Python tools | **`docs/EXTERNAL_AI.md`**, **`docs/architecture.md`**, and **`crates/reel-core/src/sidecar.rs`** doc comments as needed. |
 | New **bundled Help** document or menu entry | **`crates/reel-app/src/shell.rs`** (`HelpDoc` + `include_str!`), **`ui/app.slint`** (Help menu), **`main.rs`** callbacks, and **`docs/README.md`**. |
 | Phase / milestone shift | **`docs/phases-ui.md`** (UI roadmap) and **`docs/phase-status.md`** (engineering checklist)—keep both consistent with **`docs/FEATURES.md`**. |
+| Roadmap **priority** or **sub-milestone** (U2-a … U5-c) changes | **`docs/phases-ui.md`** — **Suggested next focus**, exit criteria, checkboxes. |
 
 ## Tooling expectations
 

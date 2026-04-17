@@ -2,6 +2,8 @@
 
 This repository is a **Rust workspace** plus a **Python sidecar** managed by **uv**.
 
+**New to contributing?** Read **`docs/CONTRIBUTING.md`** first (workflow, roadmap pointers, doc updates).
+
 ## Prerequisites
 
 - **Rust** via `rustup` (see `rust-toolchain.toml`).
@@ -61,7 +63,9 @@ make run      # desktop app (reel)
 
 Help text is **`include_str!`**’d from `docs/*.md` in `crates/reel-app/src/shell.rs`. If you add a new bundled doc, add the file, extend `HelpDoc` in `shell.rs`, and wire the **Help** menu in `ui/app.slint` + `main.rs`.
 
-## Contributing (short)
+## Contributing
+
+See **`docs/CONTRIBUTING.md`** for the full checklist. In short:
 
 1. Branch from default branch; keep changes focused.
 2. Run **`make ci`** before pushing.

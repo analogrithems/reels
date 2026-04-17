@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use reel_core::{export_with_ffmpeg, WebExportFormat};
+use reel_core::{export_concat_timeline, export_with_ffmpeg, WebExportFormat};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -45,4 +45,26 @@ fn exports_fixture_to_each_web_format() {
             output.display()
         );
     }
+}
+
+#[test]
+fn exports_concat_two_spans_same_fixture() {
+    let input = fixture();
+    assert!(input.is_file(), "missing fixture {}", input.display());
+
+    let out_dir = verify_dir();
+    std::fs::create_dir_all(&out_dir).expect("create verify dir");
+    let output = out_dir.join("concat_two_spans_tiny.mp4");
+
+    // Two non-overlapping trims of the same H.264+AAC file (concat demuxer).
+    let segs = vec![(input.clone(), 0.0, 0.12), (input.clone(), 0.15, 0.28)];
+    export_concat_timeline(&segs, &output, WebExportFormat::Mp4Remux).unwrap_or_else(|e| {
+        panic!("concat export failed: {e}");
+    });
+    let meta = std::fs::metadata(&output).expect("output exists");
+    assert!(
+        meta.len() > 64,
+        "exported file {} suspiciously small",
+        output.display()
+    );
 }

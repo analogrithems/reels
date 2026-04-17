@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, TrackKind};
+use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
 
 use crate::project_io::project_from_media_path;
@@ -23,6 +23,9 @@ pub(crate) enum InsertPlan {
 }
 
 /// Map playhead (concatenated sequence time, ms) to an insert or split plan.
+///
+/// Uses the **first** [`TrackKind::Video`] entry in [`Project::tracks`] order (the
+/// primary timeline lane). Additional video tracks are ignored here until U2+ editing.
 ///
 /// Rules:
 /// - At or before a clip’s left edge → insert before that clip.
@@ -77,7 +80,9 @@ impl EditSession {
         self.project.as_ref()
     }
 
-    /// Path the player should decode (first clip on the first video track).
+    /// First clip’s source path on the primary video track (same file the player opens at
+    /// sequence time 0).
+    #[allow(dead_code)]
     pub fn playback_path(&self) -> Option<PathBuf> {
         self.project.as_ref().and_then(|p| {
             p.tracks
@@ -87,6 +92,45 @@ impl EditSession {
                 .and_then(|id| p.clips.iter().find(|c| c.id == *id))
                 .map(|c| c.source_path.clone())
         })
+    }
+
+    /// Short line for the timeline strip: track/clip counts and the preview rule.
+    pub fn timeline_summary_line(&self) -> String {
+        let Some(p) = self.project.as_ref() else {
+            return String::new();
+        };
+        let vtracks: Vec<&Track> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .collect();
+        let n_v = vtracks.len();
+        let n_primary = vtracks.first().map(|t| t.clip_ids.len()).unwrap_or(0);
+        if n_v == 0 {
+            return "No video tracks".into();
+        }
+        format!(
+            "{n_v} video track(s) · {n_primary} clip(s) on primary · preview: primary track sequence (concat)"
+        )
+    }
+
+    /// Append an empty **video** track (for multi-track projects). Undoable.
+    pub fn add_video_track(&mut self) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        proj.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Video,
+            clip_ids: Vec::new(),
+            extensions: Default::default(),
+        });
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
     }
 
     /// Load media: builds a one-clip project and clears history.
@@ -522,6 +566,45 @@ mod tests {
     fn timeline_end_sums_durations() {
         let p = two_clip_project();
         assert!((timeline_end_ms_for_tests(&p).unwrap() - 5000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn add_video_track_appends_empty_lane() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Video)
+                .count(),
+            1
+        );
+        s.add_video_track().unwrap();
+        let p = s.project().unwrap();
+        let v: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .collect();
+        assert_eq!(v.len(), 2);
+        assert!(v[1].clip_ids.is_empty());
+        assert!(s.timeline_summary_line().contains("2 video track"));
+        assert!(s.undo());
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Video)
+                .count(),
+            1
+        );
     }
 
     fn timeline_end_ms_for_tests(project: &Project) -> Option<f64> {

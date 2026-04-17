@@ -27,12 +27,18 @@ export component AppWindow inherits Window {
     in property <bool> undo-enabled: false;
     in property <bool> redo-enabled: false;
 
+    /// Multi-track summary + preview rule (see session.timeline_summary_line).
+    in property <string> timeline-info: "";
+    /// Playhead / duration (see `timecode::format_pair`).
+    in property <string> timecode: "0:00.000 / 0:00.000";
+
     callback file-open();
     callback file-close();
     callback file-revert();
     callback file-new-window();
     callback file-save();
     callback file-insert-video();
+    callback file-new-video-track();
     callback file-export();
 
     callback edit-undo();
@@ -58,6 +64,8 @@ export component AppWindow inherits Window {
 
     callback play-pause();
     callback seek-timeline(float);
+    /// Nudge playhead by delta milliseconds (e.g. ±1000 for arrow keys).
+    callback seek-nudge-ms(float);
 
     MenuBar {
         Menu {
@@ -89,6 +97,11 @@ export component AppWindow inherits Window {
             MenuItem {
                 title: "Insert Video…";
                 activated => { root.file-insert-video(); }
+            }
+            MenuItem {
+                title: "New Video Track";
+                enabled: root.media-ready;
+                activated => { root.file-new-video-track(); }
             }
             MenuItem {
                 title: "Export…";
@@ -184,7 +197,33 @@ export component AppWindow inherits Window {
         }
     }
 
-    VerticalBox {
+    FocusScope {
+        vertical-stretch: 1;
+        width: 100%;
+        focus-on-click: true;
+        key-pressed(event) => {
+            if (!root.media-ready) {
+                reject
+            } else if (event.text == Key.Space) {
+                root.play-pause();
+                accept
+            } else if (event.text == Key.LeftArrow) {
+                root.seek-nudge-ms(-1000.0);
+                accept
+            } else if (event.text == Key.RightArrow) {
+                root.seek-nudge-ms(1000.0);
+                accept
+            } else if (event.text == Key.Home) {
+                root.seek-timeline(0.0);
+                accept
+            } else if (event.text == Key.End) {
+                root.seek-timeline(root.duration-ms);
+                accept
+            } else {
+                reject
+            }
+        }
+        VerticalBox {
         spacing: 0px;
         padding: 0px;
 
@@ -201,14 +240,31 @@ export component AppWindow inherits Window {
 
         Rectangle {
             background: #1a1a20;
-            height: 72px;
+            height: 92px;
             VerticalBox {
                 padding: 8px;
-                spacing: 6px;
+                spacing: 4px;
+                HorizontalBox {
+                    Text {
+                        text: "Timeline";
+                        color: #888;
+                        font-size: 11px;
+                        horizontal-stretch: 0;
+                    }
+                    Text {
+                        text: root.timecode;
+                        color: #aaa;
+                        font-size: 11px;
+                        horizontal-alignment: right;
+                        horizontal-stretch: 1;
+                    }
+                }
                 Text {
-                    text: "Timeline";
-                    color: #888;
-                    font-size: 11px;
+                    text: root.timeline-info;
+                    color: #666;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    visible: root.timeline-info != "";
                 }
                 Slider {
                     enabled: root.media-ready;
@@ -244,5 +300,6 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
     }
 }

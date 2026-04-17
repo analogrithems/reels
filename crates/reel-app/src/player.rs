@@ -20,11 +20,11 @@
 //! Video is the *display* channel; audio is the *clock*. On Seek we flush
 //! both and reset the clock.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -34,18 +34,24 @@ use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::HeapRb;
 use slint::{ComponentHandle, Image, SharedPixelBuffer, Weak};
 
+use crate::timecode::apply_playhead_transport;
+use crate::timeline::TimelineSync;
 use crate::ui_bridge::on_ui;
 use crate::AppWindow;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Cmd {
-    Open(PathBuf),
+    /// Primary video track: decode across multiple clip spans in sequence time.
+    LoadTimeline {
+        sync: Arc<TimelineSync>,
+    },
     /// Drop the current source and reset transport (no decoder teardown of threads).
     Close,
     Play,
     Pause,
-    Seek {
-        pts_ms: u64,
+    /// Seek in concatenated sequence milliseconds (primary track).
+    SeekSequence {
+        seq_ms: u64,
     },
     Stop,
 }
@@ -144,15 +150,17 @@ pub fn spawn_player(window: &AppWindow) -> Result<PlayerHandle> {
     let (producer, consumer) = rb.split();
 
     let weak = window.as_weak();
+    let weak_v = weak.clone();
     let clock_v = clock.clone();
     let video_thread = std::thread::Builder::new()
         .name("reel-video".into())
-        .spawn(move || video_loop(rx_video, weak, clock_v))?;
+        .spawn(move || video_loop(rx_video, weak_v, clock_v))?;
 
+    let weak_a = weak.clone();
     let clock_a = clock.clone();
     let audio_thread = std::thread::Builder::new()
         .name("reel-audio".into())
-        .spawn(move || audio_loop(rx_audio, clock_a, producer, consumer))?;
+        .spawn(move || audio_loop(rx_audio, clock_a, producer, consumer, weak_a))?;
 
     Ok(PlayerHandle {
         tx_video,
@@ -167,6 +175,8 @@ pub fn spawn_player(window: &AppWindow) -> Result<PlayerHandle> {
 fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
     let mut ctx: Option<VideoCtx> = None;
     let mut playing = false;
+    let mut timeline: Option<Arc<TimelineSync>> = None;
+    let mut video_seg_idx: usize = 0;
 
     loop {
         // Block for a command when paused / empty; otherwise poll.
@@ -181,36 +191,42 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
 
         if let Some(c) = cmd {
             match c {
-                Cmd::Open(p) => {
-                    // Drop any prior source and disable transport immediately
-                    // so Play cannot be issued against a half-opened file.
+                Cmd::LoadTimeline { sync } => {
                     ctx = None;
                     playing = false;
                     clock.set_playing(false);
                     clock.set(0);
+                    timeline = Some(sync.clone());
+                    video_seg_idx = 0;
+                    sync.active_index.store(0, Ordering::SeqCst);
+                    let s0 = &sync.segments[0];
                     {
-                        let disp = p.display().to_string();
+                        let disp = s0.path.display().to_string();
                         on_ui(weak.clone(), move |w| {
                             w.set_media_ready(false);
                             w.set_is_playing(false);
-                            w.set_duration_ms(0.0);
-                            w.set_playhead_ms(0.0);
                             w.set_status_text(format!("Loading {disp}…").into());
                         });
                     }
-                    match try_open_video(&p) {
-                        Ok(new_ctx) => {
-                            let dur = new_ctx.duration_ms;
+                    match try_open_video(&s0.path) {
+                        Ok(mut new_ctx) => {
+                            if let Err(e) = new_ctx.seek(s0.media_in_ms) {
+                                tracing::warn!(error = %e, "video initial seek failed");
+                            }
+                            if let Some(frame) = new_ctx.next_presentable_frame() {
+                                present(&weak, frame);
+                            }
+                            let total = sync.total_sequence_ms();
                             ctx = Some(new_ctx);
                             on_ui(weak.clone(), move |w| {
-                                w.set_duration_ms(dur as f32);
-                                w.set_playhead_ms(0.0);
-                                w.set_status_text(format!("Ready ({dur} ms)").into());
+                                w.set_status_text(format!("Ready ({total} ms sequence)").into());
                                 w.set_media_ready(true);
+                                apply_playhead_transport(&w, 0.0);
                             });
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "video open failed");
+                            timeline = None;
                             on_ui(weak.clone(), move |w| {
                                 w.set_media_ready(false);
                                 w.set_status_text(format!("Open failed: {e}").into());
@@ -219,10 +235,6 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                     }
                 }
                 Cmd::Play => {
-                    // Only start playback if a source is loaded. The UI
-                    // disables the Play button in this state, but we still
-                    // defend against stray commands (e.g. keyboard shortcuts,
-                    // tests, scripts).
                     if ctx.is_some() {
                         playing = true;
                         clock.set_playing(true);
@@ -236,65 +248,127 @@ fn video_loop(rx: Receiver<Cmd>, weak: Weak<AppWindow>, clock: AudioClock) {
                     clock.set_playing(false);
                     on_ui(weak.clone(), |w| w.set_is_playing(false));
                 }
-                Cmd::Seek { pts_ms } => {
-                    if let Some(c) = ctx.as_mut() {
-                        match c.seek(pts_ms) {
-                            Ok(()) => {
-                                clock.set(pts_ms);
+                Cmd::SeekSequence { seq_ms } => {
+                    let Some(ref t) = timeline else {
+                        continue;
+                    };
+                    if let Some((idx, local_ms)) = t.resolve_seek(seq_ms) {
+                        t.active_index.store(idx, Ordering::SeqCst);
+                        video_seg_idx = idx;
+                        let s = &t.segments[idx];
+                        match try_open_video(&s.path) {
+                            Ok(mut c) => {
+                                if let Err(e) = c.seek(local_ms) {
+                                    tracing::warn!(error = %e, seq_ms, "video seek failed");
+                                }
                                 if let Some(frame) = c.next_presentable_frame() {
                                     present(&weak, frame);
                                 }
-                                let pts_f = pts_ms as f32;
-                                on_ui(weak.clone(), move |w| w.set_playhead_ms(pts_f));
+                                ctx = Some(c);
+                                clock.set(seq_ms);
+                                let sf = seq_ms as f32;
+                                on_ui(weak.clone(), move |w| apply_playhead_transport(&w, sf));
                             }
-                            Err(e) => {
-                                tracing::warn!(error = %e, pts_ms, "video seek failed");
-                            }
+                            Err(e) => tracing::warn!(error = %e, "video reopen seek failed"),
                         }
                     }
                 }
                 Cmd::Close => {
                     ctx = None;
+                    timeline = None;
+                    video_seg_idx = 0;
                     playing = false;
                     clock.set_playing(false);
                     clock.set(0);
                     on_ui(weak.clone(), |w| {
                         w.set_media_ready(false);
                         w.set_is_playing(false);
-                        w.set_duration_ms(0.0);
-                        w.set_playhead_ms(0.0);
                         w.set_status_text("No media".into());
+                        w.set_timecode("0:00.000 / 0:00.000".into());
+                        w.set_playhead_ms(0.0);
                     });
                 }
                 Cmd::Stop => return,
             }
         }
 
-        // If playing, keep the display fed.
         if playing {
             if let Some(c) = ctx.as_mut() {
                 match c.next_presentable_frame() {
                     Some(frame) => {
-                        // Sync against audio clock.
-                        let target = frame.pts_ms;
                         let now = clock.get();
-                        if target > now + 5 {
-                            let sleep = (target - now).min(50);
+                        let frame_seq = if let Some(ref t) = timeline {
+                            let seg = &t.segments[video_seg_idx];
+                            seg.seq_start_ms
+                                .saturating_add(frame.pts_ms.saturating_sub(seg.media_in_ms))
+                        } else {
+                            frame.pts_ms
+                        };
+                        if frame_seq > now + 5 {
+                            let sleep = (frame_seq - now).min(50);
                             std::thread::sleep(Duration::from_millis(sleep));
-                        } else if target + 40 < now {
-                            // Late — drop.
+                        } else if frame_seq + 40 < now {
                             continue;
                         }
-                        let pts_ms = frame.pts_ms;
                         present(&weak, frame);
-                        let pts_f = pts_ms as f32;
-                        on_ui(weak.clone(), move |w| w.set_playhead_ms(pts_f));
+                        let weak_c = weak.clone();
+                        let ck = clock.clone();
+                        on_ui(weak_c, move |w| {
+                            apply_playhead_transport(&w, ck.get() as f32);
+                        });
                     }
                     None => {
-                        // EOF or decode miss — pause until further instruction.
-                        playing = false;
-                        clock.set_playing(false);
-                        on_ui(weak.clone(), |w| w.set_is_playing(false));
+                        if !playing {
+                            continue;
+                        }
+                        let Some(ref t) = timeline else {
+                            playing = false;
+                            clock.set_playing(false);
+                            on_ui(weak.clone(), |w| w.set_is_playing(false));
+                            continue;
+                        };
+                        let n = t.segments.len();
+                        if video_seg_idx >= n.saturating_sub(1) {
+                            playing = false;
+                            clock.set_playing(false);
+                            on_ui(weak.clone(), |w| w.set_is_playing(false));
+                            continue;
+                        }
+                        let start = Instant::now();
+                        let mut opened_next = false;
+                        while start.elapsed() < Duration::from_secs(3) {
+                            let ai = t.active_index.load(Ordering::SeqCst);
+                            if ai > video_seg_idx {
+                                video_seg_idx = ai;
+                                let s = &t.segments[video_seg_idx];
+                                match try_open_video(&s.path) {
+                                    Ok(mut nc) => {
+                                        if let Err(e) = nc.seek(s.media_in_ms) {
+                                            tracing::warn!(error = %e, "video segment seek");
+                                        }
+                                        ctx = Some(nc);
+                                        opened_next = true;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "video segment open");
+                                        playing = false;
+                                        clock.set_playing(false);
+                                        on_ui(weak.clone(), |w| w.set_is_playing(false));
+                                        break;
+                                    }
+                                }
+                            }
+                            if !clock.is_playing() {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        if !opened_next && playing && video_seg_idx < n.saturating_sub(1) {
+                            playing = false;
+                            clock.set_playing(false);
+                            on_ui(weak.clone(), |w| w.set_is_playing(false));
+                        }
                     }
                 }
             }
@@ -353,7 +427,6 @@ struct VideoCtx {
     scaler: ffmpeg::software::scaling::Context,
     stream_idx: usize,
     time_base: ffmpeg::Rational,
-    duration_ms: u64,
     width: u32,
     height: u32,
 }
@@ -367,10 +440,6 @@ impl VideoCtx {
             .context("no video stream")?;
         let stream_idx = stream.index();
         let time_base = stream.time_base();
-        let duration_ms = ((input.duration() as f64) * 1000.0
-            / f64::from(ffmpeg::ffi::AV_TIME_BASE))
-        .max(0.0) as u64;
-
         let ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
         let decoder = ctx.decoder().video()?;
         let width = decoder.width();
@@ -392,7 +461,6 @@ impl VideoCtx {
             scaler,
             stream_idx,
             time_base,
-            duration_ms,
             width,
             height,
         })
@@ -487,8 +555,13 @@ impl VideoCtx {
 
 // ---------- audio thread ----------
 
-fn audio_loop<P, C>(rx: Receiver<Cmd>, clock: AudioClock, mut producer: P, mut consumer: C)
-where
+fn audio_loop<P, C>(
+    rx: Receiver<Cmd>,
+    clock: AudioClock,
+    mut producer: P,
+    mut consumer: C,
+    weak: Weak<AppWindow>,
+) where
     P: Producer<Item = f32> + Send + 'static,
     C: Consumer<Item = f32> + Send + 'static,
 {
@@ -544,6 +617,8 @@ where
 
     let mut actx: Option<AudioCtx> = None;
     let mut playing = false;
+    let mut timeline: Option<Arc<TimelineSync>> = None;
+
     loop {
         let cmd = if playing && actx.is_some() {
             rx.try_recv().ok()
@@ -556,11 +631,20 @@ where
 
         if let Some(c) = cmd {
             match c {
-                Cmd::Open(p) => {
+                Cmd::LoadTimeline { sync } => {
                     actx = None;
                     playing = false;
-                    match try_open_audio(&p) {
-                        Ok(a) => actx = Some(a),
+                    clock.set(0);
+                    timeline = Some(sync.clone());
+                    sync.active_index.store(0, Ordering::SeqCst);
+                    let s0 = &sync.segments[0];
+                    match try_open_audio(&s0.path) {
+                        Ok(mut a) => {
+                            if let Err(e) = a.seek(s0.media_in_ms) {
+                                tracing::warn!(error = %e, "audio initial seek failed");
+                            }
+                            actx = Some(a);
+                        }
                         Err(e) => {
                             tracing::warn!(error = %e, "audio open failed; continuing muted");
                         }
@@ -568,19 +652,32 @@ where
                 }
                 Cmd::Play => playing = actx.is_some(),
                 Cmd::Pause => playing = false,
-                Cmd::Seek { pts_ms } => {
-                    if let Some(a) = actx.as_mut() {
-                        if let Err(e) = a.seek(pts_ms) {
-                            tracing::warn!(error = %e, pts_ms, "audio seek failed");
+                Cmd::SeekSequence { seq_ms } => {
+                    let Some(ref t) = timeline else {
+                        continue;
+                    };
+                    if let Some((idx, local_ms)) = t.resolve_seek(seq_ms) {
+                        t.active_index.store(idx, Ordering::SeqCst);
+                        let s = &t.segments[idx];
+                        match try_open_audio(&s.path) {
+                            Ok(mut a) => {
+                                if let Err(e) = a.seek(local_ms) {
+                                    tracing::warn!(error = %e, seq_ms, "audio seek failed");
+                                }
+                                actx = Some(a);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "audio reopen failed");
+                                actx = None;
+                            }
                         }
                     }
-                    // Nudge the audio callback with one silence sample so the
-                    // listener hears the seek effect immediately instead of
-                    // a brief burst of pre-seek audio.
+                    clock.set(seq_ms);
                     let _ = producer.try_push(0.0);
                 }
                 Cmd::Close => {
                     actx = None;
+                    timeline = None;
                     playing = false;
                 }
                 Cmd::Stop => return,
@@ -597,6 +694,34 @@ where
                             }
                             std::thread::sleep(Duration::from_millis(2));
                         }
+                    }
+                } else if let Some(ref t) = timeline {
+                    let idx = t.active_index.load(Ordering::SeqCst);
+                    if idx + 1 < t.segments.len() {
+                        t.active_index.store(idx + 1, Ordering::SeqCst);
+                        let s = &t.segments[idx + 1];
+                        match try_open_audio(&s.path) {
+                            Ok(mut na) => {
+                                if let Err(e) = na.seek(s.media_in_ms) {
+                                    tracing::warn!(error = %e, "audio segment seek failed");
+                                    playing = false;
+                                    clock.set_playing(false);
+                                    on_ui(weak.clone(), |w| w.set_is_playing(false));
+                                } else {
+                                    actx = Some(na);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "audio segment open failed");
+                                playing = false;
+                                clock.set_playing(false);
+                                on_ui(weak.clone(), |w| w.set_is_playing(false));
+                            }
+                        }
+                    } else {
+                        playing = false;
+                        clock.set_playing(false);
+                        on_ui(weak.clone(), |w| w.set_is_playing(false));
                     }
                 } else {
                     playing = false;

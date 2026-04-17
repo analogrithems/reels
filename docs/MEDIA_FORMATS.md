@@ -32,11 +32,12 @@ Reel uses **FFmpeg** (via **ffmpeg-next 7.1**; development targets **ffmpeg@7**)
 ## Project model vs playback
 
 - `reel_core::project::TrackKind` includes **`Video`** and **`Audio`** for serialized projects.
-- The **desktop app** currently builds a **single video track** for newly opened media and uses the **first clip’s source** as the primary preview path. Multi-track editing is **not** exposed in the UI yet.
+- The **desktop app** creates one **video** track when you open a file; you can **append additional empty video tracks** (**File → New Video Track**). **Insert Video** and playhead/split logic apply to the **first** video track in `Project::tracks` order (the primary lane).
+- **Preview** decodes the **primary** track **in clip order**: the transport clock is **concatenated sequence time** (ms). At each clip boundary the player switches to the next clip’s source file. **Effects** that sample the playhead resolve **sequence time** to the correct source file and in-file timestamp. Extra empty video tracks (and **audio** `TrackKind` lanes) are not mixed into preview yet.
 
 ## Export
 
-- **Export…** targets web-friendly outputs (MP4 remux, WebM VP8/Opus, MKV remux) via ffmpeg CLI helpers—codec support depends on the **ffmpeg** binary available at run time.
+- **Export…** builds output from the **primary video track** in timeline order (each clip’s `in_point` / `out_point`). Multiple clips use ffmpeg’s **concat demuxer**; a single clip uses **trim** (`-ss` / `-t`). Targets: MP4 remux, WebM VP8/Opus (re-encode), MKV remux—codec support depends on the **ffmpeg** binary; **`-c copy`** across different sources may fail (use WebM to force transcode).
 
 ## Testing
 

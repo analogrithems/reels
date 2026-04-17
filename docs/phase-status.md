@@ -6,6 +6,12 @@ High-level checklist for **infrastructure, engine, and repo documentation**. For
 
 ---
 
+## Product UI phases (U1–U5)
+
+Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2-a … U5-c), **parking lot**, and **suggested next focus** live in **`docs/phases-ui.md`**. This file does not duplicate that roadmap; it tracks **engineering** phases below.
+
+---
+
 ## Phase 0 — Infrastructure & observability ✅
 
 - [x] Cargo workspace: `reel-core`, `reel-app`, `reel-cli`
@@ -63,7 +69,7 @@ High-level checklist for **infrastructure, engine, and repo documentation**. For
 - [x] File / Edit / Effects / Window behaviors (see `FEATURES.md`)
 - [x] ffmpeg export integration tests (`target/reel-export-verify/`)
 - [x] Bundled Help: multi-topic (`shell.rs` `HelpDoc`), `docs/README.md` index
-- [x] Contributor docs: `DEVELOPERS.md`, `AGENTS.md`, `CLI.md`, `MEDIA_FORMATS.md`, `FEATURES.md`
+- [x] Contributor docs: `CONTRIBUTING.md`, `DEVELOPERS.md`, `AGENTS.md`, `CLI.md`, `MEDIA_FORMATS.md`, `FEATURES.md`
 - [x] `EXTERNAL_AI.md` + cross-links in `architecture.md`, `HELP.md`
 
 ---

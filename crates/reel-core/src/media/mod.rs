@@ -6,7 +6,9 @@ pub mod frame;
 pub mod metadata;
 pub mod probe;
 
-pub use export::{export_with_ffmpeg, ffmpeg_args_for_format, WebExportFormat};
+pub use export::{
+    export_concat_timeline, export_with_ffmpeg, ffmpeg_args_for_format, WebExportFormat,
+};
 pub use frame::grab_frame;
 pub use metadata::{AudioStreamInfo, MediaMetadata, VideoStreamInfo};
 pub use probe::FfmpegProbe;

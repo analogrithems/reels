@@ -12,8 +12,8 @@ pub mod sidecar;
 pub use error::{ProbeError, ReelError};
 pub use media::decoder::{DecodeCmd, DecodedFrame};
 pub use media::{
-    export_with_ffmpeg, ffmpeg_args_for_format, grab_frame, AudioStreamInfo, FfmpegProbe,
-    MediaMetadata, MediaProbe, VideoStreamInfo, WebExportFormat,
+    export_concat_timeline, export_with_ffmpeg, ffmpeg_args_for_format, grab_frame,
+    AudioStreamInfo, FfmpegProbe, MediaMetadata, MediaProbe, VideoStreamInfo, WebExportFormat,
 };
 pub use project::{migrate, Clip, MigrationError, Project, ProjectStore, Track, TrackKind};
 pub use sidecar::{SidecarClient, SidecarError};

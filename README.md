@@ -4,6 +4,7 @@ An open-source, Rust + Slint desktop video editor with an iMovie-style workflow 
 
 ## Documentation
 
+- **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** — how to contribute (workflow, docs to update).
 - **[docs/README.md](docs/README.md)** — index of user, developer, and agent docs.
 - **[docs/FEATURES.md](docs/FEATURES.md)** — what works today and what is planned.
 - **[docs/DEVELOPERS.md](docs/DEVELOPERS.md)** / **[docs/AGENTS.md](docs/AGENTS.md)** — humans vs Cursor/Claude onboarding.

@@ -6,6 +6,8 @@ mod player;
 mod project_io;
 mod session;
 mod shell;
+mod timecode;
+mod timeline;
 mod ui_bridge;
 
 use std::cell::RefCell;
@@ -14,7 +16,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::Result;
-use reel_core::export_with_ffmpeg;
+use reel_core::export_concat_timeline;
 use session::{export_format_for_path, EditSession};
 use slint::ComponentHandle;
 
@@ -36,17 +38,21 @@ fn begin_export_effect(
         });
         return;
     };
-    let media = match session.borrow().playback_path() {
-        Some(p) => p,
+    let playhead_seq_ms = weak
+        .upgrade()
+        .map(|w| w.get_playhead_ms() as f64)
+        .unwrap_or(0.0);
+    let (media, pts_ms) = match session
+        .borrow()
+        .project()
+        .and_then(|p| timeline::resolve_for_project(p, playhead_seq_ms))
+    {
+        Some(x) => x,
         None => {
             on_ui(weak, |w| w.set_status_text("No video loaded.".into()));
             return;
         }
     };
-    let playhead_ms = weak
-        .upgrade()
-        .map(|w| w.get_playhead_ms() as u64)
-        .unwrap_or(0);
 
     let title = match effect {
         effects::EffectKind::FaceFusion => "Save face swap as PNG…",
@@ -71,7 +77,7 @@ fn begin_export_effect(
     let res = std::thread::Builder::new()
         .name("reel-effect".into())
         .spawn(move || {
-            let r = effects::apply_effect_to_png(&media, playhead_ms, effect, &sidecar, &dest);
+            let r = effects::apply_effect_to_png(&media, pts_ms, effect, &sidecar, &dest);
             let msg = match &r {
                 Ok(()) => format!("Effect saved — {}", dest.display()),
                 Err(e) => format!("Effect failed: {e:#}"),
@@ -89,6 +95,26 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     window.set_save_enabled(session.save_enabled());
     window.set_undo_enabled(session.undo_enabled());
     window.set_redo_enabled(session.redo_enabled());
+    window.set_timeline_info(session.timeline_summary_line().into());
+    if let Some(p) = session.project() {
+        if let Some(clips) = timeline::clips_from_project(p) {
+            let d = timeline::sequence_duration_ms(&clips);
+            window.set_duration_ms(d.max(1.0) as f32);
+        }
+    } else {
+        window.set_duration_ms(0.0);
+    }
+    let ph = window.get_playhead_ms();
+    let dur = window.get_duration_ms();
+    window.set_timecode(timecode::format_pair(ph, dur).into());
+}
+
+fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSession) {
+    if let Some(p) = session.project() {
+        if let Some(sync) = timeline::timeline_sync_from_project(p) {
+            sender.send(player::Cmd::LoadTimeline { sync });
+        }
+    }
 }
 
 fn sync_menu_and_autosave(
@@ -120,6 +146,8 @@ fn main() -> Result<()> {
 
     let window = AppWindow::new()?;
     window.set_media_ready(false);
+    window.set_timecode("0:00.000 / 0:00.000".into());
+    window.set_timeline_info("".into());
     window.set_video_fit_mode(0);
     window.set_stay_on_top(false);
 
@@ -154,7 +182,7 @@ fn main() -> Result<()> {
                         if let Some(w) = weak.upgrade() {
                             sync_menu_and_autosave(&w, &session, &debouncer);
                         }
-                        p.send(player::Cmd::Open(path));
+                        reload_player_timeline(&p, &session.borrow());
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "open project");
@@ -195,9 +223,7 @@ fn main() -> Result<()> {
             match revert_result {
                 Ok(()) => {
                     p.send(player::Cmd::Pause);
-                    if let Some(pb) = session.borrow().playback_path() {
-                        p.send(player::Cmd::Open(pb));
-                    }
+                    reload_player_timeline(&p, &session.borrow());
                     if let Some(w) = weak.upgrade() {
                         sync_menu(&w, &session.borrow());
                         let n = session
@@ -260,7 +286,6 @@ fn main() -> Result<()> {
         let debouncer = Rc::clone(&debouncer);
         window.on_file_insert_video(move || match prompt_insert_dialog() {
             Some(insert_path) => {
-                let before_pb = session.borrow().playback_path();
                 let playhead_ms = weak
                     .upgrade()
                     .map(|w| w.get_playhead_ms() as f64)
@@ -281,12 +306,7 @@ fn main() -> Result<()> {
                                 format!("Inserted @ {playhead_ms:.0} ms ({n} clips)").into(),
                             );
                         }
-                        let after_pb = session.borrow().playback_path();
-                        if after_pb != before_pb {
-                            if let Some(pb) = after_pb {
-                                sender.send(player::Cmd::Open(pb));
-                            }
-                        }
+                        reload_player_timeline(&sender, &session.borrow());
                     }
                     Err(e) => {
                         if let Some(w) = weak.upgrade() {
@@ -302,38 +322,81 @@ fn main() -> Result<()> {
     {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
-        window.on_file_export(move || {
-            let src = session.borrow().current_media.clone();
-            if let Some(src) = src {
-                if let Some(dest) = rfd::FileDialog::new()
-                    .set_title("Export media…")
-                    .add_filter("MP4", &["mp4"])
-                    .add_filter("WebM", &["webm"])
-                    .add_filter("Matroska", &["mkv"])
-                    .save_file()
-                {
-                    let fmt = match export_format_for_path(&dest) {
-                        Some(f) => f,
-                        None => {
-                            if let Some(w) = weak.upgrade() {
-                                w.set_status_text("Choose .mp4, .webm, or .mkv".into());
-                            }
-                            return;
-                        }
-                    };
-                    match export_with_ffmpeg(&src, &dest, fmt) {
-                        Ok(()) => {
-                            if let Some(w) = weak.upgrade() {
-                                w.set_status_text(format!("Exported to {}", dest.display()).into());
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "export failed");
-                            if let Some(w) = weak.upgrade() {
-                                w.set_status_text(format!("Export failed: {e}").into());
-                            }
-                        }
+        let debouncer = Rc::clone(&debouncer);
+        window.on_file_new_video_track(move || {
+            let r = session.borrow_mut().add_video_track();
+            match r {
+                Ok(()) => {
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer);
+                        w.set_status_text("Added video track".into());
                     }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_file_export(move || {
+            let segs = session
+                .borrow()
+                .project()
+                .and_then(timeline::clips_from_project)
+                .map(|clips| {
+                    clips
+                        .into_iter()
+                        .map(|c| (c.path, c.media_in_s, c.media_out_s))
+                        .collect::<Vec<_>>()
+                });
+            let Some(segs) = segs.filter(|s| !s.is_empty()) else {
+                return;
+            };
+            if let Some(dest) = rfd::FileDialog::new()
+                .set_title("Export media…")
+                .add_filter("MP4", &["mp4"])
+                .add_filter("WebM", &["webm"])
+                .add_filter("Matroska", &["mkv"])
+                .save_file()
+            {
+                let fmt = match export_format_for_path(&dest) {
+                    Some(f) => f,
+                    None => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text("Choose .mp4, .webm, or .mkv".into());
+                        }
+                        return;
+                    }
+                };
+                if let Some(w) = weak.upgrade() {
+                    w.set_status_text("Exporting…".into());
+                }
+                let weak_done = weak.clone();
+                let dest_disp = dest.display().to_string();
+                let res = std::thread::Builder::new()
+                    .name("reel-export".into())
+                    .spawn(move || {
+                        let r = export_concat_timeline(&segs, &dest, fmt);
+                        let msg = match &r {
+                            Ok(()) => format!("Exported to {dest_disp}"),
+                            Err(e) => format!("Export failed: {e}"),
+                        };
+                        on_ui(weak_done, move |w| w.set_status_text(msg.into()));
+                        if let Err(e) = &r {
+                            tracing::error!(error = %e, "export failed");
+                        }
+                    });
+                if let Err(e) = res {
+                    tracing::error!(?e, "failed to spawn export thread");
+                    on_ui(weak.clone(), |w| {
+                        w.set_status_text("Could not start export".into());
+                    });
                 }
             }
         });
@@ -345,16 +408,10 @@ fn main() -> Result<()> {
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
         window.on_edit_undo(move || {
-            let before = session.borrow().playback_path();
             if !session.borrow_mut().undo() {
                 return;
             }
-            let after = session.borrow().playback_path();
-            if after != before {
-                if let Some(pb) = after {
-                    sender.send(player::Cmd::Open(pb));
-                }
-            }
+            reload_player_timeline(&sender, &session.borrow());
             if let Some(w) = weak.upgrade() {
                 sync_menu_and_autosave(&w, &session, &debouncer);
                 let n = session
@@ -409,16 +466,10 @@ fn main() -> Result<()> {
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
         window.on_edit_redo(move || {
-            let before = session.borrow().playback_path();
             if !session.borrow_mut().redo() {
                 return;
             }
-            let after = session.borrow().playback_path();
-            if after != before {
-                if let Some(pb) = after {
-                    sender.send(player::Cmd::Open(pb));
-                }
-            }
+            reload_player_timeline(&sender, &session.borrow());
             if let Some(w) = weak.upgrade() {
                 sync_menu_and_autosave(&w, &session, &debouncer);
                 let n = session
@@ -521,7 +572,26 @@ fn main() -> Result<()> {
                     return;
                 }
             }
-            p.send(player::Cmd::Seek { pts_ms: v as u64 });
+            p.send(player::Cmd::SeekSequence { seq_ms: v as u64 });
+        });
+    }
+
+    {
+        let p = player_handle_ref(&player);
+        let weak = window.as_weak();
+        window.on_seek_nudge_ms(move |delta| {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            if !w.get_media_ready() {
+                return;
+            }
+            let cur = w.get_playhead_ms();
+            let dur = w.get_duration_ms();
+            let next = (cur + delta).clamp(0.0, dur);
+            p.send(player::Cmd::SeekSequence {
+                seq_ms: next as u64,
+            });
         });
     }
 
@@ -533,7 +603,7 @@ fn main() -> Result<()> {
         match startup_open {
             Ok(()) => {
                 sync_menu_and_autosave(&window, &session, &debouncer);
-                player.cmd_sender().send(player::Cmd::Open(path));
+                reload_player_timeline(&player.cmd_sender(), &session.borrow());
             }
             Err(e) => {
                 window.set_status_text(format!("REEL_OPEN_PATH failed: {e}").into());

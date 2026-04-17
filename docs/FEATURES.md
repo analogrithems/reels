@@ -1,13 +1,13 @@
 # Reel — features & roadmap
 
-**Maintenance:** When you add or change user-visible editing behavior, update this file in the same PR. AI coding agents (Cursor, Claude) should treat this as the checklist for “what Reel does today.”
+**Maintenance:** When you add or change user-visible editing behavior, update this file in the same PR. AI coding agents (Cursor, Claude) should treat this as the checklist for “what Reel does today.” UI phase status and exit criteria live in **`docs/phases-ui.md`** (see the mapping table there). New contributors: **`docs/CONTRIBUTING.md`**.
 
 ## Currently supported (desktop app)
 
 ### Playback & transport
 
 - Open a media file via **File → Open** (native dialog).
-- **Play / Pause**; timeline **Slider** scrub (seeks video + audio).
+- **Play / Pause**; timeline **Slider** scrub (seeks video + audio). **Space** toggles play/pause when the main view is focused (click the video/timeline area). **← / →** nudge the playhead by **±1 s** (clamped to the sequence). **Home** / **End** jump to the **start** or **end** of the sequence. The timeline strip shows **playhead / duration** timecode (`M:SS.mmm`).
 - **AudioClock**: audio drives timing; video follows (may drop frames when behind).
 - **Close** clears the project and stops playback.
 - Startup: optional **`REEL_OPEN_PATH`** env var auto-opens one file (dev/testing).
@@ -19,8 +19,8 @@
 
 ### Project & timeline (minimal)
 
-- **One primary video track** in the project model; playback uses the **first clip** on that track.
-- **Insert Video…** at playhead: probes the file, appends or inserts a clip. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts.
+- **One primary video track** in the project model for insert/split math. **Preview** plays the **concatenated** sequence on that track: the timeline slider spans the sum of clip lengths; scrub and play advance across clips (new file opens at each boundary). **File → New Video Track** appends an extra empty lane (not yet mixed into preview); the timeline strip summarizes counts and the preview mode.
+- **Insert Video…** at playhead: probes the file, appends or inserts a clip on the **primary** (first) video track. If the playhead is **inside** an existing clip, that clip is **split** and the new clip is inserted between the two parts.
 - **Save…** writes the current `Project` as JSON (`.reel` or `.json` filter).
 - **Revert** restores the last explicit save baseline, or re-probes the original opened media file if never saved.
 - **Undo / Redo** (document snapshots): insert and related edits; **explicit Save** clears undo/redo stacks.
@@ -28,7 +28,7 @@
 
 ### Export
 
-- **Export…** remux/transcode the **current primary media** to MP4 / WebM / MKV via ffmpeg (see `reel_core::export`).
+- **Export…** remux/transcode the **primary video track** (all clips in order, respecting each clip’s in/out points) to MP4 / WebM / MKV via ffmpeg: one segment uses `-ss`/`-t`; multiple segments use a temporary **concat** list (`export_concat_timeline` in `reel_core`). Export runs **off the UI thread**; status shows **Exporting…** then success or error. Stream copy may fail if clips use incompatible codecs—try WebM (re-encode) or align sources.
 
 ### Effects (experimental)
 
@@ -38,17 +38,17 @@
 
 ### Help
 
-- **Help** menu entries bundle markdown from `docs/` (overview, features, media formats, CLI, external AI & tools, developers, agents, UI phases).
+- **Help** menu entries bundle markdown from `docs/` (overview, features, media formats, CLI, external AI & tools, developers, agents, UI phases). **File → New Video Track** is described in **Features** and **Media formats & tracks**.
 
 ---
 
 ## Roadmap (not yet in the product)
 
-Priorities shift; this list is indicative.
+Priorities shift; this list is indicative. For **phased planning** (U2 sub-milestones, suggested next focus), see **`docs/phases-ui.md`**.
 
 ### Editing / timeline
 
-- **Multi-track** video and **separate audio tracks** in the UI (schema has `TrackKind`; app still assumes a single main video track for preview).
+- **Multi-track** video (multiple `TrackKind::Video` lanes) and **separate audio tracks** in the UI: you can add empty video tracks; preview and insert/split still use the **first** video track until deeper editing lands.
 - **Trim / ripple / roll** at playhead; blade tool; slip/slide.
 - **Subtitles / captions** import, edit, and burn-in export.
 - **Keyframes** and motion/effect parameters per clip.
