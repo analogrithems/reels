@@ -38,12 +38,23 @@ export component AppWindow inherits Window {
     callback edit-undo();
     callback edit-redo();
 
+    callback effect-face-swap();
+    callback effect-face-enhance();
+    callback effect-remove-background();
+
     callback win-fit();
     callback win-fill();
     callback win-center();
     callback win-toggle-on-top();
 
-    callback help-show();
+    callback help-overview();
+    callback help-features();
+    callback help-media-formats();
+    callback help-cli();
+    callback help-external-ai();
+    callback help-developers();
+    callback help-agents();
+    callback help-phases-ui();
 
     callback play-pause();
     callback seek-timeline(float);
@@ -99,6 +110,24 @@ export component AppWindow inherits Window {
             }
         }
         Menu {
+            title: "Effects";
+            MenuItem {
+                title: "Face Swap (FaceFusion)…";
+                enabled: root.media-ready;
+                activated => { root.effect-face-swap(); }
+            }
+            MenuItem {
+                title: "Face Enhance…";
+                enabled: root.media-ready;
+                activated => { root.effect-face-enhance(); }
+            }
+            MenuItem {
+                title: "Remove Background (RVM-style)…";
+                enabled: root.media-ready;
+                activated => { root.effect-remove-background(); }
+            }
+        }
+        Menu {
             title: "Window";
             MenuItem {
                 title: "Always on Top";
@@ -121,8 +150,36 @@ export component AppWindow inherits Window {
         Menu {
             title: "Help";
             MenuItem {
-                title: "Reel Help";
-                activated => { root.help-show(); }
+                title: "Overview";
+                activated => { root.help-overview(); }
+            }
+            MenuItem {
+                title: "Features & roadmap";
+                activated => { root.help-features(); }
+            }
+            MenuItem {
+                title: "Media formats & tracks";
+                activated => { root.help-media-formats(); }
+            }
+            MenuItem {
+                title: "CLI (reel-cli)";
+                activated => { root.help-cli(); }
+            }
+            MenuItem {
+                title: "External AI & tools";
+                activated => { root.help-external-ai(); }
+            }
+            MenuItem {
+                title: "Developers";
+                activated => { root.help-developers(); }
+            }
+            MenuItem {
+                title: "Agent guide (Cursor / Claude)";
+                activated => { root.help-agents(); }
+            }
+            MenuItem {
+                title: "UI phases roadmap";
+                activated => { root.help-phases-ui(); }
             }
         }
     }

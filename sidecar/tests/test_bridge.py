@@ -80,3 +80,39 @@ def test_unknown_op_returns_err():
         {"id": 2, "op": "shutdown"},
     ])
     assert out == [{"id": 1, "status": "err", "reason": "unknown op: bogus"}]
+
+
+def test_rvm_chroma_makes_green_semi_transparent():
+    sys.path.insert(0, str(BRIDGE.parent))
+    import facefusion_bridge as bridge  # noqa: I001
+
+    # One bright green pixel, one skin-ish pixel.
+    px_green = bytes([0, 255, 0, 255])
+    px_skin = bytes([200, 160, 140, 255])
+    data = px_green + px_skin
+    out = bridge._rvm_chroma(data, 2, 1)
+    assert out[3] == 0  # green → alpha 0
+    assert out[7] == 255  # foreground keeps opaque
+
+
+def test_rvm_chroma_swap_round_trip():
+    with tempfile.TemporaryDirectory() as td:
+        in_path = Path(td) / "in.rgba"
+        # 2x1: green | red
+        data = bytes([0, 255, 0, 255, 255, 0, 0, 255])
+        in_path.write_bytes(data)
+        out = _run_bridge([
+            {
+                "id": 1,
+                "op": "swap",
+                "in_path": str(in_path),
+                "width": 2,
+                "height": 1,
+                "params": {"model": "rvm_chroma"},
+            },
+            {"id": 2, "op": "shutdown"},
+        ])
+        assert out[0]["status"] == "ok"
+        got = Path(out[0]["out_path"]).read_bytes()
+        assert got[3] == 0
+        assert got[7] == 255

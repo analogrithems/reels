@@ -4201,6 +4201,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "ffmpeg-next",
+ "image",
  "parking_lot",
  "reel-core",
  "rfd",

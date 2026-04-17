@@ -1,18 +1,20 @@
 # Reel architecture
 
+**See also:** `docs/DEVELOPERS.md`, `docs/MEDIA_FORMATS.md`, `docs/FEATURES.md`, **`docs/EXTERNAL_AI.md`** (why and how AI/tools run out-of-process).
+
 ## Crate graph
 
 ```
-reel-core  ──┬──► reel-app  (Slint desktop binary "reel")
-             └──► reel-cli  (headless binary "reel-cli")
+reel-core  ──┬──► reel-app   (Slint desktop binary `reel`)
+             └──► reel-cli   (headless `reel-cli`)
              ▲
-             └─ sidecar/ (Python, managed by uv) — called from reel-core::logging::spawn_logged_child
+             └─ sidecar/ (Python, `uv run python facefusion_bridge.py`)
 ```
 
-- **`reel-core`** owns every piece that is not UI: media probe, `Project` serde model, autosave store, `tracing` setup, and the child-process logging helper that the Phase-3 FaceFusion bridge will use.
-- **`reel-app`** is the desktop GUI. It depends on `reel-core` for the probe + project types and carries all Slint-specific code (window, decoder, audio output, command plumbing).
-- **`reel-cli`** is a thin wrapper around `reel-core` that exposes one subcommand so far (`probe`).
-- **`sidecar/`** is an empty uv-managed Python project with a stub `facefusion_bridge.py`. It does not run during Phases 0–2 except through logging round-trip tests.
+- **`reel-core`:** Media probe, decode helpers (`grab_frame`), `Project` model + schema migration, optional `ProjectStore` autosave, ffmpeg export helpers, `SidecarClient`, logging.
+- **`reel-app`:** Slint UI, video/audio player threads, `EditSession`, debounced project autosave, Effects → sidecar PNG export.
+- **`reel-cli`:** `probe`, `swap` (see `docs/CLI.md`).
+- **`sidecar/`:** Line-delimited JSON bridge; stderr logged via `reel_core::logging`.
 
 ## Threading model in `reel-app`
 
@@ -24,79 +26,37 @@ reel-core  ──┬──► reel-app  (Slint desktop binary "reel")
                                        │
                                        ▼
            ┌─────────────────────┐      ┌──────────────────────────────┐
-           │  reel-video thread  │      │  reel-audio thread           │
-           │  ffmpeg Input       │      │  ffmpeg Input + decoder      │
-           │  → scaler RGBA8     │      │  → resample to f32 stereo    │
-           │  → SharedPixelBuffer│      │  → ringbuf producer          │
-           │  → invoke_on_UI     │      │  → cpal output callback      │
-           └─────────────────────┘      └──────────────────────────────┘
-                      │                               │
-                      └───────── AudioClock ◄─────────┘
+           │  video thread       │      │  audio thread                │
+           │  ffmpeg → RGBA      │      │  ffmpeg → f32 stereo → cpal   │
+           │  → SharedPixelBuffer│      │  → ringbuf                   │
+           └──────────┬──────────┘      └──────────────┬───────────────┘
+                      └────────── AudioClock ────────┘
 ```
 
 Rules:
 
-1. `Weak<AppWindow>` is the only Slint handle that crosses threads. It must be upgraded *inside* `slint::invoke_from_event_loop`.
-2. `slint::Image` is **not** `Send` in this release. `SharedPixelBuffer` is, so video frames are shipped as `SharedPixelBuffer` and wrapped into `Image` only in the UI-thread closure.
-3. Audio is the master clock. The cpal output callback advances `AudioClock` by `samples / sample_rate`; the video thread consults the clock to decide whether to sleep, drop, or present.
+1. Upgrade `Weak<AppWindow>` only inside `slint::invoke_from_event_loop` (see `ui_bridge.rs`).
+2. Ship frames as `SharedPixelBuffer` across threads; build `slint::Image` on the UI thread.
+3. Audio is the **clock**; video may sleep or drop to stay near `AudioClock`.
 
-## Autosave
+## Autosave (library vs app)
 
-`ProjectStore` keeps the `Project` behind an `RwLock` and spawns a worker thread that debounces mutations (500 ms) before writing `project.json` atomically (`.tmp → rename`). `mutate(|p| …)` is the only entry point for state changes; reading is a zero-cost `read()` that returns an `RwLockReadGuard`.
+- **`ProjectStore`** (`reel_core`): debounced worker thread, atomic `.tmp` → rename, used by tests and available for future app integration.
+- **`reel-app`:** `EditSession::flush_autosave_if_needed` + Slint **single-shot** timer (~900 ms) for on-disk `.reel` after **Save** has established a path; **does not** clear undo (unlike explicit Save).
 
 ## Logging
 
-- Global `tracing` subscriber configured by `reel_core::logging::init()`.
-- Env vars: `REEL_LOG`, `REEL_LOG_FORMAT={pretty|json}`, `REEL_LOG_FILE=<path>`.
-- Child processes (the future FaceFusion sidecar) are spawned via `spawn_logged_child`, which pipes stdout→`info!` and stderr→`warn!` on dedicated reader threads. Covered by a round-trip test against `/bin/echo`.
+- `reel_core::logging::init()` installs `tracing` (`REEL_LOG`, `REEL_LOG_FORMAT`, `REEL_LOG_FILE`).
+- Sidecar stderr is tagged and forwarded to `tracing` (see `spawn_child_with_logged_stderr`).
 
-## Phase 3 hooks already in place
+## Sidecar protocol (summary)
 
-- `reel_core::logging::spawn_logged_child` — the sidecar process launcher.
-- `reel_core::media::decoder::{DecodeCmd, DecodedFrame}` — stable types the future AI-swap round-trip (save frame → Python → reload) will interop against.
-- `sidecar/facefusion_bridge.py` — line-delimited JSON stdio contract documented in `sidecar/README.md`.
+Line-delimited JSON on stdin/stdout; RGBA payloads in tempfiles. See `crates/reel-core/src/sidecar.rs` for request/response shapes, timeouts, and crash behavior.
 
-## FaceFusion bridge (Phase 3)
+Transforms are registered in Python (`sidecar/facefusion_bridge.py`); `reel-cli swap` and app **Effects** use the same path.
 
-```text
-  reel-cli / reel-app                 sidecar/ (uv-managed Python)
-  ┌────────────────────┐   stdin      ┌───────────────────────────┐
-  │ SidecarClient      │ ───── JSON ─►│ facefusion_bridge.py      │
-  │ - swap_frame()     │              │   ops: ping / swap /      │
-  │ - ping()           │◄──── JSON ── │        shutdown           │
-  │ - reader thread    │   stdout     │   transforms:             │
-  │ - pending by `id`  │              │     identity, invert      │
-  └─────────┬──────────┘              └──────────┬────────────────┘
-            │                                    │
-            │  tempfile<id>.rgba  (raw RGBA8)    │
-            └────────────────────────────────────┘
-                           ▲       ▲
-                    Rust writes   Python writes
-                    in_path       out_path
-```
+For the **product rationale** (no fixed vendor API, `params` as an extension point, shelling out from the bridge), read **`docs/EXTERNAL_AI.md`**.
 
-Contract (line-delimited JSON):
+## Documentation bundling
 
-```
-→ {"id": N, "op": "swap",
-   "in_path": "…/in-N.rgba",
-   "width": W, "height": H,
-   "params": {"model": "identity" | "invert", …}}
-← {"id": N, "status": "ok", "out_path": "…/in-N.rgba.out"}
-← {"id": N, "status": "err", "reason": "…"}
-```
-
-Pixels travel via tempfiles (owned by the client's `tempfile::TempDir`) rather
-than inline base64 to keep the JSON small. The reader thread de-multiplexes
-responses back to their original caller by `id`, so the client is safe to
-call from multiple threads.
-
-Test hooks on `params`:
-
-- `sleep_ms: N` — delay the response (exercises `SidecarError::Timeout`).
-- `crash: true` — `sys.exit(1)` before responding (exercises `SidecarError::Crashed`).
-
-Real FaceFusion model integration is **not** in scope for this phase: the
-bridge is proven end-to-end with identity + invert placeholders. Dropping in
-the real model should require no Rust changes — only a new entry in the
-Python `TRANSFORMS` table and a model download step in `uv sync`.
+The desktop **Help** menu loads markdown from `docs/*.md` via `include_str!` in `crates/reel-app/src/shell.rs` (`HelpDoc` enum). Updating help text means editing the markdown **and** rebuilding `reel-app`.

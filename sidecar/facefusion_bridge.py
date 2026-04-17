@@ -49,9 +49,60 @@ def _invert(data: bytes, _w: int, _h: int) -> bytes:
     return bytes(out)
 
 
+def _facefusion(data: bytes, _w: int, _h: int) -> bytes:
+    """Placeholder for FaceFusion inference; verifies checkout when possible."""
+    root = os.environ.get("FACE_FUSION_ROOT", "").strip()
+    if not root:
+        log(
+            "facefusion: set FACE_FUSION_ROOT to your clone, run install.py, "
+            "then wire the pipeline — returning input unchanged"
+        )
+        return data
+    p = Path(root)
+    if not p.is_dir():
+        log(f"facefusion: FACE_FUSION_ROOT not a directory: {root}")
+        return data
+    ff = p / "facefusion.py"
+    if not ff.is_file():
+        log(f"facefusion: expected {ff} — run scripts/setup_facefusion.sh")
+        return data
+    try:
+        sys.path.insert(0, str(p))
+        import facefusion  # noqa: F401, I001
+
+        log(
+            "facefusion: import ok; frame pipeline not yet invoked from bridge — "
+            "identity passthrough"
+        )
+    except ImportError as e:
+        log(f"facefusion: import failed ({e}); run `python install.py` in checkout")
+    return data
+
+
+def _face_enhance(data: bytes, _w: int, _h: int) -> bytes:
+    log("face_enhance: stub (GFPGAN/CodeFormer-style path TBD)")
+    return data
+
+
+def _rvm_chroma(data: bytes, _w: int, _h: int) -> bytes:
+    """Chroma-style green spill removal + alpha (RVM full model is future work)."""
+    out = bytearray(data)
+    for i in range(0, len(out), 4):
+        r, g, b = out[i], out[i + 1], out[i + 2]
+        # Simple green-screen key: strong G vs R/B.
+        if g > 90 and g > r + 40 and g > b + 40:
+            out[i + 3] = 0
+        else:
+            out[i + 3] = 255
+    return bytes(out)
+
+
 TRANSFORMS = {
     "identity": _identity,
     "invert": _invert,
+    "facefusion": _facefusion,
+    "face_enhance": _face_enhance,
+    "rvm_chroma": _rvm_chroma,
 }
 
 

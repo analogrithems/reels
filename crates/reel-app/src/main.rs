@@ -1,5 +1,7 @@
 //! Reel desktop app entry point.
 
+mod autosave;
+mod effects;
 mod player;
 mod project_io;
 mod session;
@@ -17,15 +19,99 @@ use session::{export_format_for_path, EditSession};
 use slint::ComponentHandle;
 
 use crate::project_io::save_project;
+use crate::ui_bridge::on_ui;
 
 slint::include_modules!();
 
-fn sync_menu(window: &AppWindow, session: &EditSession) {
+fn begin_export_effect(
+    weak: slint::Weak<AppWindow>,
+    session: Rc<RefCell<EditSession>>,
+    effect: effects::EffectKind,
+) {
+    let Some(sidecar) = effects::resolve_sidecar_dir() else {
+        on_ui(weak, |w| {
+            w.set_status_text(
+                "Sidecar not found. Set REEL_SIDECAR_DIR or run from the repo root.".into(),
+            );
+        });
+        return;
+    };
+    let media = match session.borrow().playback_path() {
+        Some(p) => p,
+        None => {
+            on_ui(weak, |w| w.set_status_text("No video loaded.".into()));
+            return;
+        }
+    };
+    let playhead_ms = weak
+        .upgrade()
+        .map(|w| w.get_playhead_ms() as u64)
+        .unwrap_or(0);
+
+    let title = match effect {
+        effects::EffectKind::FaceFusion => "Save face swap as PNG…",
+        effects::EffectKind::FaceEnhance => "Save face enhance as PNG…",
+        effects::EffectKind::RvmBackground => "Save background removal as PNG…",
+    };
+    let save = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("PNG", &["png"])
+            .save_file()
+    }));
+    let dest = match save {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(_) => {
+            tracing::error!("rfd save dialog panicked");
+            return;
+        }
+    };
+
+    let res = std::thread::Builder::new()
+        .name("reel-effect".into())
+        .spawn(move || {
+            let r = effects::apply_effect_to_png(&media, playhead_ms, effect, &sidecar, &dest);
+            let msg = match &r {
+                Ok(()) => format!("Effect saved — {}", dest.display()),
+                Err(e) => format!("Effect failed: {e:#}"),
+            };
+            on_ui(weak, move |w| w.set_status_text(msg.into()));
+        });
+    if let Err(e) = res {
+        tracing::error!(?e, "failed to spawn effect thread");
+    }
+}
+
+pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     window.set_close_enabled(session.close_enabled());
     window.set_revert_enabled(session.revert_enabled());
     window.set_save_enabled(session.save_enabled());
     window.set_undo_enabled(session.undo_enabled());
     window.set_redo_enabled(session.redo_enabled());
+}
+
+fn sync_menu_and_autosave(
+    window: &AppWindow,
+    session_rc: &Rc<RefCell<EditSession>>,
+    debouncer: &autosave::AutosaveDebouncer,
+) {
+    sync_menu(window, &session_rc.borrow());
+    debouncer.nudge(Rc::clone(session_rc));
+}
+
+fn show_help_window(doc: shell::HelpDoc) {
+    let (title, body) = shell::help_bundle(doc);
+    match HelpWindow::new() {
+        Ok(h) => {
+            h.set_help_title(title.into());
+            h.set_body_text(body.into());
+            if let Err(e) = h.show() {
+                tracing::warn!(error = %e, "help window show failed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "help window create failed"),
+    }
 }
 
 fn main() -> Result<()> {
@@ -38,6 +124,7 @@ fn main() -> Result<()> {
     window.set_stay_on_top(false);
 
     let session = Rc::new(RefCell::new(EditSession::default()));
+    let debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
 
     let player = match player::spawn_player(&window) {
         Ok(p) => p,
@@ -53,6 +140,7 @@ fn main() -> Result<()> {
     {
         let p = player_handle_ref(&player);
         let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
         window.on_file_open(move || match prompt_open_dialog() {
             Some(path) => {
                 tracing::info!(?path, "file open");
@@ -64,7 +152,7 @@ fn main() -> Result<()> {
                 match open_result {
                     Ok(()) => {
                         if let Some(w) = weak.upgrade() {
-                            sync_menu(&w, &session.borrow());
+                            sync_menu_and_autosave(&w, &session, &debouncer);
                         }
                         p.send(player::Cmd::Open(path));
                     }
@@ -72,7 +160,7 @@ fn main() -> Result<()> {
                         tracing::error!(error = %e, "open project");
                         if let Some(w) = weak.upgrade() {
                             w.set_status_text(format!("Open failed: {e}").into());
-                            sync_menu(&w, &session.borrow());
+                            sync_menu_and_autosave(&w, &session, &debouncer);
                         }
                     }
                 }
@@ -86,6 +174,9 @@ fn main() -> Result<()> {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
         window.on_file_close(move || {
+            if let Err(e) = session.borrow_mut().flush_autosave_if_needed() {
+                tracing::warn!(error = %e, "autosave before close failed");
+            }
             let mut s = session.borrow_mut();
             s.clear_media();
             p.send(player::Cmd::Close);
@@ -133,6 +224,7 @@ fn main() -> Result<()> {
     {
         let weak = window.as_weak();
         let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
         window.on_file_save(move || {
             let proj = session.borrow().project().cloned();
             if let Some(proj) = proj {
@@ -145,7 +237,7 @@ fn main() -> Result<()> {
                         Ok(()) => {
                             session.borrow_mut().mark_saved_to_path(dest.clone());
                             if let Some(w) = weak.upgrade() {
-                                sync_menu(&w, &session.borrow());
+                                sync_menu_and_autosave(&w, &session, &debouncer);
                                 w.set_status_text(format!("Saved {}", dest.display()).into());
                             }
                         }
@@ -165,6 +257,7 @@ fn main() -> Result<()> {
         let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
         window.on_file_insert_video(move || match prompt_insert_dialog() {
             Some(insert_path) => {
                 let before_pb = session.borrow().playback_path();
@@ -183,7 +276,7 @@ fn main() -> Result<()> {
                                 .project()
                                 .map(|pr| pr.clips.len())
                                 .unwrap_or(0);
-                            sync_menu(&w, &session.borrow());
+                            sync_menu_and_autosave(&w, &session, &debouncer);
                             w.set_status_text(
                                 format!("Inserted @ {playhead_ms:.0} ms ({n} clips)").into(),
                             );
@@ -250,6 +343,7 @@ fn main() -> Result<()> {
         let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
         window.on_edit_undo(move || {
             let before = session.borrow().playback_path();
             if !session.borrow_mut().undo() {
@@ -262,7 +356,7 @@ fn main() -> Result<()> {
                 }
             }
             if let Some(w) = weak.upgrade() {
-                sync_menu(&w, &session.borrow());
+                sync_menu_and_autosave(&w, &session, &debouncer);
                 let n = session
                     .borrow()
                     .project()
@@ -274,9 +368,46 @@ fn main() -> Result<()> {
     }
 
     {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_effect_face_swap(move || {
+            begin_export_effect(
+                weak.clone(),
+                Rc::clone(&session),
+                effects::EffectKind::FaceFusion,
+            );
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_effect_face_enhance(move || {
+            begin_export_effect(
+                weak.clone(),
+                Rc::clone(&session),
+                effects::EffectKind::FaceEnhance,
+            );
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_effect_remove_background(move || {
+            begin_export_effect(
+                weak.clone(),
+                Rc::clone(&session),
+                effects::EffectKind::RvmBackground,
+            );
+        });
+    }
+
+    {
         let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
         window.on_edit_redo(move || {
             let before = session.borrow().playback_path();
             if !session.borrow_mut().redo() {
@@ -289,7 +420,7 @@ fn main() -> Result<()> {
                 }
             }
             if let Some(w) = weak.upgrade() {
-                sync_menu(&w, &session.borrow());
+                sync_menu_and_autosave(&w, &session, &debouncer);
                 let n = session
                     .borrow()
                     .project()
@@ -338,15 +469,28 @@ fn main() -> Result<()> {
     }
 
     {
-        window.on_help_show(move || match HelpWindow::new() {
-            Ok(h) => {
-                h.set_body_text(shell::bundled_help_markdown().into());
-                if let Err(e) = h.show() {
-                    tracing::warn!(error = %e, "help window show failed");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "help window create failed"),
-        });
+        window.on_help_overview(move || show_help_window(shell::HelpDoc::Overview));
+    }
+    {
+        window.on_help_features(move || show_help_window(shell::HelpDoc::Features));
+    }
+    {
+        window.on_help_media_formats(move || show_help_window(shell::HelpDoc::MediaFormats));
+    }
+    {
+        window.on_help_cli(move || show_help_window(shell::HelpDoc::Cli));
+    }
+    {
+        window.on_help_external_ai(move || show_help_window(shell::HelpDoc::ExternalAi));
+    }
+    {
+        window.on_help_developers(move || show_help_window(shell::HelpDoc::Developers));
+    }
+    {
+        window.on_help_agents(move || show_help_window(shell::HelpDoc::Agents));
+    }
+    {
+        window.on_help_phases_ui(move || show_help_window(shell::HelpDoc::PhasesUi));
     }
 
     {
@@ -388,7 +532,7 @@ fn main() -> Result<()> {
         let startup_open = session.borrow_mut().open_media(path.clone());
         match startup_open {
             Ok(()) => {
-                sync_menu(&window, &session.borrow());
+                sync_menu_and_autosave(&window, &session, &debouncer);
                 player.cmd_sender().send(player::Cmd::Open(path));
             }
             Err(e) => {

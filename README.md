@@ -2,9 +2,17 @@
 
 An open-source, Rust + Slint desktop video editor with an iMovie-style workflow and a Python/FaceFusion AI sidecar. **macOS-first**, cross-platform eventually.
 
+## Documentation
+
+- **[docs/README.md](docs/README.md)** — index of user, developer, and agent docs.
+- **[docs/FEATURES.md](docs/FEATURES.md)** — what works today and what is planned.
+- **[docs/DEVELOPERS.md](docs/DEVELOPERS.md)** / **[docs/AGENTS.md](docs/AGENTS.md)** — humans vs Cursor/Claude onboarding.
+
+The desktop app also bundles these under **Help** in the menu bar.
+
 ## Status
 
-Iteration scope: **Phases 0–2** — infrastructure, media engine under TDD, and a minimal player window with synced audio playback. See [docs/phase-status.md](docs/phase-status.md).
+Engineering phases (0–4) and UI roadmap (U1–U5) are tracked in **[docs/phase-status.md](docs/phase-status.md)** and **[docs/phases-ui.md](docs/phases-ui.md)**.
 
 ## Prerequisites (macOS)
 
@@ -30,11 +38,11 @@ make run     # launch the Slint desktop app
 |-------|---------|
 | `reel-core` | Media probe/decode, project model, tracing setup, shared error types |
 | `reel-app`  | Slint desktop binary (`reel`) |
-| `reel-cli`  | Headless binary (`reel-cli probe …`) |
+| `reel-cli`  | Headless binary (`reel-cli probe`, `swap`) — see [docs/CLI.md](docs/CLI.md) |
 
 ## Sidecar
 
-`sidecar/` is a `uv`-managed Python 3.11 project. Phase 0–2 ships only a stub `facefusion_bridge.py`; real FaceFusion wiring arrives in Phase 3.
+`sidecar/` is a `uv`-managed Python project (`facefusion_bridge.py`). The desktop **Effects** menu and `reel-cli swap` call it; see [docs/CLI.md](docs/CLI.md) and [docs/FEATURES.md](docs/FEATURES.md).
 
 ## License
 

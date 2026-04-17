@@ -1,29 +1,33 @@
-# Reel — Help
+# Reel — overview
 
-## Playback
+**Reel** is an open-source video editor (Rust + Slint + FFmpeg). This file is **Help → Overview** in the app.
 
-Use **File → Open** to choose a video. **Play** / **Pause** control playback. Drag the **timeline** or use the transport slider to seek.
+## Quick start
 
-## File
+1. **File → Open** to load a video.
+2. Use **Play / Pause** and drag the **timeline** to scrub.
+3. **File → Save…** stores your project as `.reel` JSON. After the first save, **autosave** periodically writes the same path (see **Help → Features & roadmap**).
+4. **Effects** runs one-frame AI/sidecar experiments and saves a **PNG** (experimental).
 
-| Command        | Description                                      |
-|----------------|--------------------------------------------------|
-| Open           | Open a media file for preview.                   |
-| Close          | Close the current media.                         |
-| Revert         | Reload the file from disk (discards unsaved edits). |
-| New Window     | Start another Reel process.                      |
-| Save           | Save the current project (`.reel` JSON).         |
-| Insert Video   | Insert a clip at the **playhead** on the main video track. If the playhead is **inside** a clip, that clip is split and the new clip is placed between the two parts. |
-| Export         | Write the current media to another format.       |
+## Environment (optional)
 
-## Edit
+| Variable | Purpose |
+|----------|---------|
+| `REEL_OPEN_PATH` | If set to a media file path, opens it on launch (dev/testing). |
+| `REEL_SIDECAR_DIR` | Override path to `sidecar/` for the desktop app’s Effects pipeline. |
+| `REEL_LOG`, `REEL_LOG_FORMAT`, `REEL_LOG_FILE` | `tracing` output (see `docs/architecture.md`). |
+| `FACE_FUSION_ROOT` | Optional FaceFusion checkout for sidecar `facefusion` model. |
 
-**Undo** / **Redo** apply to timeline and project edits as those features land.
+## More topics (Help menu)
 
-## Window
+Open **Help** in the menu bar for bundled copies of:
 
-**Always on top** keeps the player above other windows. **Fit**, **Fill**, and **Center** change how video fits the viewport.
+- **Features & roadmap** — what works today vs planned.
+- **Media formats & tracks** — containers, codecs, subtitles (or lack thereof).
+- **CLI** — `reel-cli probe` / `swap`.
+- **External AI & tools** — decode → tempfile RGBA → JSON bridge to child processes (`docs/EXTERNAL_AI.md`).
+- **Developers** — build, test, layout (humans).
+- **Agent guide** — Cursor / Claude expectations and doc-update duties.
+- **UI phases** — phased roadmap (U1–U5).
 
-## More
-
-See the repository `README.md` for build instructions (`make setup`, `make run`).
+The canonical sources live under **`docs/`** in the repository (`docs/README.md` indexes them).

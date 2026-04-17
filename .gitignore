@@ -23,3 +23,6 @@ project.json.tmp
 .vscode/
 .idea/
 *.swp
+
+# Optional third-party checkouts (FaceFusion, etc.)
+third_party/

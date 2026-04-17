@@ -1,64 +1,88 @@
-# Phase status
+# Phase status (engineering & documentation)
+
+High-level checklist for **infrastructure, engine, and repo documentation**. For **product/UI** milestones (menus, timeline, export UX, AI), see **`docs/phases-ui.md`** and **`docs/FEATURES.md`**.
+
+**Maintenance:** Mark items when done; add rows for new initiatives. UI-visible changes should also update **`docs/FEATURES.md`**. Agents: keep **`docs/phases-ui.md`** aligned when U-scope work completes.
+
+---
 
 ## Phase 0 — Infrastructure & observability ✅
 
 - [x] Cargo workspace: `reel-core`, `reel-app`, `reel-cli`
-- [x] Makefile targets: `setup`, `build`, `lint`, `test`, `run`, `run-cli`, `fixtures`, `clean`, `ci`
-- [x] `uv`-managed Python sidecar with stub `facefusion_bridge.py`
-- [x] `tracing` + `tracing-subscriber` initialization (`REEL_LOG*` env vars)
-- [x] Child-process stdout/stderr piped into `tracing` via `spawn_logged_child`
-- [x] GitHub Actions CI: `macos-14`, runs `make setup lint test`
+- [x] Makefile: `setup`, `build`, `lint`, `test`, `run`, `run-cli`, `fixtures`, `clean`, `ci`, `check-tools`
+- [x] `uv`-managed Python sidecar (`sidecar/`, `facefusion_bridge.py`)
+- [x] `tracing` + `REEL_LOG*` environment variables
+- [x] Child stdout/stderr piped into `tracing` (`spawn_logged_child` / sidecar)
+- [x] GitHub Actions: `macos-14`, `make setup lint test`
+
+---
 
 ## Phase 1 — Media engine & TDD ✅
 
-- [x] `MediaProbe` trait + `FfmpegProbe` real impl (ffmpeg-next 7.1, pinned ffmpeg@7)
-- [x] Unrecognized-audio handling: `WARN` + `audio_disabled: true`, never propagate
-- [x] Three committed fixtures under `crates/reel-core/tests/fixtures/` with `scripts/generate_fixtures.sh`
-- [x] `Project` serde v2 + round-trip + insta snapshot + `serde(flatten)` extension maps (project / clip / track) + v1→v2 migration
-- [x] `ProjectStore` debounced atomic autosave (`.tmp → rename`) with tests
-- [x] `reel-cli probe <path>` emits metadata JSON (verified end-to-end)
+- [x] `MediaProbe` + `FfmpegProbe` (ffmpeg-next 7.1; dev pins **ffmpeg@7**)
+- [x] Unrecognized audio: warn + `audio_disabled`, do not fail video
+- [x] Committed fixtures + `scripts/generate_fixtures.sh`
+- [x] `Project` serde v2, migration, insta snapshot, extension maps
+- [x] `ProjectStore` debounced atomic autosave (library; tests)
+- [x] `reel-cli probe` JSON output
+
+---
 
 ## Phase 2 — Player window ✅
 
-- [x] Slint `AppWindow`: viewport + timeline stub + transport bar
-- [x] Video decoder thread: packet read → decoder → RGBA scaler → `SharedPixelBuffer` → UI
-- [x] Audio decoder thread: packet read → decoder → f32 stereo resample → ringbuf → cpal output
-- [x] `AudioClock` master clock; video thread sleep/drop policy
-- [x] Fast-seek on slider drag (drain channel → flush → nearest keyframe → advance to target)
-- [x] `rfd::FileDialog` native Open panel; `REEL_OPEN_PATH` retained as one-shot startup auto-load
-- [x] UI gates: Play + Slider disabled until `media-ready`; Play ignored server-side when no source loaded
-- [x] Crash-proofing: `try_open_video` / `try_open_audio` catch panics; `frame_to_rgba` is bounds-safe on bad strides/scaler errors
-- [x] Separate crossbeam channels for video and audio threads (fixes the prior fan-out bug where Open/Play were split across threads)
-- [ ] End-to-end manual verification on a real video (pending developer run of `make run`)
+- [x] Slint `AppWindow`, timeline stub, transport
+- [x] Video thread: decode → RGBA → `SharedPixelBuffer`
+- [x] Audio thread: decode → resample → ringbuf → cpal (**AudioClock** master)
+- [x] Fast seek on scrub (drain, flush, keyframe seek, advance)
+- [x] `rfd` Open dialog; `REEL_OPEN_PATH` startup load
+- [x] UI gates: play/slider until `media-ready`
+- [x] Panic containment around decode hot paths; safe RGBA conversion
+- [x] Separate command channels to video and audio threads
+- [ ] Formal manual QA checklist on diverse real-world files (informal testing ongoing)
 
-## Phase 3 — FaceFusion bridge ✅ (placeholder transforms)
+---
 
-- [x] `reel_core::sidecar::SidecarClient` — long-lived Python child (`uv run python facefusion_bridge.py` from `sidecar/`), multiplexed by request `id`, reader thread, timeout + crash surfacing
-- [x] `reel_core::logging::spawn_child_with_logged_stderr` — variant that leaves stdin/stdout open for IPC
-- [x] `reel_core::media::grab_frame` — single-frame decode to tightly-packed RGBA8
-- [x] `sidecar/facefusion_bridge.py` — real line loop with `ping` / `swap` / `shutdown`, `identity` + `invert` transforms, `sleep_ms`/`crash` test hooks
-- [x] `reel-cli swap <path> --out <png> [--model identity|invert]` — end-to-end pipeline
-- [x] Integration tests: ping, identity/invert round-trip, timeout, crash, unknown-model, local length validation (7 total)
-- [x] Python pytest: transform unit tests + stdio protocol round-trip (5 total)
-- [x] `uv run pytest` wired into `make test`
-- [ ] Real FaceFusion model install + new `TRANSFORMS["swap_face"]` entry (deferred; out of scope for this iteration)
-- [ ] UI surface (AI panel) for invoking swap (deferred; CLI-only this phase)
+## Phase 3 — Sidecar & bridge ✅ (MVP)
 
-## Phase U1 — Menus, timeline scrub, export tests (see `docs/phases-ui.md`) 🚧
+- [x] `SidecarClient` stdio JSON + tempfile RGBA; timeouts and crash handling
+- [x] `spawn_child_with_logged_stderr` for IPC-capable children
+- [x] `grab_frame` one-shot decode for CLI/effects
+- [x] `facefusion_bridge.py`: `ping` / `swap` / `shutdown`, transform table + tests
+- [x] `reel-cli swap` end-to-end; integration + pytest coverage
+- [x] Desktop **Effects** menu (shared pipeline with CLI)
+- [x] **`docs/EXTERNAL_AI.md`** — handoff model (JSON + files, extension via `params`)
+- [ ] Production-grade FaceFusion / ONNX pipelines in the bridge (tracked under **Phase U5** in `phases-ui.md`)
 
-- [x] Slint `MenuBar`: File / Edit / Window / Help (native bar on macOS)
-- [x] File: Open, Close, Revert, New Window, Save (.reel), Insert Video (queued path), Export (ffmpeg)
-- [x] Edit: Undo / redo (session stack; timeline wiring later)
-- [x] Window: Always on top, Fit / Fill / Center (viewport `image-fit`)
-- [x] Help: secondary `HelpWindow` with bundled `docs/HELP.md` text
-- [x] Timeline strip: `Slider` scrubbing → seek
-- [x] `reel-core` ffmpeg CLI export + `target/reel-export-verify/` integration test
-- [x] `reel-app` unit tests: `session`, `shell`, `project_io`
+---
 
-## Phase 4 — Documentation & polish (not started)
+## Phase U1 — Desktop shell & documentation ✅
 
-- `docs/architecture.md` ✅ (covers Phases 0–3)
-- `docs/phases-ui.md` ✅ (revised UI roadmap)
-- `docs/HELP.md` ✅ (in-app help source)
-- `docs/USER_GUIDE.md` (pending)
-- Slint UI density pass, icons, app bundle targets (pending)
+*Aligned with **Phase U1** in `phases-ui.md` (menus, Help, timeline scrub).*
+
+- [x] Menu bar: File / Edit / Effects / Window / Help
+- [x] File / Edit / Effects / Window behaviors (see `FEATURES.md`)
+- [x] ffmpeg export integration tests (`target/reel-export-verify/`)
+- [x] Bundled Help: multi-topic (`shell.rs` `HelpDoc`), `docs/README.md` index
+- [x] Contributor docs: `DEVELOPERS.md`, `AGENTS.md`, `CLI.md`, `MEDIA_FORMATS.md`, `FEATURES.md`
+- [x] `EXTERNAL_AI.md` + cross-links in `architecture.md`, `HELP.md`
+
+---
+
+## Phase 4 — Distribution & long-form docs 📋
+
+- [x] Core technical docs: `architecture.md`, `phases-ui.md`, `phase-status.md`, `HELP.md`
+- [x] Reference set: features, formats, CLI, external AI, phases (this cycle)
+- [ ] `docs/USER_GUIDE.md` — optional narrative end-user guide (non-Help)
+- [ ] App bundle / notarization / Linux packaging (also **U4** polish in `phases-ui.md`)
+
+---
+
+## How to use this file
+
+| Role | Use |
+|------|-----|
+| **Product / roadmap** | **`docs/phases-ui.md`** + **`docs/FEATURES.md`** |
+| **Infra & engine completeness** | This file (Phases 0–3) |
+| **Design detail** | **`docs/architecture.md`**, **`docs/EXTERNAL_AI.md`** |
+
+When **Phase U1–U5** items in `phases-ui.md` ship, update **`FEATURES.md`**; update **this file** only if you also complete or add **engineering** deliverables (e.g. new CI job, new crate).

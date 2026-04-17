@@ -288,6 +288,25 @@ impl EditSession {
         self.redo.clear();
     }
 
+    /// Write [`Project::path`] if the document is dirty and a path exists.
+    ///
+    /// Updates the save baseline and clears `dirty` **without** clearing undo/redo
+    /// (unlike [`mark_saved_to_path`]).
+    pub fn flush_autosave_if_needed(&mut self) -> anyhow::Result<bool> {
+        if !self.dirty {
+            return Ok(false);
+        }
+        let path = match self.project.as_ref().and_then(|p| p.path.as_ref()) {
+            Some(p) => p.clone(),
+            None => return Ok(false),
+        };
+        let proj = self.project.as_ref().unwrap();
+        crate::project_io::save_project(&path, proj)?;
+        self.saved_baseline = self.project.clone();
+        self.dirty = false;
+        Ok(true)
+    }
+
     pub fn undo_enabled(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -403,6 +422,27 @@ mod tests {
         s.revert_to_saved().unwrap();
         assert_eq!(s.project().unwrap().clips.len(), 1);
         assert!(!s.dirty);
+    }
+
+    #[test]
+    fn flush_autosave_writes_disk_and_keeps_undo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reel = dir.path().join("doc.reel");
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f.clone()).unwrap();
+        s.mark_saved_to_path(reel.clone());
+        let tail_ms = timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
+        s.insert_clip_at_playhead(f.clone(), tail_ms).unwrap();
+        assert!(s.undo_enabled());
+        assert!(s.dirty);
+        assert!(s.flush_autosave_if_needed().unwrap());
+        assert!(!s.dirty);
+        assert!(s.undo_enabled());
+        assert!(reel.is_file());
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //!
 //! Usage:
 //!   reel-cli probe <path>
-//!   reel-cli swap  <path> --out <png> [--frame-ms N] [--model identity|invert]
+//!   reel-cli swap  <path> --out <png> [--frame-ms N] [--model …]
+//!                        (identity, invert, facefusion, face_enhance, rvm_chroma, …)
 //!                        [--sidecar-dir <dir>] [--timeout-ms N]
 
 use std::path::PathBuf;
@@ -41,7 +42,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         frame_ms: u64,
 
-        /// Transform name understood by the sidecar (`identity` | `invert`).
+        /// Sidecar transform (`identity`, `invert`, `facefusion`, `face_enhance`, `rvm_chroma`, …).
         #[arg(long, default_value = "identity")]
         model: String,
 
