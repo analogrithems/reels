@@ -18,6 +18,10 @@ pub(crate) struct PrimaryTimelineClip {
     pub media_out_s: f64,
     pub seq_start_ms: f64,
     pub orientation: ClipOrientation,
+    /// Primary-track only: mirror of `Clip.audio_mute` so the export preflight can
+    /// build a silence-substituted audio lane for the partial-mute case without
+    /// re-walking the project. Audio-lane clips leave this `false`.
+    pub audio_mute: bool,
 }
 
 /// First [`TrackKind::Audio`] track in project order (if any), concatenated like the primary video lane.
@@ -64,6 +68,7 @@ fn clips_for_audio_track_idx(p: &Project, idx: usize) -> Option<Vec<PrimaryTimel
             media_out_s: c.out_point,
             seq_start_ms: seq,
             orientation: c.orientation,
+            audio_mute: false,
         });
         seq += dur_ms;
     }
@@ -89,6 +94,7 @@ pub(crate) fn clips_from_project(p: &Project) -> Option<Vec<PrimaryTimelineClip>
             media_out_s: c.out_point,
             seq_start_ms: seq,
             orientation: c.orientation,
+            audio_mute: c.audio_mute,
         });
         seq += dur_ms;
     }
@@ -143,6 +149,7 @@ pub(crate) fn slice_clips_to_range_ms(
             media_out_s: new_out_s,
             seq_start_ms: new_seq,
             orientation: c.orientation,
+            audio_mute: c.audio_mute,
         });
         new_seq += new_span_ms;
     }
@@ -459,6 +466,7 @@ mod tests {
             media_out_s: out_s,
             seq_start_ms,
             orientation: Default::default(),
+            audio_mute: false,
         }
     }
 

@@ -11,5 +11,10 @@ fn main() {
             }
         }
     }
-    slint_build::compile("ui/app.slint").expect("slint compile");
+    // `with_debug_info(true)` is required for the `i-slint-backend-testing`
+    // `ElementHandle` API used by `tests/ui_floating_controls.rs` — without it
+    // element-id lookups return nothing and every interaction test panics.
+    // Minor binary-size hit; acceptable trade for regression coverage.
+    let config = slint_build::CompilerConfiguration::new().with_debug_info(true);
+    slint_build::compile_with_config("ui/app.slint", config).expect("slint compile");
 }

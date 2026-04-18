@@ -166,6 +166,80 @@ pub fn export_with_ffmpeg(
     run_ffmpeg(cmd, output, None, None)
 }
 
+/// Generate a stereo 48 kHz silent WAV of the requested duration at `output`.
+///
+/// Used by the U2-e **partial-clip mute silence substitution** path: when some
+/// primary clips are muted and there's no dedicated audio lane, the export
+/// thread writes one silence file sized at the longest unmuted run and reuses
+/// it across the synthetic audio concat. WAV/PCM is chosen deliberately — it
+/// remuxes cleanly into any container ffmpeg wraps (MP4/MOV/MKV/WebM audio
+/// transcodes always re-encode), and there's no chance of codec-mismatch
+/// surprises vs the primary source.
+///
+/// Fails with [`ExportError`] if ffmpeg is missing, the duration is non-finite /
+/// non-positive, or the write fails.
+pub fn generate_silence_wav(output: &Path, duration_s: f64) -> Result<(), ExportError> {
+    if !duration_s.is_finite() || duration_s <= 0.0 {
+        return Err(ExportError {
+            message: format!("silence generation: non-positive duration ({duration_s})"),
+        });
+    }
+    if let Some(parent) = output.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("anullsrc=channel_layout=stereo:sample_rate=48000")
+        .arg("-t")
+        .arg(format!("{duration_s:.6}"))
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg(output)
+        .stdout(Stdio::null());
+    run_ffmpeg(cmd, output, None, None)
+}
+
+/// Build a synthetic audio lane that substitutes silence (from `silence_path`)
+/// for the spans whose `mute_mask` entry is `true`, and keeps the primary video
+/// file's embedded audio for the rest.
+///
+/// Parallel indices in `video_spans` and `mute_mask` are paired. Mask length mismatches
+/// or empty inputs return an empty lane — the caller is expected to route
+/// through the video-only path in that case.
+///
+/// Silence spans are emitted as `(silence_path, 0.0, span_duration)` so the
+/// ffconcat demuxer reads a fresh `span_duration` chunk of silence for each
+/// muted primary clip. The silence file must be at least as long as the
+/// longest muted span (callers compute this upfront).
+pub fn build_mute_substitution_lane(
+    video_spans: &[(PathBuf, f64, f64)],
+    mute_mask: &[bool],
+    silence_path: &Path,
+) -> Vec<(PathBuf, f64, f64)> {
+    if video_spans.is_empty() || video_spans.len() != mute_mask.len() {
+        return Vec::new();
+    }
+    video_spans
+        .iter()
+        .zip(mute_mask.iter())
+        .map(|((path, in_s, out_s), muted)| {
+            if *muted {
+                let dur = (*out_s - *in_s).max(0.0);
+                (silence_path.to_path_buf(), 0.0, dur)
+            } else {
+                (path.clone(), *in_s, *out_s)
+            }
+        })
+        .collect()
+}
+
 /// Export the **primary video track** as one output: one or more `(path, in_point_sec, out_point_sec)` spans.
 ///
 /// - **One segment:** uses `-ss` / `-t` (fast seek before decode).
@@ -1588,6 +1662,65 @@ mod tests {
         // the filename must be backslash-escaped so the outer quotes stay paired.
         let out = escape_subtitles_path(Path::new(r"C:\Subs\it's.srt"));
         assert_eq!(out, r"C\:/Subs/it\'s.srt");
+    }
+
+    #[test]
+    fn build_mute_substitution_lane_swaps_muted_spans_for_silence() {
+        let v0 = PathBuf::from("/tmp/a.mp4");
+        let v1 = PathBuf::from("/tmp/b.mp4");
+        let v2 = PathBuf::from("/tmp/c.mp4");
+        let silence = PathBuf::from("/tmp/silence.wav");
+        // Clip b is muted, a and c keep their embedded audio.
+        let spans = vec![
+            (v0.clone(), 0.0, 2.0),
+            (v1.clone(), 1.0, 3.5),
+            (v2.clone(), 0.5, 1.0),
+        ];
+        let mask = vec![false, true, false];
+        let out = build_mute_substitution_lane(&spans, &mask, &silence);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], (v0, 0.0, 2.0));
+        // Muted span ⇒ silence file, 0..span_duration (2.5s).
+        assert_eq!(out[1].0, silence);
+        assert!((out[1].1 - 0.0).abs() < 1e-9);
+        assert!(
+            (out[1].2 - 2.5).abs() < 1e-9,
+            "silence duration must match muted span duration"
+        );
+        assert_eq!(out[2], (v2, 0.5, 1.0));
+    }
+
+    #[test]
+    fn build_mute_substitution_lane_mask_length_mismatch_returns_empty() {
+        let spans = vec![(PathBuf::from("/tmp/a.mp4"), 0.0, 1.0)];
+        let mask = vec![false, true];
+        let out = build_mute_substitution_lane(&spans, &mask, Path::new("/tmp/s.wav"));
+        assert!(
+            out.is_empty(),
+            "length mismatch must fail closed — caller falls back to video-only"
+        );
+    }
+
+    #[test]
+    fn build_mute_substitution_lane_all_muted_emits_all_silence() {
+        let v = PathBuf::from("/tmp/a.mp4");
+        let silence = PathBuf::from("/tmp/s.wav");
+        let spans = vec![(v.clone(), 0.0, 1.5), (v.clone(), 2.0, 2.75)];
+        let mask = vec![true, true];
+        let out = build_mute_substitution_lane(&spans, &mask, &silence);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|(p, _, _)| p == &silence));
+        assert!((out[0].2 - 1.5).abs() < 1e-9);
+        assert!((out[1].2 - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn generate_silence_wav_rejects_non_positive_duration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("s.wav");
+        assert!(generate_silence_wav(&out, 0.0).is_err());
+        assert!(generate_silence_wav(&out, -1.0).is_err());
+        assert!(generate_silence_wav(&out, f64::NAN).is_err());
     }
 
     #[test]

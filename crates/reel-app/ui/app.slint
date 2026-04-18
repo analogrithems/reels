@@ -45,6 +45,10 @@ component FilmstripLane inherits VerticalBox {
     in property <color> lane-accent: Theme.text-tertiary;
     in property <[TlChip]> chips;
     in property <bool> delete-enabled: true;
+    /// Current playhead as a fraction of total duration (0..=1). Drives the
+    /// red vertical playhead line overlaid on the lane body so every lane
+    /// (video / audio / subtitle) reads the same play position at a glance.
+    in property <float> playhead-ratio: 0;
     callback track-delete();
     /// U2-c: edge-drag trim commit. `edge` is 0 (left = in_point) or 1
     /// (right = out_point). `delta-ratio` is the drag distance as a fraction
@@ -65,7 +69,7 @@ component FilmstripLane inherits VerticalBox {
             // v0 mock — left "label column" pill. Darker surface, centered
             // monospace-ish track label, fixed width so all rows align.
             Rectangle {
-                width: 64px;
+                width: 44px;
                 height: 48px;
                 background: Theme.background-secondary;
                 border-radius: 6px;
@@ -83,8 +87,8 @@ component FilmstripLane inherits VerticalBox {
                     background: root.lane-accent;
                 }
                 HorizontalBox {
-                    alignment: center;
-                    padding-left: 4px;
+                    alignment: start;
+                    padding-left: 8px;
                     padding-right: 0;
                     padding-top: 0;
                     padding-bottom: 0;
@@ -96,7 +100,7 @@ component FilmstripLane inherits VerticalBox {
                         font-weight: 600;
                         letter-spacing: 0.5px;
                         vertical-alignment: center;
-                        horizontal-alignment: center;
+                        horizontal-alignment: left;
                     }
                 }
                 // Trash affordance (row-hover, gated by `delete-enabled`): sits
@@ -148,7 +152,10 @@ component FilmstripLane inherits VerticalBox {
                     height: parent.height;
                     spacing: 3px;
                     padding: 4px;
-                    alignment: start;
+                    // `stretch` lets `horizontal-stretch: item.width-weight` distribute
+                    // the lane's full width across chips — so a single-clip lane fills
+                    // edge-to-edge and multi-clip lanes still proportion by duration.
+                    alignment: stretch;
                     for item in root.chips: chip-rect := Rectangle {
                         horizontal-stretch: item.width-weight;
                         min-width: 60px;
@@ -261,6 +268,18 @@ component FilmstripLane inherits VerticalBox {
                         }
                     }
                 }
+                // Red playhead line — declared last inside the lane body so
+                // it paints on top of chip tiles and the empty-state text.
+                // `playhead-ratio` is set by the call site to
+                // `playhead-ms / duration-ms`, clamped 0..=1.
+                Rectangle {
+                    x: parent.width * root.playhead-ratio;
+                    y: 0;
+                    width: 2px;
+                    height: parent.height;
+                    background: #ff5c5c;
+                    visible: root.playhead-ratio >= 0 && root.playhead-ratio <= 1;
+                }
             }
         }
     }
@@ -306,6 +325,9 @@ export component AppWindow inherits Window {
     in property <bool> audio-mute-enabled: false;
     /// Checked state for the **Edit → Mute Clip Audio** toggle (clip under playhead).
     in property <bool> audio-mute-active: false;
+    /// True when **Edit → Overlay Audio…** is clickable. Gate = `media-ready`
+    /// (a project must exist so the new lane has somewhere to live).
+    in property <bool> overlay-audio-enabled: false;
 
     // --- Resize sheet (Edit → Resize Video…) ---
     in-out property <bool> resize-sheet-visible: false;
@@ -455,6 +477,12 @@ export component AppWindow inherits Window {
     /// **Edit → Mute Clip Audio**: toggle `audio_mute` on the clip under the playhead.
     callback edit-toggle-audio-mute();
 
+    /// **Edit → Overlay Audio…**: open an audio-file picker and append the
+    /// pick on a **new** dedicated audio lane. Export `amix` mixes the overlay
+    /// alongside the existing audio lanes (U2-b-export); preview remains
+    /// first-lane-only until the audio-thread rewrite.
+    callback edit-overlay-audio();
+
     /// **Edit → Set In Point** (`I`): marks the current playhead as the range start.
     callback edit-set-in-marker();
     /// **Edit → Set Out Point** (`O`): marks the current playhead as the range end.
@@ -485,6 +513,12 @@ export component AppWindow inherits Window {
     /// Codec / path / save footer line (saved in prefs).
     in-out property <bool> view-show-status: false;
     callback view-toggle-show-status();
+    /// Pixel offsets applied on top of the default center/bottom placement of
+    /// the floating transport chrome. Driven by the grip-handle drag (see
+    /// `grip-ta` in the chrome row). Persisted as plain `length` so we don’t
+    /// need a separate user pref surface — they reset when the window closes.
+    in-out property <length> chrome-offset-x: 0;
+    in-out property <length> chrome-offset-y: 0;
     /// Keep the floating transport from auto-hiding (saved in prefs).
     in-out property <bool> controls-overlay-always-visible: false;
     callback view-toggle-controls-always-visible();
@@ -807,6 +841,12 @@ export component AppWindow inherits Window {
                 checked: root.audio-mute-active;
                 enabled: root.audio-mute-enabled;
                 activated => { root.edit-toggle-audio-mute(); }
+            }
+            MenuItem {
+                title: "Overlay Audio…";
+                icon: @image-url("icons/lucide/layers.svg");
+                enabled: root.overlay-audio-enabled;
+                activated => { root.edit-overlay-audio(); }
             }
             MenuSeparator { }
             MenuItem {
@@ -1249,8 +1289,20 @@ export component AppWindow inherits Window {
                 // v0 mock: ~60% width, centered, ~10% from bottom (QuickTime-style overlay).
                 width: min(parent.width * 60 / 100, 640px);
                 height: chrome-max-h;
-                x: (parent.width - self.width) / 2;
-                y: parent.height - self.height - parent.height * 10 / 100;
+                // Default placement: centered horizontally, ~10% up from the
+                // bottom. `chrome-offset-*` lets the user drag-reposition via
+                // the grip handle; clamped so the chrome can’t be dragged
+                // fully off-screen (leave at least 32px visible on each edge).
+                x: clamp(
+                    (parent.width - self.width) / 2 + root.chrome-offset-x,
+                    -self.width + 32px,
+                    parent.width - 32px,
+                );
+                y: clamp(
+                    parent.height - self.height - parent.height * 10 / 100 + root.chrome-offset-y,
+                    0px,
+                    parent.height - 32px,
+                );
                 clip: false;
                 border-radius: 16px;
                 Rectangle {
@@ -1283,14 +1335,43 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             alignment: center;
                             // Lucide `GripHorizontal` (see `assets/Knotreels.v0.ui` / lucide-static).
-                            Image {
-                                width: 14px;
-                                height: 14px;
-                                y: (parent.height - 14px) / 2;
-                                opacity: 0.4;
-                                source: @image-url("icons/lucide/grip-horizontal.svg");
+                            // TouchArea wraps the icon so the handle is draggable — on press we
+                            // snapshot the current chrome offset, then `moved` accumulates the
+                            // pointer delta onto it. The chrome Rectangle above clamps the
+                            // result so it stays partially on-screen.
+                            grip-ta := TouchArea {
+                                width: 22px;
+                                height: 28px;
+                                mouse-cursor: grab;
+                                property <length> press-offset-x: 0;
+                                property <length> press-offset-y: 0;
+                                pointer-event(ev) => {
+                                    if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                                        self.press-offset-x = root.chrome-offset-x;
+                                        self.press-offset-y = root.chrome-offset-y;
+                                    }
+                                }
+                                moved => {
+                                    root.chrome-offset-x = self.press-offset-x + (self.mouse-x - self.pressed-x);
+                                    root.chrome-offset-y = self.press-offset-y + (self.mouse-y - self.pressed-y);
+                                    wake-transport-chrome();
+                                }
+                                Image {
+                                    width: 14px;
+                                    height: 14px;
+                                    x: (parent.width - 14px) / 2;
+                                    y: (parent.height - 14px) / 2;
+                                    opacity: grip-ta.has-hover ? 0.85 : 0.4;
+                                    source: @image-url("icons/lucide/grip-horizontal.svg");
+                                }
                             }
                             skip-start-ta := TouchArea {
+                                // TouchArea inside a HorizontalBox layout gets 0×0 preferred size unless
+                                // we set it explicitly — without this the hit area is zero and the button
+                                // renders but never fires. Width/height are set to comfortably cover the
+                                // child icon plus a little padding for fingertip targeting.
+                                width: 28px;
+                                height: 28px;
                                 enabled: root.media-ready;
                                 clicked => {
                                     main-view-focus.focus();
@@ -1300,6 +1381,7 @@ export component AppWindow inherits Window {
                                 Image {
                                     width: 18px;
                                     height: 18px;
+                                    x: (parent.width - 18px) / 2;
                                     y: (parent.height - 18px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/skip-back.svg");
@@ -1313,6 +1395,8 @@ export component AppWindow inherits Window {
                             spacing: 22px;
                             alignment: center;
                             rw-ta := TouchArea {
+                                width: 28px;
+                                height: 40px;
                                 enabled: root.media-ready;
                                 clicked => {
                                     main-view-focus.focus();
@@ -1322,12 +1406,17 @@ export component AppWindow inherits Window {
                                 Image {
                                     width: 16px;
                                     height: 16px;
+                                    x: (parent.width - 16px) / 2;
                                     y: (parent.height - 16px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/arrow-left.svg");
                                 }
                             }
                             play-ta := TouchArea {
+                                // Explicit size — TouchArea inside a HorizontalBox needs it or the
+                                // hit area collapses to 0×0 and only the spacebar path fires.
+                                width: 40px;
+                                height: 40px;
                                 enabled: root.media-ready;
                                 clicked => {
                                     main-view-focus.focus();
@@ -1357,6 +1446,8 @@ export component AppWindow inherits Window {
                                 }
                             }
                             ff-ta := TouchArea {
+                                width: 28px;
+                                height: 40px;
                                 enabled: root.media-ready;
                                 clicked => {
                                     main-view-focus.focus();
@@ -1366,6 +1457,7 @@ export component AppWindow inherits Window {
                                 Image {
                                     width: 16px;
                                     height: 16px;
+                                    x: (parent.width - 16px) / 2;
                                     y: (parent.height - 16px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/arrow-right.svg");
@@ -1377,6 +1469,8 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             alignment: center;
                             skip-end-ta := TouchArea {
+                                width: 28px;
+                                height: 28px;
                                 enabled: root.media-ready;
                                 clicked => {
                                     main-view-focus.focus();
@@ -1386,6 +1480,7 @@ export component AppWindow inherits Window {
                                 Image {
                                     width: 18px;
                                     height: 18px;
+                                    x: (parent.width - 18px) / 2;
                                     y: (parent.height - 18px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/skip-forward.svg");
@@ -1423,12 +1518,16 @@ export component AppWindow inherits Window {
                                 }
                             }
                             loop-ta := TouchArea {
+                                width: 28px;
+                                height: 24px;
                                 clicked => {
                                     main-view-focus.focus();
                                     root.view-toggle-loop();
                                     wake-transport-chrome();
                                 }
                                 Rectangle {
+                                    width: 100%;
+                                    height: 100%;
                                     border-radius: 4px;
                                     background: root.loop-playback ? #0a84ff4d : transparent;
                                     HorizontalBox {
@@ -1442,12 +1541,18 @@ export component AppWindow inherits Window {
                                             height: 14px;
                                             opacity: root.loop-playback ? 1.0 : 0.7;
                                             source: @image-url("icons/lucide/repeat.svg");
-                                            colorize: root.loop-playback ? Theme.accent-blue : #00000000;
+                                            // Lucide SVGs use `stroke="currentColor"`, so a transparent
+                                            // colorize value made the icon vanish entirely. Always tint
+                                            // to a visible color; the background pill below already
+                                            // signals the active state.
+                                            colorize: root.loop-playback ? Theme.accent-blue : #ffffff;
                                         }
                                     }
                                 }
                             }
                             mute-ta := TouchArea {
+                                width: 20px;
+                                height: 20px;
                                 clicked => {
                                     main-view-focus.focus();
                                     if (root.volume-percent < 0.5) {
@@ -1461,12 +1566,16 @@ export component AppWindow inherits Window {
                                 if root.volume-percent < 0.5: Image {
                                     width: 14px;
                                     height: 14px;
+                                    x: (parent.width - 14px) / 2;
+                                    y: (parent.height - 14px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/volume-x.svg");
                                 }
                                 if root.volume-percent >= 0.5: Image {
                                     width: 14px;
                                     height: 14px;
+                                    x: (parent.width - 14px) / 2;
+                                    y: (parent.height - 14px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/volume-2.svg");
                                 }
@@ -1485,6 +1594,8 @@ export component AppWindow inherits Window {
                                 }
                             }
                             fs-ta := TouchArea {
+                                width: 20px;
+                                height: 20px;
                                 clicked => {
                                     main-view-focus.focus();
                                     root.view-toggle-fullscreen();
@@ -1493,12 +1604,16 @@ export component AppWindow inherits Window {
                                 if root.window-fullscreen: Image {
                                     width: 14px;
                                     height: 14px;
+                                    x: (parent.width - 14px) / 2;
+                                    y: (parent.height - 14px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/minimize.svg");
                                 }
                                 if !root.window-fullscreen: Image {
                                     width: 14px;
                                     height: 14px;
+                                    x: (parent.width - 14px) / 2;
+                                    y: (parent.height - 14px) / 2;
                                     opacity: 0.7;
                                     source: @image-url("icons/lucide/maximize.svg");
                                 }
@@ -1509,6 +1624,8 @@ export component AppWindow inherits Window {
                                 background: #ffffff33;
                             }
                             tools-ta := TouchArea {
+                                width: 28px;
+                                height: 24px;
                                 clicked => {
                                     main-view-focus.focus();
                                     root.tools-popup-open = !root.tools-popup-open;
@@ -1518,22 +1635,22 @@ export component AppWindow inherits Window {
                                     wake-transport-chrome();
                                 }
                                 Rectangle {
+                                    width: 100%;
+                                    height: 100%;
                                     border-radius: 4px;
                                     background: root.tools-popup-open ? #0a84ff4d : transparent;
-                                    HorizontalBox {
-                                        padding-left: 4px;
-                                        padding-right: 4px;
-                                        padding-top: 2px;
-                                        padding-bottom: 2px;
-                                        spacing: 0px;
-                                        alignment: center;
-                                        Image {
-                                            width: 14px;
-                                            height: 14px;
-                                            opacity: root.tools-popup-open ? 1.0 : 0.7;
-                                            source: @image-url("icons/lucide/chevrons-right.svg");
-                                            colorize: root.tools-popup-open ? Theme.accent-blue : #00000000;
-                                        }
+                                    Image {
+                                        width: 14px;
+                                        height: 14px;
+                                        x: (parent.width - 14px) / 2;
+                                        y: (parent.height - 14px) / 2;
+                                        opacity: root.tools-popup-open ? 1.0 : 0.7;
+                                        source: @image-url("icons/lucide/chevrons-right.svg");
+                                        // Same colorize-transparent bug as loop-ta — the Lucide
+                                        // SVG strokes with `currentColor`, so transparent made
+                                        // the icon disappear. Tint white when closed, accent-blue
+                                        // when the popup is open.
+                                        colorize: root.tools-popup-open ? Theme.accent-blue : #ffffff;
                                     }
                                 }
                             }
@@ -2032,8 +2149,8 @@ export component AppWindow inherits Window {
                 background: Theme.border-subtle;
             }
             VerticalBox {
-                padding-left: 16px;
-                padding-right: 16px;
+                padding-left: 8px;
+                padding-right: 8px;
                 padding-top: 12px;
                 padding-bottom: 12px;
                 spacing: 10px;
@@ -2042,7 +2159,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     HorizontalBox {
                         spacing: 8px;
-                        alignment: center;
+                        alignment: start;
                         Image {
                             width: 14px;
                             height: 14px;
@@ -2094,6 +2211,7 @@ export component AppWindow inherits Window {
                         lane-label: "V1";
                         lane-accent: Theme.clip-video;
                         chips: root.tl_vrow0;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
                         track-delete => {
                             root.delete-video-track(0);
@@ -2106,6 +2224,7 @@ export component AppWindow inherits Window {
                         lane-label: "V2";
                         lane-accent: Theme.clip-video;
                         chips: root.tl_vrow1;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
                         track-delete => {
                             root.delete-video-track(1);
@@ -2118,6 +2237,7 @@ export component AppWindow inherits Window {
                         lane-label: "V3";
                         lane-accent: Theme.clip-video;
                         chips: root.tl_vrow2;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
                         track-delete => {
                             root.delete-video-track(2);
@@ -2130,6 +2250,7 @@ export component AppWindow inherits Window {
                         lane-label: "V4";
                         lane-accent: Theme.clip-video;
                         chips: root.tl_vrow3;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
                         track-delete => {
                             root.delete-video-track(3);
@@ -2144,7 +2265,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     HorizontalBox {
                         spacing: 8px;
-                        alignment: center;
+                        alignment: start;
                         Image {
                             width: 14px;
                             height: 14px;
@@ -2197,6 +2318,7 @@ export component AppWindow inherits Window {
                         lane-label: "A1";
                         lane-accent: Theme.clip-audio;
                         chips: root.tl_arow0;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 0 < root.tl_audio_project_track_count;
                         track-delete => {
                             root.delete-audio-track(0);
@@ -2209,6 +2331,7 @@ export component AppWindow inherits Window {
                         lane-label: "A2";
                         lane-accent: Theme.clip-audio;
                         chips: root.tl_arow1;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 1 < root.tl_audio_project_track_count;
                         track-delete => {
                             root.delete-audio-track(1);
@@ -2221,6 +2344,7 @@ export component AppWindow inherits Window {
                         lane-label: "A3";
                         lane-accent: Theme.clip-audio;
                         chips: root.tl_arow2;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 2 < root.tl_audio_project_track_count;
                         track-delete => {
                             root.delete-audio-track(2);
@@ -2233,6 +2357,7 @@ export component AppWindow inherits Window {
                         lane-label: "A4";
                         lane-accent: Theme.clip-audio;
                         chips: root.tl_arow3;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 3 < root.tl_audio_project_track_count;
                         track-delete => {
                             root.delete-audio-track(3);
@@ -2248,7 +2373,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     HorizontalBox {
                         spacing: 8px;
-                        alignment: center;
+                        alignment: start;
                         Image {
                             width: 14px;
                             height: 14px;
@@ -2300,6 +2425,7 @@ export component AppWindow inherits Window {
                         lane-label: "S1";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow0;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 0 < root.tl_subtitle_project_track_count;
                         track-delete => {
                             root.delete-subtitle-track(0);
@@ -2312,6 +2438,7 @@ export component AppWindow inherits Window {
                         lane-label: "S2";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow1;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 1 < root.tl_subtitle_project_track_count;
                         track-delete => {
                             root.delete-subtitle-track(1);
@@ -2324,6 +2451,7 @@ export component AppWindow inherits Window {
                         lane-label: "S3";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow2;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 2 < root.tl_subtitle_project_track_count;
                         track-delete => {
                             root.delete-subtitle-track(2);
@@ -2336,6 +2464,7 @@ export component AppWindow inherits Window {
                         lane-label: "S4";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow3;
+                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 3 < root.tl_subtitle_project_track_count;
                         track-delete => {
                             root.delete-subtitle-track(3);

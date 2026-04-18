@@ -1297,6 +1297,80 @@ impl EditSession {
         Ok(())
     }
 
+    /// **Edit → Overlay Audio…**: append a fresh [`TrackKind::Audio`] lane
+    /// and insert `path` at sequence time 0 on that new lane.
+    ///
+    /// Unlike **File → Insert Audio…** (which targets the *first* existing
+    /// audio lane), overlay always creates a *new* lane — every invocation
+    /// stacks another parallel audio source that the export `amix` path mixes
+    /// alongside the others. The U2-b-export dispatcher already handles
+    /// N≥2 lanes via `-filter_complex amix`, so overlay clips mix into the
+    /// export without further plumbing.
+    ///
+    /// One undo snapshot covers both the lane creation and the clip insert —
+    /// `Edit → Undo` removes the whole overlay in a single step.
+    ///
+    /// **Preview-side** mix is still first-lane-only until the audio-thread
+    /// rewrite lands, so added overlays are audible only after export. The
+    /// UI copy in the menu makes that caveat explicit.
+    pub fn insert_overlay_audio_clip_at_playhead(
+        &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        let probe = FfmpegProbe::new();
+        self.insert_overlay_audio_clip_at_playhead_with_probe(&probe, path, playhead_ms)
+    }
+
+    /// Probe-injected variant of
+    /// [`EditSession::insert_overlay_audio_clip_at_playhead`]. See the
+    /// non-probe version's doc comment for semantics; this one exists so
+    /// tests can inject a [`crate::MockMediaProbe`] without hitting ffmpeg.
+    pub fn insert_overlay_audio_clip_at_playhead_with_probe(
+        &mut self,
+        probe: &dyn MediaProbe,
+        path: PathBuf,
+        _playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+
+        // Probe first so a bad file fails *before* we mutate the project or
+        // push an undo snapshot — matches the other insert helpers.
+        let md = probe.probe(&path).context("probe overlay audio")?;
+        let dur = md.duration_seconds;
+
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("project checked above");
+
+        let new_track_id = Uuid::new_v4();
+        let new_clip_id = Uuid::new_v4();
+        let new_clip = Clip {
+            id: new_clip_id,
+            source_path: path,
+            metadata: md,
+            in_point: 0.0,
+            out_point: dur,
+            orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
+            extensions: Default::default(),
+        };
+        proj.clips.push(new_clip);
+        proj.tracks.push(Track {
+            id: new_track_id,
+            kind: TrackKind::Audio,
+            clip_ids: vec![new_clip_id],
+            extensions: Default::default(),
+        });
+
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
     /// Insert a **subtitle clip** (`.srt`) at the playhead on the first
     /// [`TrackKind::Subtitle`] lane. The lane must exist first
     /// (**File → New Subtitle Track**).
@@ -2166,6 +2240,115 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].starts_with("V1 · primary · 2 clips"));
         assert!(rows[0].contains("0:05.0"));
+    }
+
+    #[test]
+    fn overlay_audio_creates_new_lane_and_inserts_clip_in_one_undo_step() {
+        let probe = FakeProbe::with_duration(1.25);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-ov.mp4"))
+            .unwrap();
+        // Baseline: opened media ⇒ 1 video lane, 0 audio lanes.
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
+        );
+        let overlay_path = PathBuf::from("/tmp/fake-overlay.wav");
+        s.insert_overlay_audio_clip_at_playhead_with_probe(&probe, overlay_path.clone(), 500.0)
+            .expect("overlay insert");
+
+        let p = s.project().unwrap();
+        let a: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(a.len(), 1, "overlay appends a fresh audio lane");
+        assert_eq!(a[0].clip_ids.len(), 1, "new lane holds the overlay clip");
+        let clip_id = a[0].clip_ids[0];
+        let clip = p.clips.iter().find(|c| c.id == clip_id).expect("clip");
+        assert_eq!(clip.source_path, overlay_path);
+        assert!((clip.out_point - 1.25).abs() < 1e-9, "duration from probe");
+
+        // Undo must reverse BOTH the lane creation and the clip insert in a
+        // single step so "Overlay → Undo" feels atomic.
+        assert!(s.undo(), "undoable");
+        let p = s.project().unwrap();
+        assert_eq!(
+            p.tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0,
+            "undo removed the lane"
+        );
+        assert!(
+            !p.clips.iter().any(|c| c.source_path == overlay_path),
+            "undo removed the overlay clip"
+        );
+    }
+
+    #[test]
+    fn overlay_audio_stacks_on_new_lane_each_invocation() {
+        // Each overlay call appends its OWN lane — multiple overlays produce
+        // N separate lanes so the export amix mixes them in parallel.
+        let probe = FakeProbe::with_duration(2.0);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-ov2.mp4"))
+            .unwrap();
+
+        s.insert_overlay_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/ov-a.wav"),
+            0.0,
+        )
+        .unwrap();
+        s.insert_overlay_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/ov-b.wav"),
+            0.0,
+        )
+        .unwrap();
+
+        let p = s.project().unwrap();
+        let a: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(a.len(), 2, "two overlays ⇒ two separate lanes");
+        assert_eq!(a[0].clip_ids.len(), 1);
+        assert_eq!(a[1].clip_ids.len(), 1);
+        let lane_paths: Vec<_> = a
+            .iter()
+            .map(|t| {
+                let cid = t.clip_ids[0];
+                p.clips.iter().find(|c| c.id == cid).unwrap().source_path.clone()
+            })
+            .collect();
+        assert!(lane_paths.contains(&PathBuf::from("/tmp/ov-a.wav")));
+        assert!(lane_paths.contains(&PathBuf::from("/tmp/ov-b.wav")));
+    }
+
+    #[test]
+    fn overlay_audio_without_project_errors_without_mutation() {
+        let probe = FakeProbe::with_duration(1.0);
+        let mut s = EditSession::default();
+        // No project open — must refuse cleanly, not panic or mutate.
+        let err = s
+            .insert_overlay_audio_clip_at_playhead_with_probe(
+                &probe,
+                PathBuf::from("/tmp/ov.wav"),
+                0.0,
+            )
+            .expect_err("no-project path must error");
+        assert!(err.to_string().contains("no project"));
+        assert!(s.project().is_none());
     }
 
     #[test]
