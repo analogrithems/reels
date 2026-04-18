@@ -102,7 +102,9 @@ fn lower_for_slint(md: &str) -> String {
                 }
                 TagEnd::Item => out.push('\n'),
                 TagEnd::FootnoteDefinition => out.push_str("]\n\n"),
-                TagEnd::DefinitionList | TagEnd::DefinitionListTitle | TagEnd::DefinitionListDefinition => {
+                TagEnd::DefinitionList
+                | TagEnd::DefinitionListTitle
+                | TagEnd::DefinitionListDefinition => {
                     out.push('\n');
                 }
                 TagEnd::Table => out.push_str("\n\n"),

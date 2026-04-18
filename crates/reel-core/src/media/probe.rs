@@ -69,7 +69,8 @@ impl MediaProbe for FfmpegProbe {
                 MediaType::Video => {
                     video_stream_count = video_stream_count.saturating_add(1);
                     if video.is_none() {
-                        match ffmpeg::codec::context::Context::from_parameters(stream.parameters()) {
+                        match ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+                        {
                             Ok(ctx) => match ctx.decoder().video() {
                                 Ok(v) => {
                                     let avg = stream.avg_frame_rate();

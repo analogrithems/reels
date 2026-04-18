@@ -6,6 +6,7 @@
 mod autosave;
 mod effects;
 mod footer;
+mod help_markdown;
 mod media_extensions;
 mod player;
 mod prefs;
@@ -13,7 +14,6 @@ mod project_io;
 mod recent;
 mod session;
 mod shell;
-mod help_markdown;
 mod timecode;
 mod timeline;
 mod timeline_chips;
@@ -27,7 +27,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use slint::{ModelRc, VecModel};
 use reel_core::project::ClipOrientation;
 use reel_core::TrackKind;
 use reel_core::{export_concat_with_audio_oriented, ExportProgressFn};
@@ -36,6 +35,7 @@ use session::{
     path_matches_export_format, split_enabled_for_playhead, video_lane_indices,
     web_export_format_from_preset_index, EditSession,
 };
+use slint::{ModelRc, VecModel};
 
 /// Match v0: chevron tools popout is **closed** until the user opens it; reset whenever Rust
 /// rebuilds media/timeline state so Slint does not keep it open across loads.
@@ -435,6 +435,42 @@ fn install_export_preflight_callback(window: &AppWindow, session: Rc<RefCell<Edi
     });
 }
 
+/// Installs pointer-drag handlers for the scrub-bar In/Out yellow handles.
+///
+/// Slint clamps the dispatched `ms` so the two handles can't cross; this Rust
+/// side re-clamps to `[0, duration]` defensively and writes through to
+/// [`EditSession::set_in_marker_ms`] / [`EditSession::set_out_marker_ms`],
+/// then refreshes the UI via [`sync_marker_ui`]. No status-text updates on
+/// each drag frame — that would spam the footer. The Set-In/Set-Out *keyboard*
+/// paths still announce via `status_text`; a drop-style "released" summary
+/// could be added later if the user wants audible-ish feedback.
+pub fn install_edit_drag_marker_callbacks(window: &AppWindow, session: Rc<RefCell<EditSession>>) {
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_edit_drag_in_marker_ms(move |ms| {
+            let Some(w) = weak.upgrade() else { return };
+            let dur = w.get_duration_ms() as f64;
+            let clamped = (ms as f64).clamp(0.0, dur.max(0.0));
+            if session.borrow_mut().set_in_marker_ms(clamped).is_ok() {
+                sync_marker_ui(&w, &session.borrow());
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_edit_drag_out_marker_ms(move |ms| {
+            let Some(w) = weak.upgrade() else { return };
+            let dur = w.get_duration_ms() as f64;
+            let clamped = (ms as f64).clamp(0.0, dur.max(0.0));
+            if session.borrow_mut().set_out_marker_ms(clamped).is_ok() {
+                sync_marker_ui(&w, &session.borrow());
+            }
+        });
+    }
+}
+
 fn begin_export_effect(
     weak: slint::Weak<AppWindow>,
     session: Rc<RefCell<EditSession>>,
@@ -747,6 +783,19 @@ pub fn run() -> Result<()> {
     } else {
         tracing::info!("reel starting (tracing was already initialized)");
     }
+
+    let cli_startup_path = match parse_cli_startup_path() {
+        Ok(p) => p,
+        Err(()) => {
+            eprintln!(
+                "Usage: reel [<path>]\n\
+                 \n\
+                 Opens an optional media file or .reel project. At most one path.\n\
+                 You can also set REEL_OPEN_PATH when no CLI path is given."
+            );
+            std::process::exit(2);
+        }
+    };
 
     let window = AppWindow::new()?;
     window.set_transport_rate_label("1.00×".into());
@@ -1886,6 +1935,14 @@ pub fn run() -> Result<()> {
         });
     }
 
+    // -- Yellow handle drags on the scrub bar (QuickTime-style trim handles) --
+    //
+    // Slint clamps the dispatched ms so the handles can't cross; we still
+    // `clamp(0..=duration)` here in case a stale event slips through. We
+    // intentionally *don't* set `status_text` on every drag — it would spam
+    // the footer. The Set-In/Set-Out keyboard paths above still announce.
+    install_edit_drag_marker_callbacks(&window, Rc::clone(&session));
+
     {
         let sender = player_handle_ref(&player);
         let weak = window.as_weak();
@@ -2113,8 +2170,8 @@ pub fn run() -> Result<()> {
     sync_menu(&window, &session.borrow());
     sync_recent_menu(&window, &recent.borrow());
 
-    if let Some(path) = startup_auto_open_path() {
-        tracing::info!(?path, "auto-opening from REEL_OPEN_PATH");
+    if let Some(path) = resolve_startup_auto_open(cli_startup_path) {
+        tracing::info!(?path, "auto-opening from CLI or REEL_OPEN_PATH");
         let startup_open = session.borrow_mut().open_media(path.clone());
         match startup_open {
             Ok(()) => {
@@ -2130,7 +2187,7 @@ pub fn run() -> Result<()> {
                 reload_player_timeline(&player.cmd_sender(), &session.borrow());
             }
             Err(e) => {
-                window.set_status_text(format!("REEL_OPEN_PATH failed: {e}").into());
+                window.set_status_text(format!("Could not open {}: {e}", path.display()).into());
             }
         }
     }
@@ -2184,13 +2241,67 @@ fn prompt_insert_audio_dialog() -> Option<PathBuf> {
     result.unwrap_or_default()
 }
 
-fn startup_auto_open_path() -> Option<PathBuf> {
+/// Parses `argv[1..]` after the executable name. `Ok(Some)` = one path; `Ok(None)` = open empty;
+/// `Err` = more than one argument (print usage, exit 2).
+fn parse_cli_startup_path() -> Result<Option<PathBuf>, ()> {
+    parse_single_optional_path_arg(std::env::args_os().skip(1))
+}
+
+fn parse_single_optional_path_arg(
+    args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<Option<PathBuf>, ()> {
+    let mut it = args;
+    let first = it.next();
+    if it.next().is_some() {
+        return Err(());
+    }
+    Ok(first.and_then(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(s))
+        }
+    }))
+}
+
+/// CLI path wins over [`std::env::var_os`] `REEL_OPEN_PATH`.
+fn resolve_startup_auto_open(cli: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(p) = cli {
+        return Some(p);
+    }
     let env = std::env::var_os("REEL_OPEN_PATH")?;
     let p = PathBuf::from(env);
     if p.as_os_str().is_empty() {
         None
     } else {
         Some(p)
+    }
+}
+
+#[cfg(test)]
+mod startup_path_tests {
+    use super::*;
+
+    #[test]
+    fn parse_single_path() {
+        let r =
+            parse_single_optional_path_arg(vec![std::ffi::OsString::from("clip.mp4")].into_iter())
+                .unwrap();
+        assert_eq!(r, Some(PathBuf::from("clip.mp4")));
+    }
+
+    #[test]
+    fn parse_none() {
+        let r = parse_single_optional_path_arg(vec![].into_iter()).unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn parse_rejects_two() {
+        assert!(parse_single_optional_path_arg(
+            vec![std::ffi::OsString::from("a"), std::ffi::OsString::from("b"),].into_iter(),
+        )
+        .is_err());
     }
 }
 
@@ -2363,6 +2474,42 @@ mod ui_smoke_tests {
             "",
             "Branch C: empty project is silent (no status bar chatter)"
         );
+
+        // Phase U2-d — yellow trim handles on the scrub bar. We exercise the
+        // `edit-drag-*-marker-ms` callbacks that fire while the user drags a
+        // handle, confirming the round-trip: invoke → session marker state
+        // updates → `sync_marker_ui` writes the new ms back into the Slint
+        // property that drives handle position.
+        let session = Rc::new(RefCell::new(EditSession::default()));
+        session
+            .borrow_mut()
+            .open_media_with_probe(&probe, PathBuf::from("/tmp/drag-probe.mp4"))
+            .expect("reopen with fake probe for drag tests");
+        window.set_duration_ms(2_000.0);
+        install_edit_drag_marker_callbacks(&window, Rc::clone(&session));
+
+        // Drag In to 500ms — session + Slint property should both reflect it.
+        window.invoke_edit_drag_in_marker_ms(500.0);
+        assert_eq!(session.borrow().in_marker_ms(), Some(500.0));
+        assert!((window.get_marker_in_ms() - 500.0).abs() < 0.001);
+
+        // Drag Out to 1500ms — no cross, both markers now set, range valid.
+        window.invoke_edit_drag_out_marker_ms(1500.0);
+        assert_eq!(session.borrow().out_marker_ms(), Some(1500.0));
+        assert!((window.get_marker_out_ms() - 1500.0).abs() < 0.001);
+        assert_eq!(session.borrow().marker_range_ms(), Some((500.0, 1500.0)));
+
+        // Defensive: Rust also clamps. Simulate an out-of-bounds ms (Slint's
+        // UI-side clamp should prevent this, but if it ever regresses the
+        // session API rejects / clamps without crashing).
+        window.invoke_edit_drag_in_marker_ms(-1_000.0);
+        // `set_in_marker_ms` bails on negative; the Rust wrapper clamps to 0.
+        assert_eq!(session.borrow().in_marker_ms(), Some(0.0));
+        assert!((window.get_marker_in_ms() - 0.0).abs() < 0.001);
+
+        window.invoke_edit_drag_out_marker_ms(99_999.0);
+        assert_eq!(session.borrow().out_marker_ms(), Some(2_000.0));
+        assert!((window.get_marker_out_ms() - 2_000.0).abs() < 0.001);
     }
 }
 

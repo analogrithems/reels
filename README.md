@@ -31,6 +31,7 @@ make setup   # verify tools, fetch deps, sync sidecar venv
 make test    # cargo test --workspace
 make lint    # fmt + clippy + ruff
 make run     # launch the Slint desktop app (session log: reels.session.*.log in this directory)
+             # optional: make run ARGS='path/to/file.mp4' to open a file on launch
 ```
 
 ## Crates

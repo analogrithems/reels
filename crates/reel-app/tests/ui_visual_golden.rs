@@ -70,9 +70,7 @@ fn app_window_matches_golden_png() {
         golden.display()
     );
 
-    let expected = image::open(&golden)
-        .expect("read golden PNG")
-        .to_rgba8();
+    let expected = image::open(&golden).expect("read golden PNG").to_rgba8();
     assert_eq!(w, expected.width(), "width mismatch");
     assert_eq!(h, expected.height(), "height mismatch");
     assert_eq!(

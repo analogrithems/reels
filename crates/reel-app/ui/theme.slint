@@ -1,16 +1,55 @@
 // Design tokens aligned with `assets/Knotreels.v0.ui/` (v0 mock + reel-ui-design.md).
 export global Theme {
+    // -- Base surfaces --
     out property <color> background-primary: #1e1e1e;
     out property <color> background-secondary: #2d2d2d;
+    out property <color> background-tertiary: #3d3d3d;
+    out property <color> background-hover: #4a4a4a;
+
+    // -- Composition surfaces --
     out property <color> surface-timeline: #252525;
     out property <color> surface-preview: #000000;
+    out property <color> surface-panel: #2a2a2a;
+
+    // -- Borders --
     out property <color> border-subtle: #3a3a3a;
     out property <color> border-default: #4a4a4a;
+    out property <color> border-focus: #0a84ff;
+
+    // -- Text --
     out property <color> text-primary: #ffffff;
     out property <color> text-secondary: #a0a0a0;
     out property <color> text-tertiary: #6e6e6e;
+
+    // -- Accents (macOS-native feel) --
     out property <color> accent-blue: #0a84ff;
+    out property <color> accent-green: #30d158;
+    out property <color> accent-yellow: #ffd60a;
+    out property <color> accent-red: #ff453a;
     out property <color> accent-orange: #ff9f0a;
+
+    // -- Timeline-specific tokens (per v0 spec) --
+    /// Video-clip body color (iMovie-style filmstrip chips).
+    out property <color> clip-video: #4a90d9;
+    /// Audio-clip body color (iMovie-style waveform chips).
+    out property <color> clip-audio: #5ac8fa;
+    /// Subtitle-clip body color (neutral gray; spec leaves this undefined,
+    /// we pick a middling tone that complements the blue family).
+    out property <color> clip-subtitle: #9ca3af;
+    /// Playhead vertical line.
+    out property <color> playhead: #ffffff;
+    /// Playhead glow (30% white — QuickTime-style soft bloom).
+    out property <color> playhead-glow: #ffffff4d;
+
+    // -- Trim / QuickTime range handles --
+    /// Yellow trim-handle body — per v0 / QuickTime.
+    out property <color> trim-handle: #ffd60a;
+    /// Grip-dot color inside the yellow handle (black for contrast per spec).
+    out property <color> trim-handle-grip: #000000;
+    /// 25%-alpha yellow for the range fill between In and Out.
+    out property <color> trim-range-fill: #ffd60a40;
+
+    // -- Legacy compatibility --
     /// Floating transport backdrop (QuickTime-style overlay).
     out property <color> chrome-backdrop: #000000aa;
 }

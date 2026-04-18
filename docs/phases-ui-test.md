@@ -16,7 +16,7 @@
 
 **Threading:** Slint’s platform installs once per process on the thread that first constructs `AppWindow`. Parallel **library** `#[test]` functions can hit *"Slint platform was initialized in another thread"*. Unit-test Slint coverage stays in a single `#[test]` (`window_boots_and_round_trips_basic_properties`) until `serial_test` serializes more. The **visual golden** test is a separate **integration-test** binary (`tests/ui_visual_golden.rs`) — its own process, so it can install the headless software platform without conflicting with `i-slint-backend-testing`.
 
-**Verification:** Run `cargo test -p reel-app` (library + integration golden). Expect **95** library tests + **1** golden (as of the last doc revision).
+**Verification:** Run `cargo test -p reel-app` (library + integration golden). Expect **98** library tests + **1** golden (as of the last doc revision).
 
 ---
 

@@ -28,6 +28,7 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
         return Vec::new();
     };
     let is_video = kind == TrackKind::Video;
+    let is_subtitle = kind == TrackKind::Subtitle;
     let mut spans: Vec<(f64, String)> = Vec::new();
     for id in &track.clip_ids {
         if let Some(c) = p.clips.iter().find(|c| c.id == *id) {
@@ -50,12 +51,13 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
             width_weight: (d_ms / total) as f32,
             chip_idx: i as i32,
             is_video,
+            is_subtitle,
         })
         .collect()
 }
 
 /// First clip on the primary (first) video track — used for single-media stream lanes.
-fn primary_video_clip<'a>(p: &'a Project) -> Option<&'a reel_core::project::Clip> {
+fn primary_video_clip(p: &Project) -> Option<&reel_core::project::Clip> {
     let tid = p
         .tracks
         .iter()
@@ -66,11 +68,15 @@ fn primary_video_clip<'a>(p: &'a Project) -> Option<&'a reel_core::project::Clip
 }
 
 fn synthetic_full_width_chip(label: String, is_video: bool) -> Vec<TlChip> {
+    // Synthetic chips cover single-media-mode container-stream lanes, which
+    // are **never** subtitle lanes today (subtitles always come from project
+    // `TrackKind::Subtitle` rows), so `is_subtitle: false` is correct here.
     vec![TlChip {
         label: label.into(),
         width_weight: 1.0,
         chip_idx: 0,
         is_video,
+        is_subtitle: false,
     }]
 }
 
@@ -87,7 +93,10 @@ pub(crate) struct TimelineChipSync {
     pub subtitle_project_n: i32,
 }
 
-pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool) -> TimelineChipSync {
+pub(crate) fn timeline_chip_sync(
+    p: &Project,
+    opened_from_project_document: bool,
+) -> TimelineChipSync {
     let vn_proj = p
         .tracks
         .iter()
@@ -108,32 +117,17 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
         .min(MAX_ROWS);
 
     if opened_from_project_document {
-        let mut video = [
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ];
-        let mut audio = [
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ];
-        let mut subtitle = [
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ];
-        for i in 0..vn_proj {
-            video[i] = chips_for_track(p, i, TrackKind::Video);
+        let mut video = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        let mut audio = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        let mut subtitle = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for (i, row) in video.iter_mut().enumerate().take(vn_proj) {
+            *row = chips_for_track(p, i, TrackKind::Video);
         }
-        for i in 0..an_proj {
-            audio[i] = chips_for_track(p, i, TrackKind::Audio);
+        for (i, row) in audio.iter_mut().enumerate().take(an_proj) {
+            *row = chips_for_track(p, i, TrackKind::Audio);
         }
-        for i in 0..sn_proj {
-            subtitle[i] = chips_for_track(p, i, TrackKind::Subtitle);
+        for (i, row) in subtitle.iter_mut().enumerate().take(sn_proj) {
+            *row = chips_for_track(p, i, TrackKind::Subtitle);
         }
         let vn = vn_proj as i32;
         let an = an_proj as i32;
@@ -177,30 +171,20 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
     let base = clip_label(pc);
     let base_label = base.clone();
 
-    let mut video = [
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ];
-    for i in 0..vn_disp {
+    let mut video = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (i, row) in video.iter_mut().enumerate().take(vn_disp) {
         if i < vn_proj {
-            video[i] = if vs <= 1 && i == 0 {
+            *row = if vs <= 1 && i == 0 {
                 synthetic_full_width_chip(base_label.clone(), true)
             } else {
                 chips_for_track(p, i, TrackKind::Video)
             };
         }
     }
-    let mut audio = [
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ];
-    for i in 0..an_disp {
+    let mut audio = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (i, row) in audio.iter_mut().enumerate().take(an_disp) {
         if i < an_proj {
-            audio[i] = if aus <= 1 && i == 0 {
+            *row = if aus <= 1 && i == 0 {
                 synthetic_full_width_chip(format!("{base} (audio)"), false)
             } else {
                 chips_for_track(p, i, TrackKind::Audio)
@@ -211,19 +195,14 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
             } else {
                 format!("{base} (audio {})", i + 1)
             };
-            audio[i] = synthetic_full_width_chip(label, false);
+            *row = synthetic_full_width_chip(label, false);
         }
     }
 
-    let mut subtitle = [
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ];
-    for i in 0..sn_disp {
+    let mut subtitle = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (i, row) in subtitle.iter_mut().enumerate().take(sn_disp) {
         if i < sn_proj {
-            subtitle[i] = if subs <= 1 && i == 0 {
+            *row = if subs <= 1 && i == 0 {
                 synthetic_full_width_chip(format!("{base} (subtitles)"), false)
             } else {
                 chips_for_track(p, i, TrackKind::Subtitle)
@@ -234,7 +213,7 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
             } else {
                 format!("{base} (subtitles {})", i + 1)
             };
-            subtitle[i] = synthetic_full_width_chip(label, false);
+            *row = synthetic_full_width_chip(label, false);
         }
     }
 

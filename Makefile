@@ -35,8 +35,9 @@ test:
 	cd sidecar && uv run pytest -q
 
 # Session logs: reels.session.*.log next to where you invoked make (see docs/architecture.md).
+# Optional: make run ARGS='path/to/file.mp4'  (same as: cargo run -p reel-app -- path/to/file.mp4)
 run:
-	REEL_LOG_SESSION_DIR="$(CURDIR)" cargo run -p reel-app
+	REEL_LOG_SESSION_DIR="$(CURDIR)" cargo run -p reel-app -- $(ARGS)
 
 run-cli:
 	REEL_LOG_SESSION_DIR="$(CURDIR)" cargo run -p reel-cli -- $(ARGS)

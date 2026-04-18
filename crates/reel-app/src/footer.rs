@@ -138,9 +138,11 @@ pub(crate) fn compute_footer_lines(
 ) -> Option<FooterLines> {
     let p = project?;
     let codec_line = format_codec_line(p, playhead_ms);
-    let path_line = p.path.as_ref().map(|x| path_display_tilde(x)).unwrap_or_else(|| {
-        "Untitled project — use File → Save…".to_string()
-    });
+    let path_line = p
+        .path
+        .as_ref()
+        .map(|x| path_display_tilde(x))
+        .unwrap_or_else(|| "Untitled project — use File → Save…".to_string());
     let save_line = if dirty {
         "Unsaved changes".to_string()
     } else {

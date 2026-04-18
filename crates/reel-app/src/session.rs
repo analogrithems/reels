@@ -201,10 +201,7 @@ fn remove_track_at(proj: &mut Project, track_index: usize) -> anyhow::Result<()>
     }
     let removed = proj.tracks.remove(track_index);
     for clip_id in removed.clip_ids {
-        let still_used = proj
-            .tracks
-            .iter()
-            .any(|t| t.clip_ids.contains(&clip_id));
+        let still_used = proj.tracks.iter().any(|t| t.clip_ids.contains(&clip_id));
         if !still_used {
             proj.clips.retain(|c| c.id != clip_id);
         }
@@ -381,9 +378,7 @@ impl EditSession {
         if vi.len() <= 1 {
             anyhow::bail!("cannot remove the only video track");
         }
-        let track_index = *vi
-            .get(lane)
-            .context("no such video track")?;
+        let track_index = *vi.get(lane).context("no such video track")?;
         self.push_undo_snapshot();
         let proj = self.project.as_mut().expect("checked");
         remove_track_at(proj, track_index)?;

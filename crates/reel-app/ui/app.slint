@@ -5,43 +5,85 @@ import { Button, ComboBox, HorizontalBox, LineEdit, Slider, VerticalBox } from "
 export { HelpWindow }
 
 /// One segment in a filmstrip row (file name + proportional width from clip duration).
+///
+/// `is-video` and `is-subtitle` are mutually exclusive. When both are `false`
+/// the chip is assumed to be **audio**. The split lets the lane styler pick
+/// the correct token from [`Theme`] (clip-video / clip-audio / clip-subtitle)
+/// without threading a separate `kind: int` through the Rust side.
 export struct TlChip {
     label: string,
     width-weight: float,
     chip-idx: int,
     is-video: bool,
+    is-subtitle: bool,
 }
 
 /// Single timeline lane: label column + chip strip (or empty state).
-/// v0 mock: trash appears on row hover (`group/track`); gated by `delete-enabled` (e.g. last video lane).
+///
+/// v0 mock: each lane pill carries a colored **kind indicator** (a 4-px tall
+/// bar on the left edge) so the lane type reads at a glance even when the
+/// chips row is empty. Caller sets `lane-accent` to the matching `Theme`
+/// token (clip-video / clip-audio / clip-subtitle).
+///
+/// Trash appears on row hover (`group/track`); gated by `delete-enabled`
+/// (e.g. last video lane).
 component FilmstripLane inherits VerticalBox {
     in property <string> lane-label;
+    in property <color> lane-accent: Theme.text-tertiary;
     in property <[TlChip]> chips;
     in property <bool> delete-enabled: true;
     callback track-delete();
-    spacing: 6px;
+    spacing: 0;
     lane-hover := TouchArea {
         width: 100%;
         HorizontalBox {
-        spacing: 8px;
-        alignment: start;
-        VerticalBox {
-            min-width: 40px;
-            alignment: start;
-            HorizontalBox {
-                spacing: 4px;
-                alignment: start;
-                Text {
-                    text: root.lane-label;
-                    color: Theme.text-tertiary;
-                    font-size: 10px;
-                    font-weight: 600;
-                    vertical-alignment: top;
-                    horizontal-stretch: 1;
+            spacing: 8px;
+            alignment: stretch;
+            padding: 0;
+            // v0 mock — left "label column" pill. Darker surface, centered
+            // monospace-ish track label, fixed width so all rows align.
+            Rectangle {
+                width: 64px;
+                height: 48px;
+                background: Theme.background-secondary;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                clip: true;
+                // Colored kind indicator (4-px bar) on the left edge of the
+                // pill — mirrors v0's per-kind icon tint without needing three
+                // different SVGs at this tiny size.
+                Rectangle {
+                    width: 4px;
+                    height: 100%;
+                    x: 0;
+                    y: 0;
+                    background: root.lane-accent;
                 }
+                HorizontalBox {
+                    alignment: center;
+                    padding-left: 4px;
+                    padding-right: 0;
+                    padding-top: 0;
+                    padding-bottom: 0;
+                    spacing: 6px;
+                    Text {
+                        text: root.lane-label;
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        font-weight: 600;
+                        letter-spacing: 0.5px;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                    }
+                }
+                // Trash affordance (row-hover, gated by `delete-enabled`): sits
+                // flush on the right edge of the label pill, same as v0 mock.
                 if lane-hover.has-hover && root.delete-enabled: del-ta := TouchArea {
-                    width: 24px;
-                    height: 24px;
+                    width: 20px;
+                    height: 20px;
+                    x: parent.width - self.width - 4px;
+                    y: (parent.height - self.height) / 2;
                     clicked => {
                         root.track-delete();
                     }
@@ -50,71 +92,91 @@ component FilmstripLane inherits VerticalBox {
                         height: 100%;
                         border-radius: 4px;
                         background: del-ta.has-hover ? #ffffff18 : transparent;
-                        Path {
+                        Image {
                             width: 12px;
                             height: 12px;
                             x: (parent.width - 12px) / 2;
                             y: (parent.height - 12px) / 2;
-                            fill: #a0a0a0;
-                            // Lucide `Trash2`-style bin (~12px).
-                            commands: "M 5 4 L 6 4 L 7 2 L 13 2 L 14 4 L 17 4 L 17 6 L 4 6 Z M 6 7 L 7 19 L 13 19 L 14 7";
+                            source: @image-url("icons/lucide/trash-2.svg");
+                            colorize: Theme.text-secondary;
                         }
                     }
                 }
             }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-            min-height: 42px;
-            background: Theme.background-secondary;
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: Theme.border-subtle;
-            clip: true;
-            if root.chips.length == 0: Text {
-                text: "Empty lane";
-                color: Theme.text-tertiary;
-                font-size: 11px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            if root.chips.length > 0: HorizontalBox {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                spacing: 4px;
-                padding: 4px;
-                alignment: start;
-                for item in root.chips: Rectangle {
-                    horizontal-stretch: item.width-weight;
-                    min-width: 52px;
-                    height: 34px;
-                    border-radius: 4px;
-                    border-width: 1px;
-                    border-color: item.is-video ? #3d6ab0 : #3d8aa8;
-                    // Slight variation by index (no `mod` in Slint — branch on low indices).
-                    background: item.is-video
-                        ? (item.chip-idx == 0 ? #4a90d9 : (item.chip-idx == 1 ? #5e9ee0 : #4a90d9))
-                        : (item.chip-idx == 0 ? #5ac8fa : (item.chip-idx == 1 ? #6dd5ff : #5ac8fa));
-                    clip: true;
-                    HorizontalBox {
-                        padding-left: 6px;
-                        padding-right: 4px;
-                        alignment: center;
-                        Text {
-                            text: item.label;
-                            color: #ffffffee;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                            overflow: elide;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
+            // Lane body — holds the clip chips (or empty-state text).
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 48px;
+                background: Theme.surface-timeline;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                clip: true;
+                if root.chips.length == 0: Text {
+                    text: "Empty lane";
+                    color: Theme.text-tertiary;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.chips.length > 0: HorizontalBox {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    spacing: 3px;
+                    padding: 4px;
+                    alignment: start;
+                    for item in root.chips: Rectangle {
+                        horizontal-stretch: item.width-weight;
+                        min-width: 60px;
+                        height: 40px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        // Border: subtle darker edge per clip-kind so
+                        // adjacent chips of the same kind still read as
+                        // separate tiles.
+                        border-color: item.is-subtitle
+                            ? #6b7280
+                            : (item.is-video ? #3d6ab0 : #3d8aa8);
+                        // Body: Theme tokens, with a light tint on
+                        // even-indexed chips so back-to-back tiles of the
+                        // same clip still visibly alternate. (Slint has no
+                        // `%` so we branch on chip-idx ∈ {0,1}; indices ≥ 2
+                        // fall through to the base color, which is fine for
+                        // the v0 mock's typical 1–3 tiles per lane.)
+                        background: item.is-subtitle
+                            ? (item.chip-idx == 1 ? #a6afbd : Theme.clip-subtitle)
+                            : (item.is-video
+                                ? (item.chip-idx == 1 ? #5e9ee0 : Theme.clip-video)
+                                : (item.chip-idx == 1 ? #6dd5ff : Theme.clip-audio));
+                        clip: true;
+                        // Name overlay: gradient-faded band at the bottom with
+                        // the file name, matching v0 `ClipThumbnail` spec.
+                        Rectangle {
+                            y: parent.height - self.height;
+                            height: 16px;
+                            width: 100%;
+                            background: @linear-gradient(180deg, #00000000 0%, #000000b3 100%);
+                            HorizontalBox {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                padding-top: 0;
+                                padding-bottom: 0;
+                                alignment: start;
+                                Text {
+                                    text: item.label;
+                                    color: Theme.text-primary;
+                                    font-size: 9px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
         }
     }
 }
@@ -275,6 +337,14 @@ export component AppWindow inherits Window {
     callback edit-set-out-marker();
     /// **Edit → Clear Range Markers** (`Option+X` / `Alt+X`): removes both markers.
     callback edit-clear-markers();
+    /// Drag of the yellow **In** handle on the scrub bar — argument is the new
+    /// absolute sequence position in milliseconds (clamped in Slint so the In
+    /// handle can't cross the Out handle).
+    callback edit-drag-in-marker-ms(float);
+    /// Drag of the yellow **Out** handle on the scrub bar — argument is the new
+    /// absolute sequence position in milliseconds (clamped in Slint so the Out
+    /// handle can't cross the In handle).
+    callback edit-drag-out-marker-ms(float);
 
     callback effect-face-swap();
     callback effect-face-enhance();
@@ -1334,10 +1404,11 @@ export component AppWindow inherits Window {
                                 width: 56px;
                                 overflow: elide;
                             }
-                            Rectangle {
-                                // Wrapper so we can overlay In/Out range markers on top of the
-                                // Slider. The markers are purely decorative — they sit at the
-                                // marker's ms position mapped to slider width.
+                            scrub-wrap := Rectangle {
+                                // Wrapper for the Slider + yellow In/Out drag handles. Handle
+                                // positions are driven by `marker-in-ms` / `marker-out-ms` (ms
+                                // sentinel `-1` = unset → hidden); `edit-drag-*-marker-ms`
+                                // callbacks fire while the user drags a handle.
                                 width: max(40px, scrub-row-w - 124px);
                                 height: 14px;
                                 Slider {
@@ -1354,32 +1425,98 @@ export component AppWindow inherits Window {
                                         wake-transport-chrome();
                                     }
                                 }
-                                // In marker (cyan). `-1` ms sentinel means "unset" — hide.
-                                Rectangle {
-                                    visible: root.marker-in-ms >= 0 && root.duration-ms > 0;
-                                    width: 2px;
-                                    height: 100%;
-                                    background: #4ad6ff;
-                                    x: parent.width * (root.marker-in-ms / max(root.duration-ms, 1)) - self.width / 2;
-                                    y: 0;
-                                }
-                                // Out marker (magenta).
-                                Rectangle {
-                                    visible: root.marker-out-ms >= 0 && root.duration-ms > 0;
-                                    width: 2px;
-                                    height: 100%;
-                                    background: #ff7ad0;
-                                    x: parent.width * (root.marker-out-ms / max(root.duration-ms, 1)) - self.width / 2;
-                                    y: 0;
-                                }
-                                // Range tint between In and Out when both are set.
+                                // Range fill between In and Out (yellow at 25% alpha per v0
+                                // spec). Sits on top of the slider track but *below* the handles
+                                // so the handle grips remain the primary click targets.
                                 Rectangle {
                                     visible: root.marker-in-ms >= 0 && root.marker-out-ms >= 0 && root.duration-ms > 0;
                                     height: 3px;
                                     y: parent.height - self.height - 1px;
                                     x: parent.width * (root.marker-in-ms / max(root.duration-ms, 1));
                                     width: parent.width * ((root.marker-out-ms - root.marker-in-ms) / max(root.duration-ms, 1));
-                                    background: #4ad6ff66;
+                                    background: Theme.trim-range-fill;
+                                }
+                                // --- In handle (yellow, QuickTime-style, rounded left) ---
+                                in-handle := Rectangle {
+                                    visible: root.marker-in-ms >= 0 && root.duration-ms > 0;
+                                    width: 10px;
+                                    height: 100%;
+                                    background: Theme.trim-handle;
+                                    border-radius: 3px;
+                                    // `border-top-right-radius` etc. aren't supported in 1.16,
+                                    // so a symmetric radius is close enough visually. The
+                                    // asymmetry trick (rounded outward edge only) would need a
+                                    // separate clip-parent; skipping for scope.
+                                    x: parent.width * (root.marker-in-ms / max(root.duration-ms, 1)) - self.width / 2;
+                                    y: 0;
+                                    // Three black grip dots (spec: vertical grip lines).
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        padding-left: 0;
+                                        padding-right: 0;
+                                        for i in 3: Rectangle {
+                                            width: 4px;
+                                            height: 1px;
+                                            background: Theme.trim-handle-grip;
+                                        }
+                                    }
+                                    in-handle-touch := TouchArea {
+                                        mouse-cursor: ew-resize;
+                                        moved => {
+                                            if (self.pressed && root.duration-ms > 0) {
+                                                // `self.mouse-x` is pointer x within this TouchArea
+                                                // (0..in-handle.width). `in-handle.x` is the handle's
+                                                // top-left in wrapper coords. Their sum is the pointer's
+                                                // x within the wrapper → convert to ms + clamp so the In
+                                                // handle can never cross the Out handle.
+                                                root.edit-drag-in-marker-ms(
+                                                    min(
+                                                        root.marker-out-ms >= 0
+                                                            ? max(0, root.marker-out-ms - 10)
+                                                            : root.duration-ms,
+                                                        max(0, (in-handle.x + self.mouse-x) / max(scrub-wrap.width, 1px) * root.duration-ms)
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                // --- Out handle (yellow, QuickTime-style, rounded right) ---
+                                out-handle := Rectangle {
+                                    visible: root.marker-out-ms >= 0 && root.duration-ms > 0;
+                                    width: 10px;
+                                    height: 100%;
+                                    background: Theme.trim-handle;
+                                    border-radius: 3px;
+                                    x: parent.width * (root.marker-out-ms / max(root.duration-ms, 1)) - self.width / 2;
+                                    y: 0;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        padding-left: 0;
+                                        padding-right: 0;
+                                        for i in 3: Rectangle {
+                                            width: 4px;
+                                            height: 1px;
+                                            background: Theme.trim-handle-grip;
+                                        }
+                                    }
+                                    out-handle-touch := TouchArea {
+                                        mouse-cursor: ew-resize;
+                                        moved => {
+                                            if (self.pressed && root.duration-ms > 0) {
+                                                root.edit-drag-out-marker-ms(
+                                                    max(
+                                                        root.marker-in-ms >= 0
+                                                            ? min(root.duration-ms, root.marker-in-ms + 10)
+                                                            : 0,
+                                                        min(root.duration-ms, (out-handle.x + self.mouse-x) / max(scrub-wrap.width, 1px) * root.duration-ms)
+                                                    )
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Text {
@@ -1748,12 +1885,18 @@ export component AppWindow inherits Window {
                 padding-top: 12px;
                 padding-bottom: 12px;
                 spacing: 10px;
-                // VIDEO row (v0 mock: uppercase label + trailing add control).
+                // VIDEO row (v0 mock: colored type icon + uppercase label + trailing add control).
                 if root.view-show-video-tracks: VerticalBox {
                     spacing: 10px;
                     HorizontalBox {
                         spacing: 8px;
                         alignment: center;
+                        Image {
+                            width: 14px;
+                            height: 14px;
+                            source: @image-url("icons/lucide/film.svg");
+                            colorize: Theme.clip-video;
+                        }
                         Text {
                             text: "VIDEO";
                             color: Theme.text-primary;
@@ -1765,6 +1908,7 @@ export component AppWindow inherits Window {
                         Rectangle {
                             horizontal-stretch: 1;
                             height: 1px;
+                            background: Theme.border-subtle;
                         }
                         track-add-video := TouchArea {
                             clicked => {
@@ -1778,7 +1922,7 @@ export component AppWindow inherits Window {
                                 border-radius: 6px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
-                                background: track-add-video.has-hover ? Theme.border-default : Theme.background-secondary;
+                                background: track-add-video.has-hover ? Theme.background-hover : Theme.background-secondary;
                                 HorizontalBox {
                                     width: 100%;
                                     height: 100%;
@@ -1796,6 +1940,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_video_track_count >= 1: FilmstripLane {
                         lane-label: "V1";
+                        lane-accent: Theme.clip-video;
                         chips: root.tl_vrow0;
                         delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
                         track-delete => {
@@ -1804,6 +1949,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_video_track_count >= 2: FilmstripLane {
                         lane-label: "V2";
+                        lane-accent: Theme.clip-video;
                         chips: root.tl_vrow1;
                         delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
                         track-delete => {
@@ -1812,6 +1958,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_video_track_count >= 3: FilmstripLane {
                         lane-label: "V3";
+                        lane-accent: Theme.clip-video;
                         chips: root.tl_vrow2;
                         delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
                         track-delete => {
@@ -1820,6 +1967,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_video_track_count >= 4: FilmstripLane {
                         lane-label: "V4";
+                        lane-accent: Theme.clip-video;
                         chips: root.tl_vrow3;
                         delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
                         track-delete => {
@@ -1827,12 +1975,18 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // AUDIO row
+                // AUDIO row (v0 mock: cyan music icon + label + add).
                 if root.view-show-audio-tracks: VerticalBox {
                     spacing: 10px;
                     HorizontalBox {
                         spacing: 8px;
                         alignment: center;
+                        Image {
+                            width: 14px;
+                            height: 14px;
+                            source: @image-url("icons/lucide/music.svg");
+                            colorize: Theme.clip-audio;
+                        }
                         Text {
                             text: "AUDIO";
                             color: Theme.text-primary;
@@ -1844,6 +1998,7 @@ export component AppWindow inherits Window {
                         Rectangle {
                             horizontal-stretch: 1;
                             height: 1px;
+                            background: Theme.border-subtle;
                         }
                         track-add-audio := TouchArea {
                             clicked => {
@@ -1857,7 +2012,7 @@ export component AppWindow inherits Window {
                                 border-radius: 6px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
-                                background: track-add-audio.has-hover ? Theme.border-default : Theme.background-secondary;
+                                background: track-add-audio.has-hover ? Theme.background-hover : Theme.background-secondary;
                                 HorizontalBox {
                                     width: 100%;
                                     height: 100%;
@@ -1876,6 +2031,7 @@ export component AppWindow inherits Window {
                     // Waveform / peak drawing on audio lanes is intentionally last — after clip chips, footer, and other v0 alignment (see **`docs/phases-ui.md`**).
                     if root.tl_audio_track_count >= 1: FilmstripLane {
                         lane-label: "A1";
+                        lane-accent: Theme.clip-audio;
                         chips: root.tl_arow0;
                         delete-enabled: 0 < root.tl_audio_project_track_count;
                         track-delete => {
@@ -1884,6 +2040,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_audio_track_count >= 2: FilmstripLane {
                         lane-label: "A2";
+                        lane-accent: Theme.clip-audio;
                         chips: root.tl_arow1;
                         delete-enabled: 1 < root.tl_audio_project_track_count;
                         track-delete => {
@@ -1892,6 +2049,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_audio_track_count >= 3: FilmstripLane {
                         lane-label: "A3";
+                        lane-accent: Theme.clip-audio;
                         chips: root.tl_arow2;
                         delete-enabled: 2 < root.tl_audio_project_track_count;
                         track-delete => {
@@ -1900,6 +2058,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_audio_track_count >= 4: FilmstripLane {
                         lane-label: "A4";
+                        lane-accent: Theme.clip-audio;
                         chips: root.tl_arow3;
                         delete-enabled: 3 < root.tl_audio_project_track_count;
                         track-delete => {
@@ -1907,12 +2066,19 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // SUBTITLES — container streams (single-media) and/or project [`TrackKind::Subtitle`] lanes.
+                // SUBTITLES (v0 mock: neutral type icon + label + add) — container
+                // streams (single-media) and/or project [`TrackKind::Subtitle`] lanes.
                 if root.view-show-subtitle-tracks: VerticalBox {
                     spacing: 10px;
                     HorizontalBox {
                         spacing: 8px;
                         alignment: center;
+                        Image {
+                            width: 14px;
+                            height: 14px;
+                            source: @image-url("icons/lucide/type.svg");
+                            colorize: Theme.clip-subtitle;
+                        }
                         Text {
                             text: "SUBTITLES";
                             color: Theme.text-primary;
@@ -1924,6 +2090,7 @@ export component AppWindow inherits Window {
                         Rectangle {
                             horizontal-stretch: 1;
                             height: 1px;
+                            background: Theme.border-subtle;
                         }
                         track-add-subtitle := TouchArea {
                             clicked => {
@@ -1937,7 +2104,7 @@ export component AppWindow inherits Window {
                                 border-radius: 6px;
                                 border-width: 1px;
                                 border-color: Theme.border-subtle;
-                                background: track-add-subtitle.has-hover ? Theme.border-default : Theme.background-secondary;
+                                background: track-add-subtitle.has-hover ? Theme.background-hover : Theme.background-secondary;
                                 HorizontalBox {
                                     width: 100%;
                                     height: 100%;
@@ -1955,6 +2122,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_subtitle_track_count >= 1: FilmstripLane {
                         lane-label: "S1";
+                        lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow0;
                         delete-enabled: 0 < root.tl_subtitle_project_track_count;
                         track-delete => {
@@ -1963,6 +2131,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_subtitle_track_count >= 2: FilmstripLane {
                         lane-label: "S2";
+                        lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow1;
                         delete-enabled: 1 < root.tl_subtitle_project_track_count;
                         track-delete => {
@@ -1971,6 +2140,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_subtitle_track_count >= 3: FilmstripLane {
                         lane-label: "S3";
+                        lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow2;
                         delete-enabled: 2 < root.tl_subtitle_project_track_count;
                         track-delete => {
@@ -1979,6 +2149,7 @@ export component AppWindow inherits Window {
                     }
                     if root.tl_subtitle_track_count >= 4: FilmstripLane {
                         lane-label: "S4";
+                        lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow3;
                         delete-enabled: 3 < root.tl_subtitle_project_track_count;
                         track-delete => {
