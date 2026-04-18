@@ -1,5 +1,7 @@
 //! Timeline “filmstrip” chips: clip **file names** and proportional widths from sequence duration.
 //! For **single-media** opens (not a `.reel` file), lane counts follow container streams from probe metadata.
+//! When the file has only one video and/or audio stream, each corresponding lane shows a **single**
+//! full-width chip (ignoring per-clip splits on the timeline) so the strip matches the media layout.
 
 use reel_core::project::{Project, TrackKind};
 
@@ -15,12 +17,7 @@ fn clip_label(c: &reel_core::project::Clip) -> String {
         .unwrap_or_else(|| "clip".into())
 }
 
-fn chips_for_track(p: &Project, track_idx: usize, is_video: bool) -> Vec<TlChip> {
-    let kind = if is_video {
-        TrackKind::Video
-    } else {
-        TrackKind::Audio
-    };
+fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip> {
     let tracks: Vec<_> = p
         .tracks
         .iter()
@@ -30,6 +27,7 @@ fn chips_for_track(p: &Project, track_idx: usize, is_video: bool) -> Vec<TlChip>
     let Some((_, track)) = tracks.get(track_idx) else {
         return Vec::new();
     };
+    let is_video = kind == TrackKind::Video;
     let mut spans: Vec<(f64, String)> = Vec::new();
     for id in &track.clip_ids {
         if let Some(c) = p.clips.iter().find(|c| c.id == *id) {
@@ -86,6 +84,7 @@ pub(crate) struct TimelineChipSync {
     pub audio_project_n: i32,
     pub subtitle: [Vec<TlChip>; MAX_ROWS],
     pub subtitle_display_n: i32,
+    pub subtitle_project_n: i32,
 }
 
 pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool) -> TimelineChipSync {
@@ -99,6 +98,12 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
         .tracks
         .iter()
         .filter(|t| t.kind == TrackKind::Audio)
+        .count()
+        .min(MAX_ROWS);
+    let sn_proj = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Subtitle)
         .count()
         .min(MAX_ROWS);
 
@@ -115,14 +120,24 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
             Vec::new(),
             Vec::new(),
         ];
+        let mut subtitle = [
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ];
         for i in 0..vn_proj {
-            video[i] = chips_for_track(p, i, true);
+            video[i] = chips_for_track(p, i, TrackKind::Video);
         }
         for i in 0..an_proj {
-            audio[i] = chips_for_track(p, i, false);
+            audio[i] = chips_for_track(p, i, TrackKind::Audio);
+        }
+        for i in 0..sn_proj {
+            subtitle[i] = chips_for_track(p, i, TrackKind::Subtitle);
         }
         let vn = vn_proj as i32;
         let an = an_proj as i32;
+        let sn = sn_proj as i32;
         return TimelineChipSync {
             video,
             video_display_n: vn,
@@ -130,8 +145,9 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
             audio,
             audio_display_n: an,
             audio_project_n: an,
-            subtitle: Default::default(),
-            subtitle_display_n: 0,
+            subtitle,
+            subtitle_display_n: sn,
+            subtitle_project_n: sn,
         };
     }
 
@@ -146,6 +162,7 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
             audio_project_n: 0,
             subtitle: Default::default(),
             subtitle_display_n: 0,
+            subtitle_project_n: 0,
         };
     };
     let md = &pc.metadata;
@@ -155,6 +172,10 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
 
     let vn_disp = vn_proj.max(vs).min(MAX_ROWS);
     let an_disp = an_proj.max(aus).min(MAX_ROWS);
+    let sn_disp = sn_proj.max(subs).min(MAX_ROWS);
+
+    let base = clip_label(pc);
+    let base_label = base.clone();
 
     let mut video = [
         Vec::new(),
@@ -164,11 +185,13 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
     ];
     for i in 0..vn_disp {
         if i < vn_proj {
-            video[i] = chips_for_track(p, i, true);
+            video[i] = if vs <= 1 && i == 0 {
+                synthetic_full_width_chip(base_label.clone(), true)
+            } else {
+                chips_for_track(p, i, TrackKind::Video)
+            };
         }
     }
-
-    let base = clip_label(pc);
     let mut audio = [
         Vec::new(),
         Vec::new(),
@@ -177,7 +200,11 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
     ];
     for i in 0..an_disp {
         if i < an_proj {
-            audio[i] = chips_for_track(p, i, false);
+            audio[i] = if aus <= 1 && i == 0 {
+                synthetic_full_width_chip(format!("{base} (audio)"), false)
+            } else {
+                chips_for_track(p, i, TrackKind::Audio)
+            };
         } else {
             let label = if aus <= 1 {
                 format!("{base} (audio)")
@@ -194,13 +221,21 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
         Vec::new(),
         Vec::new(),
     ];
-    for i in 0..subs {
-        let label = if subs <= 1 {
-            format!("{base} (subtitles)")
+    for i in 0..sn_disp {
+        if i < sn_proj {
+            subtitle[i] = if subs <= 1 && i == 0 {
+                synthetic_full_width_chip(format!("{base} (subtitles)"), false)
+            } else {
+                chips_for_track(p, i, TrackKind::Subtitle)
+            };
         } else {
-            format!("{base} (subtitles {})", i + 1)
-        };
-        subtitle[i] = synthetic_full_width_chip(label, false);
+            let label = if subs <= 1 {
+                format!("{base} (subtitles)")
+            } else {
+                format!("{base} (subtitles {})", i + 1)
+            };
+            subtitle[i] = synthetic_full_width_chip(label, false);
+        }
     }
 
     TimelineChipSync {
@@ -211,7 +246,8 @@ pub(crate) fn timeline_chip_sync(p: &Project, opened_from_project_document: bool
         audio_display_n: an_disp as i32,
         audio_project_n: an_proj as i32,
         subtitle,
-        subtitle_display_n: subs as i32,
+        subtitle_display_n: sn_disp as i32,
+        subtitle_project_n: sn_proj as i32,
     }
 }
 
@@ -225,6 +261,9 @@ pub(crate) fn video_chip_rows(p: &Project) -> ([Vec<TlChip>; MAX_ROWS], i32) {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    use reel_core::project::{Track, TrackKind};
+    use uuid::Uuid;
 
     use crate::project_io::project_from_media_path;
 
@@ -258,5 +297,76 @@ mod tests {
             "embedded audio lane should have a chip"
         );
         assert_eq!(s.audio_project_n, 0);
+    }
+
+    /// **`.reel` / project-document** mode: subtitle rows come only from `TrackKind::Subtitle` (no container merge).
+    #[test]
+    fn project_document_mode_lists_subtitle_tracks() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../reel-core/tests/fixtures/tiny_h264_aac.mp4");
+        assert!(path.is_file(), "fixture {}", path.display());
+        let mut p = project_from_media_path(&path).expect("probe");
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Subtitle,
+            clip_ids: Vec::new(),
+            extensions: Default::default(),
+        });
+        let s = timeline_chip_sync(&p, true);
+        assert_eq!(s.subtitle_project_n, 1);
+        assert_eq!(s.subtitle_display_n, 1);
+    }
+
+    /// Single-media with one video stream: timeline strip shows one chip even if the edit has multiple clips.
+    #[test]
+    fn single_media_one_video_stream_collapses_timeline_clips_to_one_chip() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../reel-core/tests/fixtures/tiny_h264_aac.mp4");
+        assert!(path.is_file(), "fixture {}", path.display());
+        let mut p = project_from_media_path(&path).expect("probe");
+        assert_eq!(p.clips.len(), 1);
+        let c0 = &p.clips[0];
+        let dur = c0.out_point - c0.in_point;
+        assert!(dur > 0.0, "fixture duration");
+        let mid = c0.in_point + dur * 0.5;
+        let id2 = Uuid::new_v4();
+        let mut second = c0.clone();
+        second.id = id2;
+        second.in_point = mid;
+        p.clips[0].out_point = mid;
+        p.clips.push(second);
+        let vtrack = p
+            .tracks
+            .iter_mut()
+            .find(|t| t.kind == TrackKind::Video)
+            .expect("video track");
+        vtrack.clip_ids.push(id2);
+
+        let s = timeline_chip_sync(&p, false);
+        assert_eq!(
+            s.video[0].len(),
+            1,
+            "one container video stream => one filmstrip chip"
+        );
+        assert_eq!(s.video[0][0].width_weight, 1.0);
+    }
+
+    /// **Single-media** mode: project subtitle lanes count toward display `max(project, container streams)`.
+    #[test]
+    fn single_media_merges_subtitle_project_count_with_probe_streams() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../reel-core/tests/fixtures/tiny_h264_aac.mp4");
+        assert!(path.is_file(), "fixture {}", path.display());
+        let mut p = project_from_media_path(&path).expect("probe");
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Subtitle,
+            clip_ids: Vec::new(),
+            extensions: Default::default(),
+        });
+        let s = timeline_chip_sync(&p, false);
+        assert_eq!(s.subtitle_project_n, 1);
+        // Fixture has no subtitle streams; display count still shows one project lane.
+        assert_eq!(s.subtitle_display_n, 1);
     }
 }

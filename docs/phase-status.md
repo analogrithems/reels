@@ -125,7 +125,11 @@ Implementation tracking for **menu- and timeline-visible** features described in
 - [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
 - [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)
 - [x] **View** — **Loop Playback** (primary-track sequence; **prefs** + **Ctrl+L** / **⌘L**)
+- [x] **View** — **Show Video / Audio / Subtitle track rows** (each toggles timeline section; **prefs**; default all on)
 - [x] **View** — **Zoom** (in / out / fit / actual size; **prefs** + **Ctrl+=** / **+-** / **0**); **Enter/Exit Fullscreen** (menu; **Esc**)
+- [x] **Shell** — **Menubar** **Lucide** icons + shortcut annotations (**v0**-aligned; native OS bar may omit icons)
+- [x] **Transport** — floating bar **Lucide** icons, **z-order** for click hit-testing, spacing vs **v0**
+- [x] **File** — **New Subtitle Track** (**Ctrl+Shift+T**); **`TrackKind::Subtitle`** project lanes; timeline merge with container streams (**U2**)
 - [ ] **View** (optional) — **Zoom to Video**; **pan** when zoomed; **fullscreen** on playback toolbar
 - [ ] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers). **Shipped today:** MP4 remux, **MP4 H.264 + AAC** (web-tier transcode), WebM (VP8 + Opus), MKV remux. **Remaining:** VP9 / AV1 WebM, HEVC + AAC MP4 (mobile tier), MOV / ProRes / DNx intermediates.
 

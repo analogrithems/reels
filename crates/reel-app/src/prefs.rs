@@ -26,6 +26,19 @@ pub struct AppPrefs {
     /// Keep the floating transport visible instead of fading after idle.
     #[serde(default)]
     pub controls_overlay_always_visible: bool,
+    /// Timeline: show video lane rows (header + filmstrips).
+    #[serde(default = "default_true")]
+    pub show_video_tracks: bool,
+    /// Timeline: show audio lane rows.
+    #[serde(default = "default_true")]
+    pub show_audio_tracks: bool,
+    /// Timeline: show subtitle lane rows.
+    #[serde(default = "default_true")]
+    pub show_subtitle_tracks: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_master_volume() -> f32 {
@@ -45,6 +58,9 @@ impl Default for AppPrefs {
             preview_zoom_actual: false,
             show_footer_status: false,
             controls_overlay_always_visible: false,
+            show_video_tracks: true,
+            show_audio_tracks: true,
+            show_subtitle_tracks: true,
         }
     }
 }

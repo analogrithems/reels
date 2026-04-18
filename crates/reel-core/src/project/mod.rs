@@ -19,16 +19,14 @@ use uuid::Uuid;
 
 use crate::media::MediaMetadata;
 
-/// Kinds of tracks supported by the Phase 0–2 model.
-///
-/// Richer kinds (subtitle, effect) come later; the enum is non-exhaustive so
-/// new variants can be added without breaking serde of older JSON (unknown
-/// values can be rejected until a schema bump adds the variant).
+/// Kinds of tracks in a [`Project`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum TrackKind {
     Video,
     Audio,
+    /// Subtitle / timed-text lane (clips use the same [`Clip`] model as audio).
+    Subtitle,
 }
 
 /// A single clip referenced from a track.

@@ -509,6 +509,7 @@ fn clear_timeline_models(window: &AppWindow) {
     window.set_tl_subtitle_track_count(0);
     window.set_tl_video_project_track_count(0);
     window.set_tl_audio_project_track_count(0);
+    window.set_tl_subtitle_project_track_count(0);
     window.set_tl_vrow0(empty_tl_model());
     window.set_tl_vrow1(empty_tl_model());
     window.set_tl_vrow2(empty_tl_model());
@@ -534,6 +535,7 @@ fn sync_timeline_chips(window: &AppWindow, session: &EditSession) {
     window.set_tl_subtitle_track_count(sync.subtitle_display_n);
     window.set_tl_video_project_track_count(sync.video_project_n);
     window.set_tl_audio_project_track_count(sync.audio_project_n);
+    window.set_tl_subtitle_project_track_count(sync.subtitle_project_n);
     window.set_tl_vrow0(ModelRc::new(VecModel::from(sync.video[0].clone())));
     window.set_tl_vrow1(ModelRc::new(VecModel::from(sync.video[1].clone())));
     window.set_tl_vrow2(ModelRc::new(VecModel::from(sync.video[2].clone())));
@@ -782,6 +784,9 @@ pub fn run() -> Result<()> {
     window.set_preview_zoom_actual(app_prefs.borrow().preview_zoom_actual);
     window.set_view_show_status(app_prefs.borrow().show_footer_status);
     window.set_controls_overlay_always_visible(app_prefs.borrow().controls_overlay_always_visible);
+    window.set_view_show_video_tracks(app_prefs.borrow().show_video_tracks);
+    window.set_view_show_audio_tracks(app_prefs.borrow().show_audio_tracks);
+    window.set_view_show_subtitle_tracks(app_prefs.borrow().show_subtitle_tracks);
     window.set_window_fullscreen(false);
     let playback_signed_milli = Arc::new(AtomicI32::new(1000));
 
@@ -894,6 +899,48 @@ pub fn run() -> Result<()> {
             let new = !w.get_controls_overlay_always_visible();
             w.set_controls_overlay_always_visible(new);
             app_prefs.borrow_mut().controls_overlay_always_visible = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_toggle_video_tracks(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let new = !w.get_view_show_video_tracks();
+            w.set_view_show_video_tracks(new);
+            app_prefs.borrow_mut().show_video_tracks = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_toggle_audio_tracks(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let new = !w.get_view_show_audio_tracks();
+            w.set_view_show_audio_tracks(new);
+            app_prefs.borrow_mut().show_audio_tracks = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        window.on_view_toggle_subtitle_tracks(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let new = !w.get_view_show_subtitle_tracks();
+            w.set_view_show_subtitle_tracks(new);
+            app_prefs.borrow_mut().show_subtitle_tracks = new;
             app_prefs.borrow().save();
         });
     }
@@ -1325,6 +1372,29 @@ pub fn run() -> Result<()> {
     }
 
     {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_file_new_subtitle_track(move || {
+            let r = session.borrow_mut().add_subtitle_track();
+            match r {
+                Ok(()) => {
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        w.set_status_text("Added subtitle track".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
         let sender = player_handle_ref(&player);
         let weak = window.as_weak();
         let session = Rc::clone(&session);
@@ -1377,6 +1447,31 @@ pub fn run() -> Result<()> {
                         timecode::refresh_time_labels(&w, ph, dur);
                         sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
                         w.set_status_text("Removed audio track".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_delete_subtitle_track(move |lane_idx| {
+            let r = session
+                .borrow_mut()
+                .remove_subtitle_track_lane(lane_idx as usize);
+            match r {
+                Ok(()) => {
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        w.set_status_text("Removed subtitle track".into());
                     }
                 }
                 Err(e) => {
@@ -2145,6 +2240,10 @@ mod ui_smoke_tests {
         assert!(!window.get_footer_visible());
         assert!(!window.get_rotate_enabled());
         assert!(!window.get_split_at_playhead_enabled());
+        // View → track row visibility (prefs-backed; v0 design — default show all lanes).
+        assert!(window.get_view_show_video_tracks());
+        assert!(window.get_view_show_audio_tracks());
+        assert!(window.get_view_show_subtitle_tracks());
 
         // Round-trip: media-ready gate.
         window.set_media_ready(true);

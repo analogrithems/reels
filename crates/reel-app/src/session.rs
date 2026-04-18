@@ -185,6 +185,16 @@ pub(crate) fn audio_lane_indices(project: &Project) -> Vec<usize> {
         .collect()
 }
 
+pub(crate) fn subtitle_lane_indices(project: &Project) -> Vec<usize> {
+    project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.kind == TrackKind::Subtitle)
+        .map(|(i, _)| i)
+        .collect()
+}
+
 fn remove_track_at(proj: &mut Project, track_index: usize) -> anyhow::Result<()> {
     if track_index >= proj.tracks.len() {
         anyhow::bail!("invalid track index");
@@ -340,6 +350,25 @@ impl EditSession {
         Ok(())
     }
 
+    /// Append an empty **subtitle** track (timed-text lane). Undoable.
+    pub fn add_subtitle_track(&mut self) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        proj.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Subtitle,
+            clip_ids: Vec::new(),
+            extensions: Default::default(),
+        });
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
     /// Remove the **lane**-th video track (`0` = V1 / primary). Undoable.
     ///
     /// The last remaining video track cannot be removed.
@@ -371,6 +400,22 @@ impl EditSession {
         let proj = self.project.as_ref().expect("checked");
         let ai = audio_lane_indices(proj);
         let track_index = *ai.get(lane).context("no such audio track")?;
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        remove_track_at(proj, track_index)?;
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Remove the **lane**-th subtitle track (`0` = S1). Undoable.
+    pub fn remove_subtitle_track_lane(&mut self, lane: usize) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        let proj = self.project.as_ref().expect("checked");
+        let si = subtitle_lane_indices(proj);
+        let track_index = *si.get(lane).context("no such subtitle track")?;
         self.push_undo_snapshot();
         let proj = self.project.as_mut().expect("checked");
         remove_track_at(proj, track_index)?;
@@ -1710,6 +1755,45 @@ mod tests {
                 .tracks
                 .iter()
                 .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn add_subtitle_track_appends_empty_lane() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Subtitle)
+                .count(),
+            0
+        );
+        s.add_subtitle_track().unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Subtitle)
+                .count(),
+            1
+        );
+        assert!(s.undo());
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Subtitle)
                 .count(),
             0
         );

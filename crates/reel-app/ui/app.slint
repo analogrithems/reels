@@ -194,9 +194,10 @@ export component AppWindow inherits Window {
     in property <int> tl_audio_track_count: 0;
     /// Subtitle lanes from container probe (single-media mode only).
     in property <int> tl_subtitle_track_count: 0;
-    /// Project-backed video/audio track counts (for delete affordances). Display counts may be higher when showing container streams.
+    /// Project-backed video/audio/subtitle track counts (for delete affordances). Display counts may be higher when showing container streams.
     in property <int> tl_video_project_track_count: 0;
     in property <int> tl_audio_project_track_count: 0;
+    in property <int> tl_subtitle_project_track_count: 0;
     in property <[TlChip]> tl_srow0: [];
     in property <[TlChip]> tl_srow1: [];
     in property <[TlChip]> tl_srow2: [];
@@ -238,9 +239,11 @@ export component AppWindow inherits Window {
     callback file-insert-audio();
     callback file-new-video-track();
     callback file-new-audio-track();
+    callback file-new-subtitle-track();
     /// Remove timeline lane by index (`0` = V1 / A1). Video: requires a spare lane; audio: any lane.
     callback delete-video-track(int);
     callback delete-audio-track(int);
+    callback delete-subtitle-track(int);
     callback file-export();
     callback export-cancel();
     callback export-preset-cancel();
@@ -291,6 +294,13 @@ export component AppWindow inherits Window {
     /// Keep the floating transport from auto-hiding (saved in prefs).
     in-out property <bool> controls-overlay-always-visible: false;
     callback view-toggle-controls-always-visible();
+    /// Timeline lane rows (v0 **View** — Video / Audio / Subtitle tracks); saved in prefs.
+    in-out property <bool> view-show-video-tracks: true;
+    in-out property <bool> view-show-audio-tracks: true;
+    in-out property <bool> view-show-subtitle-tracks: true;
+    callback view-toggle-video-tracks();
+    callback view-toggle-audio-tracks();
+    callback view-toggle-subtitle-tracks();
 
     /// Last decoded frame size (pixels); used for zoom and **Actual Size**.
     in property <float> preview-frame-width: 640.0;
@@ -487,6 +497,13 @@ export component AppWindow inherits Window {
                 enabled: root.media-ready;
                 activated => { root.file-new-audio-track(); }
             }
+            MenuItem {
+                title: "New Subtitle Track";
+                icon: @image-url("icons/lucide/type.svg");
+                shortcut: @keys(Control + Shift + T);
+                enabled: root.media-ready;
+                activated => { root.file-new-subtitle-track(); }
+            }
             MenuSeparator { }
             MenuItem {
                 title: "Export…";
@@ -665,6 +682,28 @@ export component AppWindow inherits Window {
             }
             MenuSeparator { }
             MenuItem {
+                title: "Video Tracks";
+                checkable: true;
+                checked: root.view-show-video-tracks;
+                icon: root.view-show-video-tracks ? @image-url("icons/lucide/eye.svg") : @image-url("icons/lucide/eye-off.svg");
+                activated => { root.view-toggle-video-tracks(); }
+            }
+            MenuItem {
+                title: "Audio Tracks";
+                checkable: true;
+                checked: root.view-show-audio-tracks;
+                icon: root.view-show-audio-tracks ? @image-url("icons/lucide/eye.svg") : @image-url("icons/lucide/eye-off.svg");
+                activated => { root.view-toggle-audio-tracks(); }
+            }
+            MenuItem {
+                title: "Subtitle Tracks";
+                checkable: true;
+                checked: root.view-show-subtitle-tracks;
+                icon: root.view-show-subtitle-tracks ? @image-url("icons/lucide/eye.svg") : @image-url("icons/lucide/eye-off.svg");
+                activated => { root.view-toggle-subtitle-tracks(); }
+            }
+            MenuSeparator { }
+            MenuItem {
                 title: "Show Status";
                 checkable: true;
                 checked: root.view-show-status;
@@ -818,6 +857,9 @@ export component AppWindow inherits Window {
                 accept
             } else if (event.text == Key.A && event.modifiers.control && event.modifiers.shift) {
                 root.file-new-audio-track();
+                accept
+            } else if (event.text == Key.T && event.modifiers.control && event.modifiers.shift) {
+                root.file-new-subtitle-track();
                 accept
             } else if (event.text == Key.I && event.modifiers.control && event.modifiers.shift) {
                 if (root.insert-audio-enabled) {
@@ -1689,7 +1731,8 @@ export component AppWindow inherits Window {
 
         // Multi-row timeline summary (data from Rust — see `video_track_row_labels` / `audio_track_row_labels`).
         // Layout aligns with v0 mock: padded strip under the preview, before the status footer.
-        if root.media-ready: Rectangle {
+        // Hidden entirely when **View → Video/Audio/Subtitle Tracks** are all off (v0-style toggles).
+        if root.media-ready && (root.view-show-video-tracks || root.view-show-audio-tracks || root.view-show-subtitle-tracks): Rectangle {
             vertical-stretch: 0;
             width: 100%;
             background: Theme.surface-timeline;
@@ -1706,198 +1749,242 @@ export component AppWindow inherits Window {
                 padding-bottom: 12px;
                 spacing: 10px;
                 // VIDEO row (v0 mock: uppercase label + trailing add control).
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: center;
-                    Text {
-                        text: "VIDEO";
-                        color: Theme.text-primary;
-                        font-size: 11px;
-                        font-weight: 700;
-                        letter-spacing: 1px;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 1px;
-                    }
-                    track-add-video := TouchArea {
-                        clicked => {
-                            main-view-focus.focus();
-                            root.file-new-video-track();
-                            wake-transport-chrome();
+                if root.view-show-video-tracks: VerticalBox {
+                    spacing: 10px;
+                    HorizontalBox {
+                        spacing: 8px;
+                        alignment: center;
+                        Text {
+                            text: "VIDEO";
+                            color: Theme.text-primary;
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            vertical-alignment: center;
                         }
                         Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            background: track-add-video.has-hover ? Theme.border-default : Theme.background-secondary;
-                            HorizontalBox {
-                                width: 100%;
-                                height: 100%;
-                                alignment: center;
-                                Text {
-                                    text: "+";
-                                    color: Theme.accent-blue;
-                                    font-size: 18px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            height: 1px;
+                        }
+                        track-add-video := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                root.file-new-video-track();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                background: track-add-video.has-hover ? Theme.border-default : Theme.background-secondary;
+                                HorizontalBox {
+                                    width: 100%;
+                                    height: 100%;
+                                    alignment: center;
+                                    Text {
+                                        text: "+";
+                                        color: Theme.accent-blue;
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                if root.tl_video_track_count >= 1: FilmstripLane {
-                    lane-label: "V1";
-                    chips: root.tl_vrow0;
-                    delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
-                    track-delete => {
-                        root.delete-video-track(0);
+                    if root.tl_video_track_count >= 1: FilmstripLane {
+                        lane-label: "V1";
+                        chips: root.tl_vrow0;
+                        delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
+                        track-delete => {
+                            root.delete-video-track(0);
+                        }
                     }
-                }
-                if root.tl_video_track_count >= 2: FilmstripLane {
-                    lane-label: "V2";
-                    chips: root.tl_vrow1;
-                    delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
-                    track-delete => {
-                        root.delete-video-track(1);
+                    if root.tl_video_track_count >= 2: FilmstripLane {
+                        lane-label: "V2";
+                        chips: root.tl_vrow1;
+                        delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
+                        track-delete => {
+                            root.delete-video-track(1);
+                        }
                     }
-                }
-                if root.tl_video_track_count >= 3: FilmstripLane {
-                    lane-label: "V3";
-                    chips: root.tl_vrow2;
-                    delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
-                    track-delete => {
-                        root.delete-video-track(2);
+                    if root.tl_video_track_count >= 3: FilmstripLane {
+                        lane-label: "V3";
+                        chips: root.tl_vrow2;
+                        delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
+                        track-delete => {
+                            root.delete-video-track(2);
+                        }
                     }
-                }
-                if root.tl_video_track_count >= 4: FilmstripLane {
-                    lane-label: "V4";
-                    chips: root.tl_vrow3;
-                    delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
-                    track-delete => {
-                        root.delete-video-track(3);
+                    if root.tl_video_track_count >= 4: FilmstripLane {
+                        lane-label: "V4";
+                        chips: root.tl_vrow3;
+                        delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
+                        track-delete => {
+                            root.delete-video-track(3);
+                        }
                     }
                 }
                 // AUDIO row
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: center;
-                    Text {
-                        text: "AUDIO";
-                        color: Theme.text-primary;
-                        font-size: 11px;
-                        font-weight: 700;
-                        letter-spacing: 1px;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 1px;
-                    }
-                    track-add-audio := TouchArea {
-                        clicked => {
-                            main-view-focus.focus();
-                            root.file-new-audio-track();
-                            wake-transport-chrome();
+                if root.view-show-audio-tracks: VerticalBox {
+                    spacing: 10px;
+                    HorizontalBox {
+                        spacing: 8px;
+                        alignment: center;
+                        Text {
+                            text: "AUDIO";
+                            color: Theme.text-primary;
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            vertical-alignment: center;
                         }
                         Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            background: track-add-audio.has-hover ? Theme.border-default : Theme.background-secondary;
-                            HorizontalBox {
-                                width: 100%;
-                                height: 100%;
-                                alignment: center;
-                                Text {
-                                    text: "+";
-                                    color: Theme.accent-blue;
-                                    font-size: 18px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            height: 1px;
+                        }
+                        track-add-audio := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                root.file-new-audio-track();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                background: track-add-audio.has-hover ? Theme.border-default : Theme.background-secondary;
+                                HorizontalBox {
+                                    width: 100%;
+                                    height: 100%;
+                                    alignment: center;
+                                    Text {
+                                        text: "+";
+                                        color: Theme.accent-blue;
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                // Waveform / peak drawing on audio lanes is intentionally last — after clip chips, footer, and other v0 alignment (see **`docs/phases-ui.md`**).
-                if root.tl_audio_track_count >= 1: FilmstripLane {
-                    lane-label: "A1";
-                    chips: root.tl_arow0;
-                    delete-enabled: 0 < root.tl_audio_project_track_count;
-                    track-delete => {
-                        root.delete-audio-track(0);
+                    // Waveform / peak drawing on audio lanes is intentionally last — after clip chips, footer, and other v0 alignment (see **`docs/phases-ui.md`**).
+                    if root.tl_audio_track_count >= 1: FilmstripLane {
+                        lane-label: "A1";
+                        chips: root.tl_arow0;
+                        delete-enabled: 0 < root.tl_audio_project_track_count;
+                        track-delete => {
+                            root.delete-audio-track(0);
+                        }
+                    }
+                    if root.tl_audio_track_count >= 2: FilmstripLane {
+                        lane-label: "A2";
+                        chips: root.tl_arow1;
+                        delete-enabled: 1 < root.tl_audio_project_track_count;
+                        track-delete => {
+                            root.delete-audio-track(1);
+                        }
+                    }
+                    if root.tl_audio_track_count >= 3: FilmstripLane {
+                        lane-label: "A3";
+                        chips: root.tl_arow2;
+                        delete-enabled: 2 < root.tl_audio_project_track_count;
+                        track-delete => {
+                            root.delete-audio-track(2);
+                        }
+                    }
+                    if root.tl_audio_track_count >= 4: FilmstripLane {
+                        lane-label: "A4";
+                        chips: root.tl_arow3;
+                        delete-enabled: 3 < root.tl_audio_project_track_count;
+                        track-delete => {
+                            root.delete-audio-track(3);
+                        }
                     }
                 }
-                if root.tl_audio_track_count >= 2: FilmstripLane {
-                    lane-label: "A2";
-                    chips: root.tl_arow1;
-                    delete-enabled: 1 < root.tl_audio_project_track_count;
-                    track-delete => {
-                        root.delete-audio-track(1);
+                // SUBTITLES — container streams (single-media) and/or project [`TrackKind::Subtitle`] lanes.
+                if root.view-show-subtitle-tracks: VerticalBox {
+                    spacing: 10px;
+                    HorizontalBox {
+                        spacing: 8px;
+                        alignment: center;
+                        Text {
+                            text: "SUBTITLES";
+                            color: Theme.text-primary;
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 1px;
+                        }
+                        track-add-subtitle := TouchArea {
+                            clicked => {
+                                main-view-focus.focus();
+                                root.file-new-subtitle-track();
+                                wake-transport-chrome();
+                            }
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                background: track-add-subtitle.has-hover ? Theme.border-default : Theme.background-secondary;
+                                HorizontalBox {
+                                    width: 100%;
+                                    height: 100%;
+                                    alignment: center;
+                                    Text {
+                                        text: "+";
+                                        color: Theme.accent-blue;
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
-                if root.tl_audio_track_count >= 3: FilmstripLane {
-                    lane-label: "A3";
-                    chips: root.tl_arow2;
-                    delete-enabled: 2 < root.tl_audio_project_track_count;
-                    track-delete => {
-                        root.delete-audio-track(2);
+                    if root.tl_subtitle_track_count >= 1: FilmstripLane {
+                        lane-label: "S1";
+                        chips: root.tl_srow0;
+                        delete-enabled: 0 < root.tl_subtitle_project_track_count;
+                        track-delete => {
+                            root.delete-subtitle-track(0);
+                        }
                     }
-                }
-                if root.tl_audio_track_count >= 4: FilmstripLane {
-                    lane-label: "A4";
-                    chips: root.tl_arow3;
-                    delete-enabled: 3 < root.tl_audio_project_track_count;
-                    track-delete => {
-                        root.delete-audio-track(3);
+                    if root.tl_subtitle_track_count >= 2: FilmstripLane {
+                        lane-label: "S2";
+                        chips: root.tl_srow1;
+                        delete-enabled: 1 < root.tl_subtitle_project_track_count;
+                        track-delete => {
+                            root.delete-subtitle-track(1);
+                        }
                     }
-                }
-                // SUBTITLES — lanes from container probe in single-media mode (no project tracks yet).
-                if root.tl_subtitle_track_count >= 1: HorizontalBox {
-                    spacing: 8px;
-                    alignment: center;
-                    Text {
-                        text: "SUBTITLES";
-                        color: Theme.text-primary;
-                        font-size: 11px;
-                        font-weight: 700;
-                        letter-spacing: 1px;
-                        vertical-alignment: center;
+                    if root.tl_subtitle_track_count >= 3: FilmstripLane {
+                        lane-label: "S3";
+                        chips: root.tl_srow2;
+                        delete-enabled: 2 < root.tl_subtitle_project_track_count;
+                        track-delete => {
+                            root.delete-subtitle-track(2);
+                        }
                     }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 1px;
+                    if root.tl_subtitle_track_count >= 4: FilmstripLane {
+                        lane-label: "S4";
+                        chips: root.tl_srow3;
+                        delete-enabled: 3 < root.tl_subtitle_project_track_count;
+                        track-delete => {
+                            root.delete-subtitle-track(3);
+                        }
                     }
-                }
-                if root.tl_subtitle_track_count >= 1: FilmstripLane {
-                    lane-label: "S1";
-                    chips: root.tl_srow0;
-                    delete-enabled: false;
-                    track-delete => { }
-                }
-                if root.tl_subtitle_track_count >= 2: FilmstripLane {
-                    lane-label: "S2";
-                    chips: root.tl_srow1;
-                    delete-enabled: false;
-                    track-delete => { }
-                }
-                if root.tl_subtitle_track_count >= 3: FilmstripLane {
-                    lane-label: "S3";
-                    chips: root.tl_srow2;
-                    delete-enabled: false;
-                    track-delete => { }
-                }
-                if root.tl_subtitle_track_count >= 4: FilmstripLane {
-                    lane-label: "S4";
-                    chips: root.tl_srow3;
-                    delete-enabled: false;
-                    track-delete => { }
                 }
             }
         }
