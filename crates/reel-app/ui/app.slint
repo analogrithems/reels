@@ -1820,25 +1820,31 @@ export component AppWindow inherits Window {
                             padding-left: 0px;
                             padding-right: 0px;
                             spacing: 0px;
+                            // Effects submenu items — clean lucide icons, full-row hover,
+                            // left-aligned content (standard menu convention). Rectangle uses
+                            // width:100% so the hover background spans the whole panel width.
                             eff-sub-swap := TouchArea {
+                                height: 30px;
                                 clicked => {
                                     main-view-focus.focus();
                                     root.effect-face-swap();
                                     wake-transport-chrome();
                                 }
                                 Rectangle {
-                                    height: 30px;
+                                    width: 100%;
+                                    height: 100%;
                                     background: eff-sub-swap.has-hover ? Theme.accent-blue : transparent;
                                     HorizontalBox {
                                         padding-left: 10px;
                                         padding-right: 10px;
                                         spacing: 8px;
-                                        alignment: center;
-                                        Path {
+                                        alignment: start;
+                                        Image {
                                             width: 14px;
                                             height: 14px;
-                                            fill: #ffffff;
-                                            commands: "M 8 1 L 10 5 L 6 5 Z M 4 8 L 12 8 M 8 11 L 10 15 L 6 15 Z";
+                                            y: (parent.height - 14px) / 2;
+                                            source: @image-url("icons/lucide/user.svg");
+                                            colorize: #ffffff;
                                         }
                                         Text {
                                             text: "Face Swap";
@@ -1850,24 +1856,27 @@ export component AppWindow inherits Window {
                                 }
                             }
                             eff-sub-enh := TouchArea {
+                                height: 30px;
                                 clicked => {
                                     main-view-focus.focus();
                                     root.effect-face-enhance();
                                     wake-transport-chrome();
                                 }
                                 Rectangle {
-                                    height: 30px;
+                                    width: 100%;
+                                    height: 100%;
                                     background: eff-sub-enh.has-hover ? Theme.accent-blue : transparent;
                                     HorizontalBox {
                                         padding-left: 10px;
                                         padding-right: 10px;
                                         spacing: 8px;
-                                        alignment: center;
-                                        Path {
+                                        alignment: start;
+                                        Image {
                                             width: 14px;
                                             height: 14px;
-                                            fill: #ffffff;
-                                            commands: "M 2 2 L 14 2 L 12 12 L 4 12 Z";
+                                            y: (parent.height - 14px) / 2;
+                                            source: @image-url("icons/lucide/sparkles.svg");
+                                            colorize: #ffffff;
                                         }
                                         Text {
                                             text: "Face Enhance";
@@ -1879,24 +1888,27 @@ export component AppWindow inherits Window {
                                 }
                             }
                             eff-sub-rm := TouchArea {
+                                height: 30px;
                                 clicked => {
                                     main-view-focus.focus();
                                     root.effect-remove-background();
                                     wake-transport-chrome();
                                 }
                                 Rectangle {
-                                    height: 30px;
+                                    width: 100%;
+                                    height: 100%;
                                     background: eff-sub-rm.has-hover ? Theme.accent-blue : transparent;
                                     HorizontalBox {
                                         padding-left: 10px;
                                         padding-right: 10px;
                                         spacing: 8px;
-                                        alignment: center;
-                                        Path {
+                                        alignment: start;
+                                        Image {
                                             width: 14px;
                                             height: 14px;
-                                            fill: #ffffff;
-                                            commands: "M 8 2 C 4 2 2 5 2 8 C 2 12 5 14 8 14 C 11 14 14 12 14 8 C 14 4 12 2 8 2 Z M 4 12 L 12 4";
+                                            y: (parent.height - 14px) / 2;
+                                            source: @image-url("icons/lucide/eraser.svg");
+                                            colorize: #ffffff;
                                         }
                                         Text {
                                             text: "Remove BG";
@@ -1913,17 +1925,19 @@ export component AppWindow inherits Window {
                                 background: #4a4a4a;
                             }
                             Rectangle {
+                                // Disabled "coming soon" row — greyed out, no TouchArea.
                                 height: 30px;
                                 HorizontalBox {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 8px;
-                                    alignment: center;
-                                    Path {
+                                    alignment: start;
+                                    Image {
                                         width: 14px;
                                         height: 14px;
-                                        fill: #6e6e6e;
-                                        commands: "M 4 2 L 8 6 L 4 10 M 8 2 L 12 6 L 8 10 M 12 2 L 16 6 L 12 10";
+                                        y: (parent.height - 14px) / 2;
+                                        source: @image-url("icons/lucide/zoom-in.svg");
+                                        colorize: #6e6e6e;
                                     }
                                     Text {
                                         text: "AI Upscale";
@@ -1941,24 +1955,33 @@ export component AppWindow inherits Window {
                         padding-left: 0px;
                         padding-right: 0px;
                         spacing: 0px;
+                        // Main tools-popup rows. Lucide SVG icons (tinted white via
+                        // `colorize`) replace the earlier hand-drawn `Path` commands —
+                        // those rendered at 14×14 as jagged untuned strokes. Each row
+                        // uses `width: 100%` on the hover-bg Rectangle so the highlight
+                        // fills the full popup width, and `alignment: start` on the
+                        // HorizontalBox for a conventional left-aligned menu.
                         tp-mw := TouchArea {
+                            height: 30px;
                             clicked => {
                                 main-view-focus.focus();
                                 wake-transport-chrome();
                             }
                             Rectangle {
-                                height: 30px;
+                                width: 100%;
+                                height: 100%;
                                 background: tp-mw.has-hover ? #4a4a4a : transparent;
                                 HorizontalBox {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 8px;
-                                    alignment: center;
-                                    Path {
+                                    alignment: start;
+                                    Image {
                                         width: 14px;
                                         height: 14px;
-                                        fill: #ffffff;
-                                        commands: "M 8 2 L 10 6 L 6 6 Z M 5 9 L 11 9 M 8 12 L 9 14 L 7 14 Z";
+                                        y: (parent.height - 14px) / 2;
+                                        source: @image-url("icons/lucide/wand-2.svg");
+                                        colorize: #ffffff;
                                     }
                                     Text {
                                         text: "Magic Wand";
@@ -1970,23 +1993,26 @@ export component AppWindow inherits Window {
                             }
                         }
                         tp-lasso := TouchArea {
+                            height: 30px;
                             clicked => {
                                 main-view-focus.focus();
                                 wake-transport-chrome();
                             }
                             Rectangle {
-                                height: 30px;
+                                width: 100%;
+                                height: 100%;
                                 background: tp-lasso.has-hover ? #4a4a4a : transparent;
                                 HorizontalBox {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 8px;
-                                    alignment: center;
-                                    Path {
+                                    alignment: start;
+                                    Image {
                                         width: 14px;
                                         height: 14px;
-                                        fill: #ffffff;
-                                        commands: "M 3 8 Q 3 3 8 3 Q 13 3 13 8 Q 13 13 8 13 Q 5 13 3 10";
+                                        y: (parent.height - 14px) / 2;
+                                        source: @image-url("icons/lucide/scissors.svg");
+                                        colorize: #ffffff;
                                     }
                                     Text {
                                         text: "Lasso Select";
@@ -1998,23 +2024,26 @@ export component AppWindow inherits Window {
                             }
                         }
                         tp-crop := TouchArea {
+                            height: 30px;
                             clicked => {
                                 main-view-focus.focus();
                                 wake-transport-chrome();
                             }
                             Rectangle {
-                                height: 30px;
+                                width: 100%;
+                                height: 100%;
                                 background: tp-crop.has-hover ? #4a4a4a : transparent;
                                 HorizontalBox {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 8px;
-                                    alignment: center;
-                                    Path {
+                                    alignment: start;
+                                    Image {
                                         width: 14px;
                                         height: 14px;
-                                        fill: #ffffff;
-                                        commands: "M 4 2 L 12 2 L 12 10 L 4 10 Z M 6 4 L 10 4 L 10 8 L 6 8 Z";
+                                        y: (parent.height - 14px) / 2;
+                                        source: @image-url("icons/lucide/crop.svg");
+                                        colorize: #ffffff;
                                     }
                                     Text {
                                         text: "Crop";
@@ -2031,23 +2060,26 @@ export component AppWindow inherits Window {
                             background: #4a4a4a;
                         }
                         tp-con := TouchArea {
+                            height: 30px;
                             clicked => {
                                 main-view-focus.focus();
                                 wake-transport-chrome();
                             }
                             Rectangle {
-                                height: 30px;
+                                width: 100%;
+                                height: 100%;
                                 background: tp-con.has-hover ? #4a4a4a : transparent;
                                 HorizontalBox {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 8px;
-                                    alignment: center;
-                                    Path {
+                                    alignment: start;
+                                    Image {
                                         width: 14px;
                                         height: 14px;
-                                        fill: #ffffff;
-                                        commands: "M 2 8 L 12 8 M 4 4 L 8 2 L 12 4 M 4 12 L 8 14 L 12 12";
+                                        y: (parent.height - 14px) / 2;
+                                        source: @image-url("icons/lucide/eye.svg");
+                                        colorize: #ffffff;
                                     }
                                     Text {
                                         text: "Contrast";
@@ -2059,23 +2091,26 @@ export component AppWindow inherits Window {
                             }
                         }
                         tp-light := TouchArea {
+                            height: 30px;
                             clicked => {
                                 main-view-focus.focus();
                                 wake-transport-chrome();
                             }
                             Rectangle {
-                                height: 30px;
+                                width: 100%;
+                                height: 100%;
                                 background: tp-light.has-hover ? #4a4a4a : transparent;
                                 HorizontalBox {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 8px;
-                                    alignment: center;
-                                    Path {
+                                    alignment: start;
+                                    Image {
                                         width: 14px;
                                         height: 14px;
-                                        fill: #ffffff;
-                                        commands: "M 8 2 L 10 8 L 8 14 L 6 8 Z M 8 4 A 4 4 0 1 1 8 12 A 4 4 0 1 1 8 4";
+                                        y: (parent.height - 14px) / 2;
+                                        source: @image-url("icons/lucide/sparkles.svg");
+                                        colorize: #ffffff;
                                     }
                                     Text {
                                         text: "Lighting";
@@ -2092,13 +2127,15 @@ export component AppWindow inherits Window {
                             background: #4a4a4a;
                         }
                         tp-effects := TouchArea {
+                            height: 30px;
                             clicked => {
                                 main-view-focus.focus();
                                 root.tools-effects-submenu-open = !root.tools-effects-submenu-open;
                                 wake-transport-chrome();
                             }
                             Rectangle {
-                                height: 30px;
+                                width: 100%;
+                                height: 100%;
                                 background: tp-effects.has-hover ? #4a4a4a : transparent;
                                 HorizontalBox {
                                     padding-left: 10px;
@@ -2107,12 +2144,13 @@ export component AppWindow inherits Window {
                                     alignment: space-between;
                                     HorizontalBox {
                                         spacing: 8px;
-                                        alignment: center;
-                                        Path {
+                                        alignment: start;
+                                        Image {
                                             width: 14px;
                                             height: 14px;
-                                            fill: #ffffff;
-                                            commands: "M 2 4 L 6 8 L 2 12 M 6 4 L 10 8 L 6 12 M 10 4 L 14 8 L 10 12";
+                                            y: (parent.height - 14px) / 2;
+                                            source: @image-url("icons/lucide/layers.svg");
+                                            colorize: #ffffff;
                                         }
                                         Text {
                                             text: "Effects";
@@ -2121,11 +2159,17 @@ export component AppWindow inherits Window {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    Path {
+                                    // Submenu affordance — right-pointing chevron using the
+                                    // existing lucide asset (rotated via transform-origin for
+                                    // correct kerning at 10×10). `chevron-down` rotated −90°
+                                    // reads as `>` so we don't ship a second SVG.
+                                    Image {
                                         width: 10px;
                                         height: 10px;
-                                        fill: #ffffff;
-                                        commands: "M 4 2 L 8 6 L 4 10";
+                                        y: (parent.height - 10px) / 2;
+                                        transform-rotation: -90deg;
+                                        source: @image-url("icons/lucide/chevron-down.svg");
+                                        colorize: #ffffff;
                                     }
                                 }
                             }
