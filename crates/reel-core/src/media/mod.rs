@@ -5,15 +5,17 @@ pub mod export;
 pub mod frame;
 pub mod metadata;
 pub mod probe;
+pub mod srt;
 
 pub use export::{
     export_concat_timeline, export_concat_timeline_oriented, export_concat_with_audio,
-    export_concat_with_audio_oriented, export_with_ffmpeg, ffmpeg_args_for_format,
-    ExportProgressFn, WebExportFormat,
+    export_concat_with_audio_lanes_oriented, export_concat_with_audio_oriented, export_with_ffmpeg,
+    ffmpeg_args_for_format, ExportProgressFn, WebExportFormat,
 };
 pub use frame::grab_frame;
 pub use metadata::{AudioStreamInfo, MediaMetadata, VideoStreamInfo};
 pub use probe::FfmpegProbe;
+pub use srt::{parse_file as parse_srt_file, parse_str as parse_srt_str, probe_file as probe_srt_file, SrtCue, SrtProbe};
 
 use std::path::Path;
 

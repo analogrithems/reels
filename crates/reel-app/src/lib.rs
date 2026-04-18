@@ -29,11 +29,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use reel_core::project::{ClipOrientation, ClipScale};
 use reel_core::TrackKind;
-use reel_core::{export_concat_with_audio_oriented, ExportProgressFn};
+use reel_core::{export_concat_with_audio_lanes_oriented, ExportProgressFn};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use session::{
-    path_matches_export_format, split_enabled_for_playhead, video_lane_indices,
-    web_export_format_from_preset_index, EditSession,
+    path_matches_export_format, remux_failure_hint, split_enabled_for_playhead,
+    video_lane_indices, web_export_format_from_preset_index, EditSession,
 };
 use slint::{ModelRc, VecModel};
 
@@ -81,7 +81,8 @@ use slint::ComponentHandle;
 use uuid::Uuid;
 
 use crate::media_extensions::{
-    AUDIO_FILE_EXTENSIONS, OPEN_MEDIA_EXTENSIONS, VIDEO_CONTAINER_EXTENSIONS,
+    AUDIO_FILE_EXTENSIONS, OPEN_MEDIA_EXTENSIONS, SUBTITLE_FILE_EXTENSIONS,
+    VIDEO_CONTAINER_EXTENSIONS,
 };
 use crate::prefs::AppPrefs;
 use crate::project_io::{is_project_document_path, save_project};
@@ -175,16 +176,21 @@ fn unified_export_video_scale(session: &EditSession) -> Result<Option<ClipScale>
     })
 }
 
-/// Primary video spans + optional first-audio-track spans for ffmpeg export (empty timeline → `None`).
+/// Primary video spans + one audio-lane span-list per dedicated audio track for ffmpeg export
+/// (empty timeline → `None`).
 ///
 /// When `range_ms` is `Some`, the seek-bar In/Out markers limit the output: video and audio
 /// concat inputs are sliced to the range (sequence clock) and rebased so the first span begins
 /// at **0**. Returns `None` when the range produces no video coverage so the caller can tell
 /// the user nothing would export.
+///
+/// The audio lanes are ordered by `Project.tracks` audio-track index. Empty lanes (after range
+/// slicing or because the track has no clips) are dropped so the downstream ffmpeg `amix`
+/// dispatcher sees only usable lanes.
 fn export_timeline_payload(
     session: &EditSession,
     range_ms: Option<(f64, f64)>,
-) -> Option<(ExportSpanVec, Option<ExportSpanVec>)> {
+) -> Option<(ExportSpanVec, Vec<ExportSpanVec>)> {
     let video_clips = session.project().and_then(timeline::clips_from_project)?;
     let video_clips = match range_ms {
         Some(r) => timeline::slice_clips_to_range_ms(&video_clips, r),
@@ -197,25 +203,30 @@ fn export_timeline_payload(
         .into_iter()
         .map(|c| (c.path, c.media_in_s, c.media_out_s))
         .collect();
-    let audio_segs = session.project().and_then(|p| {
-        timeline::clips_from_first_audio_track(p).map(|clips| match range_ms {
-            Some(r) => timeline::slice_clips_to_range_ms(&clips, r),
-            None => clips,
+    let lane_clip_lists = session
+        .project()
+        .map(timeline::clips_from_all_audio_tracks)
+        .unwrap_or_default();
+    let audio_lane_spans: Vec<ExportSpanVec> = lane_clip_lists
+        .into_iter()
+        .filter_map(|clips| {
+            let sliced = match range_ms {
+                Some(r) => timeline::slice_clips_to_range_ms(&clips, r),
+                None => clips,
+            };
+            if sliced.is_empty() {
+                None
+            } else {
+                Some(
+                    sliced
+                        .into_iter()
+                        .map(|c| (c.path, c.media_in_s, c.media_out_s))
+                        .collect::<ExportSpanVec>(),
+                )
+            }
         })
-    });
-    let audio_segs = audio_segs.and_then(|clips| {
-        if clips.is_empty() {
-            None
-        } else {
-            Some(
-                clips
-                    .into_iter()
-                    .map(|c| (c.path, c.media_in_s, c.media_out_s))
-                    .collect::<ExportSpanVec>(),
-            )
-        }
-    });
-    Some((segs, audio_segs))
+        .collect();
+    Some((segs, audio_lane_spans))
 }
 
 fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
@@ -232,6 +243,7 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
         reel_core::WebExportFormat::WebmVp9Opus => d.add_filter("WebM (VP9 + Opus)", &["webm"]),
         reel_core::WebExportFormat::WebmAv1Opus => d.add_filter("WebM (AV1 + Opus)", &["webm"]),
         reel_core::WebExportFormat::MkvRemux => d.add_filter("Matroska", &["mkv"]),
+        reel_core::WebExportFormat::MovRemux => d.add_filter("QuickTime", &["mov"]),
     }
 }
 
@@ -274,13 +286,20 @@ pub(crate) enum ExportPreflight {
     /// Proceed to the ffmpeg export thread with these parameters.
     Spawn {
         video_spans: ExportSpanVec,
-        audio_spans: Option<ExportSpanVec>,
+        /// One span-list per dedicated audio lane (project `TrackKind::Audio` track). Empty
+        /// when the project has no audio lanes; single-entry delegates to the existing
+        /// dual-mux path; 2+ entries engage the `amix` filter_complex.
+        audio_lane_spans: Vec<ExportSpanVec>,
         orientation: Option<ClipOrientation>,
         scale: Option<ClipScale>,
         /// True when the ffmpeg call should pass `-an`, dropping audio from the
         /// output entirely. Set when **all** primary-track clips are muted and
         /// there's no dedicated audio lane to layer on top.
         mute_audio: bool,
+        /// When `Some`, ffmpeg burns the `.srt` cues into the output via the
+        /// `subtitles=` video filter (first clip on the first `TrackKind::Subtitle`
+        /// lane, resolved by [`EditSession::primary_subtitle_path`]).
+        subtitle_path: Option<PathBuf>,
         dest: PathBuf,
         fmt: reel_core::WebExportFormat,
         range_ms: Option<(f64, f64)>,
@@ -306,7 +325,7 @@ pub(crate) fn prepare_export_job(
     };
 
     let range_ms = session.marker_range_ms();
-    let Some((video_spans, audio_spans)) = export_timeline_payload(session, range_ms) else {
+    let Some((video_spans, audio_lane_spans)) = export_timeline_payload(session, range_ms) else {
         return ExportPreflight::Status(
             "No clips in the In/Out range — clear markers or adjust them to export.".into(),
         );
@@ -322,16 +341,16 @@ pub(crate) fn prepare_export_job(
     };
 
     // Per-clip audio mute (U2-e "Remove audio"). The single-audio-track export
-    // can only emit `-an` when *every* primary-track clip is muted. The partial
-    // case needs silence substitution, which depends on the U2-b multi-audio
-    // mix infrastructure.
-    let mute_audio = session.all_primary_clips_audio_muted() && audio_spans.is_none();
+    // can only emit `-an` when *every* primary-track clip is muted and there's
+    // no dedicated audio lane to layer on top. The partial case still needs
+    // silence substitution; that's U2-e follow-up work.
+    let mute_audio = session.all_primary_clips_audio_muted() && audio_lane_spans.is_empty();
     if !mute_audio
-        && audio_spans.is_none()
+        && audio_lane_spans.is_empty()
         && session.any_primary_clip_audio_muted()
     {
         return ExportPreflight::Status(
-            "Mute applies only when every clip is muted. Mute the rest or add an audio track (U2-b, coming soon).".into(),
+            "Mute applies only when every clip is muted. Mute the rest or add an audio track.".into(),
         );
     }
 
@@ -346,12 +365,15 @@ pub(crate) fn prepare_export_job(
         ));
     }
 
+    let subtitle_path = session.primary_subtitle_path();
+
     ExportPreflight::Spawn {
         video_spans,
-        audio_spans,
+        audio_lane_spans,
         orientation,
         scale,
         mute_audio,
+        subtitle_path,
         dest,
         fmt,
         range_ms,
@@ -393,10 +415,11 @@ fn install_export_preset_confirm_callback(
             }
             ExportPreflight::Spawn {
                 video_spans,
-                audio_spans,
+                audio_lane_spans,
                 orientation,
                 scale,
                 mute_audio,
+                subtitle_path,
                 dest,
                 fmt,
                 range_ms,
@@ -429,11 +452,12 @@ fn install_export_preset_confirm_callback(
                 let res = std::thread::Builder::new()
                     .name("reel-export".into())
                     .spawn(move || {
-                        let r = export_concat_with_audio_oriented(
+                        let r = export_concat_with_audio_lanes_oriented(
                             &video_spans,
-                            audio_spans.as_deref(),
+                            &audio_lane_spans,
                             orientation,
                             scale,
+                            subtitle_path.as_deref(),
                             mute_audio,
                             &dest,
                             fmt,
@@ -446,7 +470,11 @@ fn install_export_preset_confirm_callback(
                                 if e.is_cancelled() {
                                     "Export cancelled.".into()
                                 } else {
-                                    format!("Export failed: {e}")
+                                    let base = format!("Export failed: {e}");
+                                    match remux_failure_hint(fmt) {
+                                        Some(hint) => format!("{base}. {hint}"),
+                                        None => base,
+                                    }
                                 }
                             }
                         };
@@ -694,6 +722,12 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         .unwrap_or(false)
         && window.get_media_ready();
     window.set_insert_audio_enabled(insert_audio_ok);
+    let insert_subtitle_ok = session
+        .project()
+        .map(|p| p.tracks.iter().any(|t| t.kind == TrackKind::Subtitle))
+        .unwrap_or(false)
+        && window.get_media_ready();
+    window.set_insert_subtitle_enabled(insert_subtitle_ok);
     if let Some(p) = session.project() {
         if let Some(clips) = timeline::clips_from_project(p) {
             let d = timeline::sequence_duration_ms(&clips);
@@ -890,6 +924,7 @@ pub fn run() -> Result<()> {
     window.set_audio_track_lanes("".into());
     clear_timeline_models(&window);
     window.set_insert_audio_enabled(false);
+    window.set_insert_subtitle_enabled(false);
     window.set_move_clip_down_enabled(false);
     window.set_move_clip_up_enabled(false);
     window.set_split_at_playhead_enabled(false);
@@ -1427,6 +1462,52 @@ pub fn run() -> Result<()> {
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
         let recent = Rc::clone(&recent);
+        window.on_file_insert_subtitle(move || match prompt_insert_subtitle_dialog() {
+            Some(insert_path) => {
+                let mru_path = insert_path.clone();
+                let playhead_ms = weak
+                    .upgrade()
+                    .map(|w| w.get_playhead_ms() as f64)
+                    .unwrap_or(0.0);
+                let insert_result = session
+                    .borrow_mut()
+                    .insert_subtitle_clip_at_playhead(insert_path, playhead_ms);
+                match insert_result {
+                    Ok(()) => {
+                        recent.borrow_mut().record_media(mru_path);
+                        if let Some(w) = weak.upgrade() {
+                            let n = session
+                                .borrow()
+                                .project()
+                                .map(|pr| pr.clips.len())
+                                .unwrap_or(0);
+                            sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                            w.set_status_text(
+                                format!(
+                                    "Inserted subtitle @ {playhead_ms:.0} ms ({n} clips)"
+                                )
+                                .into(),
+                            );
+                        }
+                        reload_player_timeline(&sender, &session.borrow());
+                    }
+                    Err(e) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text(format!("Insert subtitle failed: {e}").into());
+                        }
+                    }
+                }
+            }
+            None => tracing::debug!("insert subtitle cancelled"),
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
         window.on_file_insert_video(move || match prompt_insert_dialog() {
             Some(insert_path) => {
                 let mru_path = insert_path.clone();
@@ -1616,6 +1697,43 @@ pub fn run() -> Result<()> {
                 Err(e) => {
                     if let Some(w) = weak.upgrade() {
                         w.set_status_text(format!("{e:#}").into());
+                    }
+                }
+            }
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_clip_trim_commit(move |clip_id, edge, delta_ratio| {
+            let id = match uuid::Uuid::parse_str(clip_id.as_str()) {
+                Ok(u) => u,
+                Err(_) => return,
+            };
+            let edge_u = if edge == 0 { 0u8 } else { 1u8 };
+            let r = session
+                .borrow_mut()
+                .trim_clip_by_edge_drag(id, edge_u, delta_ratio as f64);
+            match r {
+                Ok(()) => {
+                    reload_player_timeline(&sender, &session.borrow());
+                    if let Some(w) = weak.upgrade() {
+                        sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                        let dur = w.get_duration_ms();
+                        let ph = w.get_playhead_ms().min(dur);
+                        w.set_playhead_ms(ph);
+                        timecode::refresh_time_labels(&w, ph, dur);
+                        sender.send(player::Cmd::SeekSequence { seq_ms: ph as u64 });
+                        w.set_status_text("Trim applied".into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_status_text(format!("Trim failed: {e:#}").into());
                     }
                 }
             }
@@ -2422,6 +2540,16 @@ fn prompt_insert_audio_dialog() -> Option<PathBuf> {
     result.unwrap_or_default()
 }
 
+fn prompt_insert_subtitle_dialog() -> Option<PathBuf> {
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        rfd::FileDialog::new()
+            .set_title("Insert subtitle…")
+            .add_filter("Subtitle", SUBTITLE_FILE_EXTENSIONS)
+            .pick_file()
+    }));
+    result.unwrap_or_default()
+}
+
 /// Parses `argv[1..]` after the executable name. `Ok(Some)` = one path; `Ok(None)` = open empty;
 /// `Err` = more than one argument (print usage, exit 2).
 fn parse_cli_startup_path() -> Result<Option<PathBuf>, ()> {
@@ -2543,12 +2671,13 @@ mod ui_smoke_tests {
         window.set_media_ready(false);
         assert!(!window.get_media_ready());
 
-        // Round-trip: export preset indices must accept the full 0..=6 range
+        // Round-trip: export preset indices must accept the full 0..=7 range
         // so the Slint picker stays in sync with
         // `web_export_format_from_preset_index` (session.rs):
         // 0=Mp4Remux, 1=Mp4H264Aac, 2=Mp4H265Aac,
-        // 3=WebmVp8Opus, 4=WebmVp9Opus, 5=WebmAv1Opus, 6=MkvRemux.
-        for idx in 0..=6 {
+        // 3=WebmVp8Opus, 4=WebmVp9Opus, 5=WebmAv1Opus,
+        // 6=MkvRemux, 7=MovRemux.
+        for idx in 0..=7 {
             window.set_export_preset_index(idx);
             assert_eq!(window.get_export_preset_index(), idx);
         }
@@ -2699,7 +2828,7 @@ mod ui_smoke_tests {
 mod export_payload_tests {
     //! Pure unit tests for `export_timeline_payload` — the function that
     //! translates an `EditSession` (plus optional In/Out range) into the
-    //! `(video_spans, audio_spans)` tuple the ffmpeg pipeline consumes.
+    //! `(video_spans, audio_lane_spans)` tuple the ffmpeg pipeline consumes.
     //!
     //! These don't touch Slint or ffmpeg, so they run on any test thread
     //! (unlike `ui_smoke_tests`). They're the safety net for the Phase 2
@@ -2720,14 +2849,14 @@ mod export_payload_tests {
     #[test]
     fn payload_single_clip_full_span_when_no_range() {
         let (session, path) = opened_session(3.5, "/tmp/fake-a.mp4");
-        let (video, audio) =
+        let (video, audio_lanes) =
             export_timeline_payload(&session, None).expect("payload for opened project");
         assert_eq!(video.len(), 1);
         assert_eq!(video[0].0, path);
         assert!((video[0].1 - 0.0).abs() < 1e-9);
         assert!((video[0].2 - 3.5).abs() < 1e-9);
         assert!(
-            audio.is_none(),
+            audio_lanes.is_empty(),
             "single media file has no dedicated audio lane"
         );
     }
@@ -2740,7 +2869,7 @@ mod export_payload_tests {
         session.set_out_marker_ms(3_000.0).unwrap();
         let range = session.marker_range_ms().expect("both markers set");
 
-        let (video, _audio) =
+        let (video, _audio_lanes) =
             export_timeline_payload(&session, Some(range)).expect("sliced payload");
         assert_eq!(video.len(), 1);
         assert_eq!(video[0].0, path, "slice keeps the original source path");
@@ -2807,9 +2936,10 @@ mod export_payload_tests {
         }
 
         // Single-clip, full-span payload.
-        let (video, audio) = export_timeline_payload(&session, None).expect("payload after open");
+        let (video, audio_lanes) =
+            export_timeline_payload(&session, None).expect("payload after open");
         assert_eq!(video.len(), 1, "one-clip fixture → one span");
-        assert!(audio.is_none(), "no dedicated audio lane");
+        assert!(audio_lanes.is_empty(), "no dedicated audio lane");
 
         // Write to a tempdir so the test never races with the committed
         // `target/reel-export-verify/` artifacts.
@@ -2963,10 +3093,11 @@ mod export_payload_tests {
         match pf {
             ExportPreflight::Spawn {
                 video_spans,
-                audio_spans,
+                audio_lane_spans,
                 orientation,
                 scale,
                 mute_audio,
+                subtitle_path,
                 dest: got_dest,
                 fmt,
                 range_ms,
@@ -2979,13 +3110,40 @@ mod export_payload_tests {
                 );
                 assert!(scale.is_none(), "default scale ⇒ scale None");
                 assert!(!mute_audio, "default audio_mute ⇒ mute_audio false");
+                assert!(
+                    subtitle_path.is_none(),
+                    "no subtitle track ⇒ subtitle_path None"
+                );
                 assert!(range_ms.is_none(), "no markers ⇒ full-span export");
                 assert_eq!(video_spans.len(), 1, "one clip → one span");
                 assert_eq!(video_spans[0].0, media);
                 assert!(
-                    audio_spans.is_none(),
+                    audio_lane_spans.is_empty(),
                     "single media file ⇒ no dedicated audio lane"
                 );
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_carries_subtitle_path_when_subtitle_track_has_clip() {
+        // A subtitle clip on the first TrackKind::Subtitle lane must surface
+        // through the preflight as `subtitle_path = Some(...)` so the export
+        // thread can pass it to `subtitles=` for burn-in.
+        let (mut session, _media) = opened_session(3.0, "/tmp/fake-sub.mp4");
+        session.add_subtitle_track().expect("add subtitle track");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let srt = dir.path().join("cap.srt");
+        std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:02,000\nHi\n").unwrap();
+        session
+            .insert_subtitle_clip_at_playhead(srt.clone(), 0.0)
+            .expect("insert subtitle");
+        let dest = PathBuf::from("/tmp/with-subs.mp4");
+        let stub = StubSaveDialog::always(Some(dest));
+        match prepare_export_job(&session, 0, &stub) {
+            ExportPreflight::Spawn { subtitle_path, .. } => {
+                assert_eq!(subtitle_path.as_deref(), Some(srt.as_path()));
             }
             other => panic!("expected Spawn, got {other:?}"),
         }
@@ -3040,6 +3198,7 @@ mod export_payload_tests {
             (4, reel_core::WebExportFormat::WebmVp9Opus, "webm"),
             (5, reel_core::WebExportFormat::WebmAv1Opus, "webm"),
             (6, reel_core::WebExportFormat::MkvRemux, "mkv"),
+            (7, reel_core::WebExportFormat::MovRemux, "mov"),
         ] {
             let dest = PathBuf::from(format!("/tmp/preset-{idx}.{ext}"));
             let stub = StubSaveDialog::always(Some(dest));
@@ -3059,7 +3218,7 @@ mod export_payload_tests {
     #[test]
     fn payload_exposes_first_audio_lane_when_present() {
         // Open a video, add an audio track, insert an audio clip at 0 —
-        // payload's second slot must be `Some` so ffmpeg muxing kicks in.
+        // payload's audio-lanes vec gains a single entry so ffmpeg muxing kicks in.
         let probe = FakeProbe::with_duration(4.0);
         let mut session = EditSession::default();
         let video_path = PathBuf::from("/tmp/fake-video-d.mp4");
@@ -3072,10 +3231,88 @@ mod export_payload_tests {
             .insert_audio_clip_at_playhead_with_probe(&probe, audio_path.clone(), 0.0)
             .expect("insert audio");
 
-        let (video, audio) = export_timeline_payload(&session, None).expect("payload");
+        let (video, audio_lanes) = export_timeline_payload(&session, None).expect("payload");
         assert_eq!(video[0].0, video_path);
-        let audio = audio.expect("audio spans populated when first audio lane has clips");
-        assert_eq!(audio.len(), 1);
-        assert_eq!(audio[0].0, audio_path);
+        assert_eq!(audio_lanes.len(), 1, "exactly one audio lane with clips");
+        assert_eq!(audio_lanes[0].len(), 1);
+        assert_eq!(audio_lanes[0][0].0, audio_path);
+    }
+
+    #[test]
+    fn payload_exposes_each_audio_lane_when_multiple_audio_tracks_have_clips() {
+        // Two audio tracks each holding one clip ⇒ the amix dispatcher should see
+        // two populated span-lists. This is the U2-b gate: if this regresses to a
+        // single lane, the export drops one audio stream silently.
+        //
+        // `insert_audio_clip_at_playhead_with_probe` only targets the first audio
+        // lane, so we synthesize the multi-lane project directly — the test
+        // exercises `export_timeline_payload`, not the insert helpers.
+        use reel_core::project::{Clip, Project, Track};
+        use reel_core::{MediaMetadata, TrackKind};
+        use uuid::Uuid;
+
+        fn clip(id: Uuid, path: &str, sec: f64) -> Clip {
+            Clip {
+                id,
+                source_path: PathBuf::from(path),
+                metadata: MediaMetadata {
+                    path: PathBuf::from(path),
+                    duration_seconds: sec,
+                    container: "mp4".into(),
+                    video: None,
+                    audio: None,
+                    audio_disabled: false,
+                    video_stream_count: 0,
+                    audio_stream_count: 0,
+                    subtitle_stream_count: 0,
+                },
+                in_point: 0.0,
+                out_point: sec,
+                orientation: Default::default(),
+                scale: Default::default(),
+                audio_mute: false,
+                extensions: Default::default(),
+            }
+        }
+
+        let v_id = Uuid::new_v4();
+        let a0_id = Uuid::new_v4();
+        let a1_id = Uuid::new_v4();
+        let v_path = PathBuf::from("/tmp/fake-video-multi.mp4");
+        let a0_path = PathBuf::from("/tmp/fake-audio-multi-0.wav");
+        let a1_path = PathBuf::from("/tmp/fake-audio-multi-1.wav");
+
+        let mut p = Project::new("multi");
+        p.clips.push(clip(v_id, v_path.to_str().unwrap(), 5.0));
+        p.clips.push(clip(a0_id, a0_path.to_str().unwrap(), 5.0));
+        p.clips.push(clip(a1_id, a1_path.to_str().unwrap(), 5.0));
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Video,
+            clip_ids: vec![v_id],
+            extensions: Default::default(),
+        });
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Audio,
+            clip_ids: vec![a0_id],
+            extensions: Default::default(),
+        });
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Audio,
+            clip_ids: vec![a1_id],
+            extensions: Default::default(),
+        });
+
+        let session = EditSession::from_project_for_tests(p);
+        let (_video, audio_lanes) = export_timeline_payload(&session, None).expect("payload");
+        assert_eq!(
+            audio_lanes.len(),
+            2,
+            "both audio tracks with clips should surface as lanes"
+        );
+        assert_eq!(audio_lanes[0][0].0, a0_path);
+        assert_eq!(audio_lanes[1][0].0, a1_path);
     }
 }

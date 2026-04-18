@@ -10,12 +10,25 @@ export { HelpWindow }
 /// the chip is assumed to be **audio**. The split lets the lane styler pick
 /// the correct token from [`Theme`] (clip-video / clip-audio / clip-subtitle)
 /// without threading a separate `kind: int` through the Rust side.
+///
+/// `clip-id` is the UUID of the backing `reel_core::project::Clip` (hyphenated
+/// string), or `""` for synthetic full-width chips generated for single-media
+/// container-stream lanes (U2-c: those are **not** draggable; real edits route
+/// through the project's `clip_ids`). `begin-ms` / `end-ms` are the clip's
+/// current `in_point`/`out_point` in source milliseconds (U2-c trim-handles
+/// clamp against them). `source-duration-ms` caps the right handle — `0` when
+/// the probe didn't report a duration ("unknown"; upper bound skipped, same
+/// policy as `session::trim_clip`).
 export struct TlChip {
     label: string,
     width-weight: float,
     chip-idx: int,
     is-video: bool,
     is-subtitle: bool,
+    clip-id: string,
+    begin-ms: int,
+    end-ms: int,
+    source-duration-ms: int,
 }
 
 /// Single timeline lane: label column + chip strip (or empty state).
@@ -33,6 +46,15 @@ component FilmstripLane inherits VerticalBox {
     in property <[TlChip]> chips;
     in property <bool> delete-enabled: true;
     callback track-delete();
+    /// U2-c: edge-drag trim commit. `edge` is 0 (left = in_point) or 1
+    /// (right = out_point). `delta-ratio` is the drag distance as a fraction
+    /// of the chip's current rendered width — the Rust side multiplies by the
+    /// chip's current `(end_ms - begin_ms)` to get a source-ms delta and then
+    /// delegates to `session::trim_clip`. `delta-ratio` can be negative (drag
+    /// left) or exceed ±1 (drag past the chip) — invariants are enforced in
+    /// `trim_clip`, so out-of-range deltas just surface as a "trim failed"
+    /// status message with no mutation.
+    callback clip-trim-commit(string /* clip-id */, int /* edge */, float /* delta-ratio */);
     spacing: 0;
     lane-hover := TouchArea {
         width: 100%;
@@ -127,7 +149,7 @@ component FilmstripLane inherits VerticalBox {
                     spacing: 3px;
                     padding: 4px;
                     alignment: start;
-                    for item in root.chips: Rectangle {
+                    for item in root.chips: chip-rect := Rectangle {
                         horizontal-stretch: item.width-weight;
                         min-width: 60px;
                         height: 40px;
@@ -172,6 +194,69 @@ component FilmstripLane inherits VerticalBox {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                 }
+                            }
+                        }
+                        // U2-c edge-trim handles. Gated on `clip-id != ""` so
+                        // synthetic single-media container-stream chips (which
+                        // don't map to an editable Clip) don't expose handles.
+                        // Each handle captures the pointer on press; on release
+                        // we emit `clip-trim-commit` with the drag distance as
+                        // a fraction of the chip's rendered width. Rust applies
+                        // it against the chip's begin/end ms and delegates to
+                        // `session::trim_clip`, which enforces invariants.
+                        if item.clip-id != "": left-trim := TouchArea {
+                            x: 0;
+                            y: 0;
+                            width: 6px;
+                            height: parent.height;
+                            mouse-cursor: ew-resize;
+                            pointer-event(ev) => {
+                                if (ev.kind == PointerEventKind.up
+                                        && ev.button == PointerEventButton.left
+                                        && chip-rect.width > 0) {
+                                    root.clip-trim-commit(
+                                        item.clip-id,
+                                        0,
+                                        (self.mouse-x - self.pressed-x) / chip-rect.width,
+                                    );
+                                }
+                            }
+                            // Thin vertical accent bar so the handle reads
+                            // even when the chip isn't hovered; brightens on
+                            // hover so it's obvious the edge is draggable.
+                            Rectangle {
+                                x: 0;
+                                width: 2px;
+                                height: parent.height - 4px;
+                                y: 2px;
+                                background: left-trim.has-hover ? #ffffffcc : #ffffff40;
+                                border-radius: 1px;
+                            }
+                        }
+                        if item.clip-id != "": right-trim := TouchArea {
+                            x: parent.width - self.width;
+                            y: 0;
+                            width: 6px;
+                            height: parent.height;
+                            mouse-cursor: ew-resize;
+                            pointer-event(ev) => {
+                                if (ev.kind == PointerEventKind.up
+                                        && ev.button == PointerEventButton.left
+                                        && chip-rect.width > 0) {
+                                    root.clip-trim-commit(
+                                        item.clip-id,
+                                        1,
+                                        (self.mouse-x - self.pressed-x) / chip-rect.width,
+                                    );
+                                }
+                            }
+                            Rectangle {
+                                x: parent.width - 2px;
+                                width: 2px;
+                                height: parent.height - 4px;
+                                y: 2px;
+                                background: right-trim.has-hover ? #ffffffcc : #ffffff40;
+                                border-radius: 1px;
                             }
                         }
                     }
@@ -254,6 +339,9 @@ export component AppWindow inherits Window {
     /// 0.0–1.0 while exporting; reset when export ends.
     in property <float> export-progress: 0.0;
     in property <bool> insert-audio-enabled: false;
+    /// Enabled when **media-ready** AND at least one `TrackKind::Subtitle` lane exists
+    /// (gate set in `sync_menu`).
+    in property <bool> insert-subtitle-enabled: false;
 
     /// One line per video track lane, newline-separated (see session.video_track_row_labels).
     in property <string> video-track-lanes: "";
@@ -315,6 +403,7 @@ export component AppWindow inherits Window {
     callback file-save();
     callback file-insert-video();
     callback file-insert-audio();
+    callback file-insert-subtitle();
     callback file-new-video-track();
     callback file-new-audio-track();
     callback file-new-subtitle-track();
@@ -322,6 +411,15 @@ export component AppWindow inherits Window {
     callback delete-video-track(int);
     callback delete-audio-track(int);
     callback delete-subtitle-track(int);
+    /// U2-c: per-clip edge-drag trim commit. `clip-id` is the UUID of the
+    /// backing `reel_core::project::Clip`, `edge` is 0 (left = in-point) or 1
+    /// (right = out-point), `delta-ratio` is drag distance as a fraction of the
+    /// chip's rendered width. Rust applies `new = old + delta-ratio * (end-begin)`
+    /// and delegates to `session::trim_clip`, whose invariants reject
+    /// over-extension / sub-50-ms clips without pushing undo.
+    /// Ripple is automatic — the project's sequential clip model has no absolute
+    /// timeline positions, so shrinking any clip pulls the rest forward.
+    callback clip-trim-commit(string /* clip-id */, int /* edge */, float /* delta-ratio */);
     callback file-export();
     callback export-cancel();
     callback export-preset-cancel();
@@ -329,8 +427,8 @@ export component AppWindow inherits Window {
 
     in-out property <bool> export-preset-dialog-visible: false;
     /// 0 = MP4 remux, 1 = MP4 H.264+AAC, 2 = MP4 H.265+AAC,
-    /// 3 = WebM VP8+Opus, 4 = WebM VP9+Opus, 5 = WebM AV1+Opus, 6 = MKV remux
-    /// (`docs/SUPPORTED_FORMATS.md`).
+    /// 3 = WebM VP8+Opus, 4 = WebM VP9+Opus, 5 = WebM AV1+Opus,
+    /// 6 = MKV remux, 7 = MOV remux (`docs/SUPPORTED_FORMATS.md`).
     in-out property <int> export-preset-index: 0;
 
     callback edit-undo();
@@ -577,6 +675,13 @@ export component AppWindow inherits Window {
                 shortcut: @keys(Control + Shift + I);
                 enabled: root.insert-audio-enabled;
                 activated => { root.file-insert-audio(); }
+            }
+            MenuItem {
+                title: "Insert Subtitle…";
+                icon: @image-url("icons/lucide/type.svg");
+                shortcut: @keys(Control + Alt + I);
+                enabled: root.insert-subtitle-enabled;
+                activated => { root.file-insert-subtitle(); }
             }
             MenuSeparator { }
             MenuItem {
@@ -974,6 +1079,13 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.I && event.modifiers.control && event.modifiers.shift) {
                 if (root.insert-audio-enabled) {
                     root.file-insert-audio();
+                    accept
+                } else {
+                    reject
+                }
+            } else if (event.text == Key.I && event.modifiers.control && event.modifiers.alt) {
+                if (root.insert-subtitle-enabled) {
+                    root.file-insert-subtitle();
                     accept
                 } else {
                     reject
@@ -1986,6 +2098,9 @@ export component AppWindow inherits Window {
                         track-delete => {
                             root.delete-video-track(0);
                         }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
+                        }
                     }
                     if root.tl_video_track_count >= 2: FilmstripLane {
                         lane-label: "V2";
@@ -1994,6 +2109,9 @@ export component AppWindow inherits Window {
                         delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
                         track-delete => {
                             root.delete-video-track(1);
+                        }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
                         }
                     }
                     if root.tl_video_track_count >= 3: FilmstripLane {
@@ -2004,6 +2122,9 @@ export component AppWindow inherits Window {
                         track-delete => {
                             root.delete-video-track(2);
                         }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
+                        }
                     }
                     if root.tl_video_track_count >= 4: FilmstripLane {
                         lane-label: "V4";
@@ -2012,6 +2133,9 @@ export component AppWindow inherits Window {
                         delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
                         track-delete => {
                             root.delete-video-track(3);
+                        }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
                         }
                     }
                 }
@@ -2077,6 +2201,9 @@ export component AppWindow inherits Window {
                         track-delete => {
                             root.delete-audio-track(0);
                         }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
+                        }
                     }
                     if root.tl_audio_track_count >= 2: FilmstripLane {
                         lane-label: "A2";
@@ -2085,6 +2212,9 @@ export component AppWindow inherits Window {
                         delete-enabled: 1 < root.tl_audio_project_track_count;
                         track-delete => {
                             root.delete-audio-track(1);
+                        }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
                         }
                     }
                     if root.tl_audio_track_count >= 3: FilmstripLane {
@@ -2095,6 +2225,9 @@ export component AppWindow inherits Window {
                         track-delete => {
                             root.delete-audio-track(2);
                         }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
+                        }
                     }
                     if root.tl_audio_track_count >= 4: FilmstripLane {
                         lane-label: "A4";
@@ -2103,6 +2236,9 @@ export component AppWindow inherits Window {
                         delete-enabled: 3 < root.tl_audio_project_track_count;
                         track-delete => {
                             root.delete-audio-track(3);
+                        }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
                         }
                     }
                 }
@@ -2168,6 +2304,9 @@ export component AppWindow inherits Window {
                         track-delete => {
                             root.delete-subtitle-track(0);
                         }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
+                        }
                     }
                     if root.tl_subtitle_track_count >= 2: FilmstripLane {
                         lane-label: "S2";
@@ -2176,6 +2315,9 @@ export component AppWindow inherits Window {
                         delete-enabled: 1 < root.tl_subtitle_project_track_count;
                         track-delete => {
                             root.delete-subtitle-track(1);
+                        }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
                         }
                     }
                     if root.tl_subtitle_track_count >= 3: FilmstripLane {
@@ -2186,6 +2328,9 @@ export component AppWindow inherits Window {
                         track-delete => {
                             root.delete-subtitle-track(2);
                         }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
+                        }
                     }
                     if root.tl_subtitle_track_count >= 4: FilmstripLane {
                         lane-label: "S4";
@@ -2194,6 +2339,9 @@ export component AppWindow inherits Window {
                         delete-enabled: 3 < root.tl_subtitle_project_track_count;
                         track-delete => {
                             root.delete-subtitle-track(3);
+                        }
+                        clip-trim-commit(id, edge, r) => {
+                            root.clip-trim-commit(id, edge, r);
                         }
                     }
                 }
@@ -2521,6 +2669,33 @@ export component AppWindow inherits Window {
                                             }
                                             Text {
                                                 text: "Flexible container; good for mixed codecs.";
+                                                color: #888;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.export-preset-index = 7;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 7 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 7 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "MOV — remux (stream copy)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "QuickTime container; pro-handoff. Accepts H.264 / HEVC + AAC / PCM.";
                                                 color: #888;
                                                 font-size: 10px;
                                                 wrap: word-wrap;

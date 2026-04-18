@@ -15,11 +15,13 @@ use crate::project::{ClipOrientation, ClipScale};
 
 /// Build a combined ffmpeg `-vf` filter chain from optional per-project-clip
 /// transforms. Flips and rotation come first (matching [`ClipOrientation`]'s
-/// contract), scale last — so the scale filter sees post-rotation dimensions
-/// and the ffmpeg `yuv420p` even-dim constraint is satisfied on the final output.
+/// contract), scale next, then subtitle burn-in **last** — so captions are
+/// rendered on the final, already-oriented-and-scaled frame at delivery
+/// resolution (otherwise a 50% scale would shrink the text to illegibility).
 fn combined_vf_chain(
     orientation: Option<ClipOrientation>,
     scale: Option<ClipScale>,
+    subtitles: Option<&Path>,
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(chain) = orientation.and_then(|o| o.ffmpeg_filter_chain()) {
@@ -28,11 +30,33 @@ fn combined_vf_chain(
     if let Some(chain) = scale.and_then(|s| s.ffmpeg_filter_chain()) {
         parts.push(chain);
     }
+    if let Some(sub) = subtitles {
+        parts.push(format!("subtitles='{}'", escape_subtitles_path(sub)));
+    }
     if parts.is_empty() {
         None
     } else {
         Some(parts.join(","))
     }
+}
+
+/// Escape a filesystem path for ffmpeg's `subtitles='...'` filter argument.
+///
+/// Inside single-quoted filter-graph arguments, `\` and `'` must be escaped;
+/// `:` needs an extra backslash because the outer filter parser treats `:` as
+/// an option-separator. Backslashes (Windows paths) are normalised to `/`
+/// first so the resulting chain stays portable.
+fn escape_subtitles_path(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '\'' => out.push_str("\\'"),
+            ':' => out.push_str("\\:"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Web-friendly outputs we guarantee in tests (see `tests/export_web_formats.rs`).
@@ -57,10 +81,15 @@ pub enum WebExportFormat {
     WebmAv1Opus,
     /// Matroska; stream copy for quick container swap tests.
     MkvRemux,
+    /// QuickTime `.mov`; stream copy — pro-handoff container that keeps
+    /// H.264 / HEVC + AAC / PCM without re-encoding. Uses `+faststart` so
+    /// delivery uploads can start without a post-mux index rewrite, same as
+    /// the MP4 remux path.
+    MovRemux,
 }
 
 impl WebExportFormat {
-    pub const ALL: [WebExportFormat; 7] = [
+    pub const ALL: [WebExportFormat; 8] = [
         WebExportFormat::Mp4Remux,
         WebExportFormat::Mp4H264Aac,
         WebExportFormat::Mp4H265Aac,
@@ -68,6 +97,7 @@ impl WebExportFormat {
         WebExportFormat::WebmVp9Opus,
         WebExportFormat::WebmAv1Opus,
         WebExportFormat::MkvRemux,
+        WebExportFormat::MovRemux,
     ];
 
     pub fn file_extension(self) -> &'static str {
@@ -79,6 +109,7 @@ impl WebExportFormat {
             | WebExportFormat::WebmVp9Opus
             | WebExportFormat::WebmAv1Opus => "webm",
             WebExportFormat::MkvRemux => "mkv",
+            WebExportFormat::MovRemux => "mov",
         }
     }
 }
@@ -155,7 +186,7 @@ pub fn export_concat_timeline(
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
     export_concat_timeline_oriented(
-        segments, None, None, false, output, format, cancel, on_ratio,
+        segments, None, None, None, false, output, format, cancel, on_ratio,
     )
 }
 
@@ -169,6 +200,7 @@ pub fn export_concat_timeline_oriented(
     segments: &[(PathBuf, f64, f64)],
     orientation: Option<ClipOrientation>,
     scale: Option<ClipScale>,
+    subtitles: Option<&Path>,
     mute_audio: bool,
     output: &Path,
     format: WebExportFormat,
@@ -203,7 +235,7 @@ pub fn export_concat_timeline_oriented(
     let total_ms = timeline_total_ms(segments);
     let progress = map_progress_fn(on_ratio, total_ms);
     let progress_pack = pack_progress_tempfile(progress)?;
-    let vf_chain = combined_vf_chain(orientation, scale);
+    let vf_chain = combined_vf_chain(orientation, scale, subtitles);
 
     if segments.len() == 1 {
         let (p, in_s, out_s) = &segments[0];
@@ -313,7 +345,74 @@ pub fn export_concat_with_audio(
         audio_segments,
         None,
         None,
+        None,
         false,
+        output,
+        format,
+        cancel,
+        on_ratio,
+    )
+}
+
+/// U2-b multi-audio-lane export entry point. Accepts **0, 1, or N** audio lanes:
+///
+/// - **0 lanes** (`audio_lanes.is_empty()` or `mute_audio`): delegates to the
+///   video-only path (`export_concat_timeline_oriented`).
+/// - **1 lane**: delegates to the existing single-audio path
+///   (`export_concat_with_audio_oriented`) — unchanged fast path, `-c:a copy`
+///   still possible on remux presets.
+/// - **2+ lanes**: mixes via ffmpeg `amix` (see
+///   `export_concat_with_audio_mix_oriented`). Forces audio transcode because
+///   amix produces a new stream.
+///
+/// `audio_lanes` must be in project order (first = preview-driving lane).
+/// Empty lane vectors inside the outer vec are not expected — `timeline::
+/// clips_from_all_audio_tracks` strips lanes with no clips.
+pub fn export_concat_with_audio_lanes_oriented(
+    video_segments: &[(PathBuf, f64, f64)],
+    audio_lanes: &[Vec<(PathBuf, f64, f64)>],
+    orientation: Option<ClipOrientation>,
+    scale: Option<ClipScale>,
+    subtitles: Option<&Path>,
+    mute_audio: bool,
+    output: &Path,
+    format: WebExportFormat,
+    cancel: Option<&AtomicBool>,
+    on_ratio: Option<ExportProgressFn>,
+) -> Result<(), ExportError> {
+    if mute_audio || audio_lanes.is_empty() {
+        return export_concat_timeline_oriented(
+            video_segments,
+            orientation,
+            scale,
+            subtitles,
+            mute_audio,
+            output,
+            format,
+            cancel,
+            on_ratio,
+        );
+    }
+    if audio_lanes.len() == 1 {
+        return export_concat_with_audio_oriented(
+            video_segments,
+            Some(audio_lanes[0].as_slice()),
+            orientation,
+            scale,
+            subtitles,
+            false,
+            output,
+            format,
+            cancel,
+            on_ratio,
+        );
+    }
+    export_concat_with_audio_mix_oriented(
+        video_segments,
+        audio_lanes,
+        orientation,
+        scale,
+        subtitles,
         output,
         format,
         cancel,
@@ -332,6 +431,7 @@ pub fn export_concat_with_audio_oriented(
     audio_segments: Option<&[(PathBuf, f64, f64)]>,
     orientation: Option<ClipOrientation>,
     scale: Option<ClipScale>,
+    subtitles: Option<&Path>,
     mute_audio: bool,
     output: &Path,
     format: WebExportFormat,
@@ -343,6 +443,7 @@ pub fn export_concat_with_audio_oriented(
             video_segments,
             orientation,
             scale,
+            subtitles,
             true,
             output,
             format,
@@ -355,6 +456,7 @@ pub fn export_concat_with_audio_oriented(
             video_segments,
             orientation,
             scale,
+            subtitles,
             false,
             output,
             format,
@@ -413,7 +515,7 @@ pub fn export_concat_with_audio_oriented(
     let total_ms = timeline_total_ms(video_segments);
     let progress = map_progress_fn(on_ratio, total_ms);
     let progress_pack = pack_progress_tempfile(progress)?;
-    let vf_chain = combined_vf_chain(orientation, scale);
+    let vf_chain = combined_vf_chain(orientation, scale, subtitles);
 
     let dir = tempfile::tempdir().map_err(|e| ExportError {
         message: format!("timeline export: temp dir: {e}"),
@@ -453,6 +555,311 @@ pub fn export_concat_with_audio_oriented(
     append_dual_mux_format_args_with_vf(&mut cmd, format, vf_chain.as_deref());
     cmd.arg(output);
     run_ffmpeg(cmd, output, cancel, progress_pack)
+}
+
+/// Mix `audio_lanes.len() >= 2` audio lanes onto a concat video timeline via
+/// `-filter_complex` with an `amix` node. Each lane becomes its own `concat`
+/// demuxer input; the mixed stream is emitted as `[aout]`.
+///
+/// `normalize=0` means lanes are summed at unit gain (no automatic half-volume
+/// for N=2). Callers that need attenuation should apply it per-lane upstream or
+/// request a follow-up preview-mixer change. `duration=longest` keeps the
+/// output audio as long as the longest lane; the `-t video_dur` cap still
+/// bounds total output length to the video timeline.
+///
+/// The amix output cannot be stream-copied — every preset forces a container-
+/// appropriate audio codec via [`append_mixed_audio_format_args`].
+fn export_concat_with_audio_mix_oriented(
+    video_segments: &[(PathBuf, f64, f64)],
+    audio_lanes: &[Vec<(PathBuf, f64, f64)>],
+    orientation: Option<ClipOrientation>,
+    scale: Option<ClipScale>,
+    subtitles: Option<&Path>,
+    output: &Path,
+    format: WebExportFormat,
+    cancel: Option<&AtomicBool>,
+    on_ratio: Option<ExportProgressFn>,
+) -> Result<(), ExportError> {
+    if audio_lanes.len() < 2 {
+        return Err(ExportError {
+            message: "timeline export: amix requires at least 2 audio lanes".into(),
+        });
+    }
+    if video_segments.is_empty() {
+        return Err(ExportError {
+            message: "timeline export: no video segments".into(),
+        });
+    }
+    for (p, in_s, out_s) in video_segments {
+        if *out_s <= *in_s {
+            return Err(ExportError {
+                message: format!(
+                    "timeline export: invalid video span for {} (in {in_s} >= out {out_s})",
+                    p.display()
+                ),
+            });
+        }
+        if !p.is_file() {
+            return Err(ExportError {
+                message: format!("timeline export: not a file: {}", p.display()),
+            });
+        }
+    }
+    for (lane_idx, lane) in audio_lanes.iter().enumerate() {
+        if lane.is_empty() {
+            return Err(ExportError {
+                message: format!("timeline export: audio lane {lane_idx} is empty"),
+            });
+        }
+        for (p, in_s, out_s) in lane {
+            if *out_s <= *in_s {
+                return Err(ExportError {
+                    message: format!(
+                        "timeline export: invalid audio span for {} (lane {lane_idx}, in {in_s} >= out {out_s})",
+                        p.display()
+                    ),
+                });
+            }
+            if !p.is_file() {
+                return Err(ExportError {
+                    message: format!("timeline export: not a file: {}", p.display()),
+                });
+            }
+        }
+    }
+
+    if let Some(parent) = output.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let video_dur = segments_duration_s(video_segments);
+    if video_dur <= 0.0 {
+        return Err(ExportError {
+            message: "timeline export: zero video duration".into(),
+        });
+    }
+
+    let total_ms = timeline_total_ms(video_segments);
+    let progress = map_progress_fn(on_ratio, total_ms);
+    let progress_pack = pack_progress_tempfile(progress)?;
+    let vf_chain = combined_vf_chain(orientation, scale, subtitles);
+
+    let dir = tempfile::tempdir().map_err(|e| ExportError {
+        message: format!("timeline export: temp dir: {e}"),
+    })?;
+    let v_list = dir.path().join("reel_video.ffconcat");
+    write_ffconcat_list(video_segments, &v_list)?;
+    let mut a_lists = Vec::with_capacity(audio_lanes.len());
+    for (i, lane) in audio_lanes.iter().enumerate() {
+        let a_list = dir.path().join(format!("reel_audio_{i}.ffconcat"));
+        write_ffconcat_list(lane, &a_list)?;
+        a_lists.push(a_list);
+    }
+
+    let n = audio_lanes.len();
+    let filter_complex = build_amix_filter_complex(n, vf_chain.as_deref());
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y");
+    if let Some((_, _, ref pf)) = progress_pack {
+        cmd.arg("-progress").arg(pf.path());
+    }
+    cmd.arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&v_list);
+    for a_list in &a_lists {
+        cmd.arg("-f")
+            .arg("concat")
+            .arg("-safe")
+            .arg("0")
+            .arg("-i")
+            .arg(a_list);
+    }
+    cmd.arg("-filter_complex").arg(&filter_complex);
+    if vf_chain.is_some() {
+        cmd.arg("-map").arg("[vout]");
+    } else {
+        cmd.arg("-map").arg("0:v:0");
+    }
+    cmd.arg("-map")
+        .arg("[aout]")
+        .arg("-t")
+        .arg(format!("{video_dur:.6}"))
+        .stdout(Stdio::null());
+    append_mixed_audio_format_args(&mut cmd, format, vf_chain.is_some());
+    cmd.arg(output);
+    run_ffmpeg(cmd, output, cancel, progress_pack)
+}
+
+/// Build the `-filter_complex` argument for the amix export. Audio inputs start
+/// at ffmpeg input index 1 because the single video concat lives at index 0.
+/// When `vf_chain` is present, the mapped video also routes through filter_complex
+/// as `[0:v:0]VF[vout]` so callers can `-map [vout]`.
+fn build_amix_filter_complex(n: usize, vf_chain: Option<&str>) -> String {
+    debug_assert!(n >= 2, "amix path requires >= 2 lanes");
+    let mut s = String::new();
+    if let Some(chain) = vf_chain {
+        s.push_str(&format!("[0:v:0]{chain}[vout];"));
+    }
+    for i in 0..n {
+        let input_idx = i + 1;
+        s.push_str(&format!("[{input_idx}:a:0]"));
+    }
+    s.push_str(&format!(
+        "amix=inputs={n}:duration=longest:normalize=0[aout]"
+    ));
+    s
+}
+
+/// Codec selection for the amix path. Unlike the single-audio dual-mux helper,
+/// amix output is always filter-graph PCM and cannot be `-c:a copy` — every
+/// preset forces a container-appropriate audio encoder. Video stays stream-
+/// copy-eligible only when no `-vf`/`[vout]` chain is active.
+fn append_mixed_audio_format_args(
+    cmd: &mut Command,
+    format: WebExportFormat,
+    vf_present: bool,
+) {
+    match (format, vf_present) {
+        (WebExportFormat::Mp4Remux, false) => {
+            cmd.args([
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+            ]);
+        }
+        (WebExportFormat::Mp4Remux, true) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+        (WebExportFormat::Mp4H264Aac, _) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+        (WebExportFormat::Mp4H265Aac, _) => {
+            cmd.args([
+                "-c:v",
+                "libx265",
+                "-preset",
+                "medium",
+                "-crf",
+                "24",
+                "-pix_fmt",
+                "yuv420p",
+                "-tag:v",
+                "hvc1",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+        (WebExportFormat::WebmVp8Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libvpx",
+                "-quality",
+                "good",
+                "-cpu-used",
+                "4",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::WebmVp9Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                "32",
+                "-row-mt",
+                "1",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::WebmAv1Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libaom-av1",
+                "-crf",
+                "30",
+                "-b:v",
+                "0",
+                "-cpu-used",
+                "6",
+                "-row-mt",
+                "1",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::MkvRemux, false) => {
+            cmd.args(["-c:v", "copy", "-c:a", "aac", "-b:a", "160k"]);
+        }
+        (WebExportFormat::MkvRemux, true) => {
+            cmd.args([
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+            ]);
+        }
+        (WebExportFormat::MovRemux, false) => {
+            cmd.args([
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+            ]);
+        }
+        (WebExportFormat::MovRemux, true) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
+    }
 }
 
 /// Like [`append_format_args_with_vf`] but for two-input `-map 0:v:0 -map 1:a:0`
@@ -576,6 +983,23 @@ fn append_dual_mux_format_args_with_vf(
         }
         (WebExportFormat::MkvRemux, true) => {
             cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy"]);
+        }
+        (WebExportFormat::MovRemux, false) => {
+            cmd.args([
+                "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart",
+            ]);
+        }
+        (WebExportFormat::MovRemux, true) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+            ]);
         }
     }
 }
@@ -723,6 +1147,21 @@ fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_cha
         }
         (WebExportFormat::MkvRemux, true) => {
             cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]);
+        }
+        (WebExportFormat::MovRemux, false) => {
+            cmd.args(["-c", "copy", "-movflags", "+faststart"]);
+        }
+        (WebExportFormat::MovRemux, true) => {
+            cmd.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+            ]);
         }
     }
 }
@@ -890,6 +1329,7 @@ pub fn ffmpeg_args_for_format(format: WebExportFormat) -> Vec<&'static str> {
             "96k",
         ],
         WebExportFormat::MkvRemux => vec!["-c", "copy"],
+        WebExportFormat::MovRemux => vec!["-c", "copy", "-movflags", "+faststart"],
     }
 }
 
@@ -1016,6 +1456,75 @@ mod tests {
     }
 
     #[test]
+    fn amix_filter_complex_two_lanes_no_vf_concats_inputs_to_aout() {
+        let fc = build_amix_filter_complex(2, None);
+        assert_eq!(
+            fc, "[1:a:0][2:a:0]amix=inputs=2:duration=longest:normalize=0[aout]",
+            "amix with N=2 must tag inputs 1 & 2 (not 0, that's the video concat)"
+        );
+        // Explicit guards against the easy-to-regress pieces:
+        assert!(!fc.contains("normalize=1"), "normalize=0 keeps unit gain");
+        assert!(fc.contains("duration=longest"));
+    }
+
+    #[test]
+    fn amix_filter_complex_three_lanes_prepends_all_audio_taps() {
+        let fc = build_amix_filter_complex(3, None);
+        assert_eq!(
+            fc, "[1:a:0][2:a:0][3:a:0]amix=inputs=3:duration=longest:normalize=0[aout]"
+        );
+    }
+
+    #[test]
+    fn amix_filter_complex_prepends_video_chain_when_vf_present() {
+        let fc = build_amix_filter_complex(2, Some("transpose=1,scale=-2:720"));
+        // Video chain must come first, separated by `;`, ending in `[vout]`.
+        let (video, audio) = fc.split_once(';').expect("video and audio segments");
+        assert_eq!(video, "[0:v:0]transpose=1,scale=-2:720[vout]");
+        assert_eq!(
+            audio, "[1:a:0][2:a:0]amix=inputs=2:duration=longest:normalize=0[aout]"
+        );
+    }
+
+    #[test]
+    fn mixed_audio_format_mp4_remux_forces_aac_even_without_vf() {
+        // amix output is always filter-graph PCM; stream-copy would produce an
+        // invalid MP4. `Mp4Remux` must still force aac here even though it's the
+        // "no transcode" preset in the dual-mux path.
+        let mut cmd = Command::new("ffmpeg");
+        append_mixed_audio_format_args(&mut cmd, WebExportFormat::Mp4Remux, false);
+        let args = cmd_args_as_strings(&cmd);
+        let c_a = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[c_a + 1], "aac", "amix path can never stream-copy audio");
+        // Video can still stream-copy when no vf is active.
+        let c_v = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[c_v + 1], "copy");
+    }
+
+    #[test]
+    fn mixed_audio_format_webm_uses_opus() {
+        let mut cmd = Command::new("ffmpeg");
+        append_mixed_audio_format_args(&mut cmd, WebExportFormat::WebmVp8Opus, false);
+        let args = cmd_args_as_strings(&cmd);
+        let c_a = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(
+            args[c_a + 1], "libopus",
+            "webm amix must use opus (aac would fail the muxer)"
+        );
+    }
+
+    #[test]
+    fn mixed_audio_format_mp4_remux_vf_present_transcodes_video() {
+        let mut cmd = Command::new("ffmpeg");
+        append_mixed_audio_format_args(&mut cmd, WebExportFormat::Mp4Remux, true);
+        let args = cmd_args_as_strings(&cmd);
+        let c_v = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[c_v + 1], "libx264", "vf chain forces libx264 transcode");
+        let c_a = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[c_a + 1], "aac");
+    }
+
+    #[test]
     fn orientation_driven_vf_chain_rejects_identity() {
         let id = ClipOrientation::default();
         assert!(id.ffmpeg_filter_chain().is_none());
@@ -1027,7 +1536,7 @@ mod tests {
         o.rotate_right();
         let mut s = ClipScale::default();
         s.set_percent(50);
-        let chain = combined_vf_chain(Some(o), Some(s)).unwrap();
+        let chain = combined_vf_chain(Some(o), Some(s), None).unwrap();
         let rot = chain.find("transpose=1").unwrap();
         let scl = chain.find("scale=").unwrap();
         assert!(rot < scl, "rotation must precede scale: {chain}");
@@ -1035,16 +1544,66 @@ mod tests {
 
     #[test]
     fn combined_vf_chain_identity_is_none() {
-        assert!(combined_vf_chain(None, None).is_none());
-        assert!(combined_vf_chain(Some(ClipOrientation::default()), Some(ClipScale::default()))
-            .is_none());
+        assert!(combined_vf_chain(None, None, None).is_none());
+        assert!(combined_vf_chain(
+            Some(ClipOrientation::default()),
+            Some(ClipScale::default()),
+            None,
+        )
+        .is_none());
     }
 
     #[test]
     fn combined_vf_chain_scale_only() {
         let mut s = ClipScale::default();
         s.set_percent(75);
-        let chain = combined_vf_chain(None, Some(s)).unwrap();
+        let chain = combined_vf_chain(None, Some(s), None).unwrap();
         assert!(chain.starts_with("scale="));
+    }
+
+    #[test]
+    fn combined_vf_chain_appends_subtitles_last() {
+        let mut o = ClipOrientation::default();
+        o.rotate_right();
+        let mut s = ClipScale::default();
+        s.set_percent(50);
+        let path = Path::new("/tmp/captions.srt");
+        let chain = combined_vf_chain(Some(o), Some(s), Some(path)).unwrap();
+        let rot = chain.find("transpose=1").unwrap();
+        let scl = chain.find("scale=").unwrap();
+        let sub = chain.find("subtitles=").unwrap();
+        assert!(rot < scl && scl < sub, "subtitles must be last: {chain}");
+    }
+
+    #[test]
+    fn combined_vf_chain_subtitles_only() {
+        let chain =
+            combined_vf_chain(None, None, Some(Path::new("/tmp/it.srt"))).unwrap();
+        assert_eq!(chain, "subtitles='/tmp/it.srt'");
+    }
+
+    #[test]
+    fn escape_subtitles_escapes_colon_and_quote() {
+        // Windows-style drive letters must have `:` escaped; single quotes in
+        // the filename must be backslash-escaped so the outer quotes stay paired.
+        let out = escape_subtitles_path(Path::new(r"C:\Subs\it's.srt"));
+        assert_eq!(out, r"C\:/Subs/it\'s.srt");
+    }
+
+    #[test]
+    fn subtitle_burn_in_forces_transcode_on_remux() {
+        let mut cmd = Command::new("ffmpeg");
+        let chain =
+            combined_vf_chain(None, None, Some(Path::new("/tmp/a.srt"))).unwrap();
+        append_format_args_with_vf(&mut cmd, WebExportFormat::Mp4Remux, Some(&chain));
+        let args = cmd_args_as_strings(&cmd);
+        assert!(
+            args.iter().any(|a| a.contains("subtitles=")),
+            "missing subtitles=: {args:?}"
+        );
+        // A `-c copy` video preset cannot apply a filter — the remux branch with
+        // a non-empty `-vf` must swap to a libx264 transcode.
+        assert!(args.iter().any(|a| a == "libx264"));
+        assert!(!args.iter().any(|a| a == "copy"));
     }
 }

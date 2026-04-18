@@ -22,7 +22,34 @@ pub(crate) struct PrimaryTimelineClip {
 
 /// First [`TrackKind::Audio`] track in project order (if any), concatenated like the primary video lane.
 pub(crate) fn clips_from_first_audio_track(p: &Project) -> Option<Vec<PrimaryTimelineClip>> {
-    let track = p.tracks.iter().find(|t| t.kind == TrackKind::Audio)?;
+    clips_for_audio_track_idx(p, 0)
+}
+
+/// U2-b: **all** [`TrackKind::Audio`] lanes in project order, each concatenated
+/// like the primary video lane. Lanes with no clips (or only zero-duration
+/// clips) are skipped entirely — they contribute nothing to the mix.
+///
+/// The result preserves project order: caller can assume `[0]` is the first
+/// audio lane (same semantics as `clips_from_first_audio_track` returns today).
+/// An empty `Vec` means "no audio anywhere" — the export pipeline falls back to
+/// embedded audio on the video segments, same policy as before multi-lane.
+pub(crate) fn clips_from_all_audio_tracks(p: &Project) -> Vec<Vec<PrimaryTimelineClip>> {
+    let mut lanes = Vec::new();
+    let audio_count = p.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+    for i in 0..audio_count {
+        if let Some(lane) = clips_for_audio_track_idx(p, i) {
+            lanes.push(lane);
+        }
+    }
+    lanes
+}
+
+fn clips_for_audio_track_idx(p: &Project, idx: usize) -> Option<Vec<PrimaryTimelineClip>> {
+    let track = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .nth(idx)?;
     let mut seq = 0.0_f64;
     let mut out = Vec::new();
     for cid in &track.clip_ids {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use reel_core::project::ClipOrientation;
-use reel_core::{Clip, FfmpegProbe, MediaProbe, Project, Track, TrackKind};
+use reel_core::{Clip, FfmpegProbe, MediaMetadata, MediaProbe, Project, Track, TrackKind};
 use uuid::Uuid;
 
 use crate::project_io::{is_project_document_path, load_project_file, project_from_media_path};
@@ -112,6 +112,18 @@ pub(crate) fn insert_plan_for_first_audio_track_ms(
     playhead_ms: f64,
 ) -> Option<InsertPlan> {
     let track = project.tracks.iter().find(|t| t.kind == TrackKind::Audio)?;
+    insert_plan_for_track_ms(project, track, playhead_ms)
+}
+
+/// Insert plan on the **first** [`TrackKind::Subtitle`] track (same sequence clock as primary video).
+pub(crate) fn insert_plan_for_first_subtitle_track_ms(
+    project: &Project,
+    playhead_ms: f64,
+) -> Option<InsertPlan> {
+    let track = project
+        .tracks
+        .iter()
+        .find(|t| t.kind == TrackKind::Subtitle)?;
     insert_plan_for_track_ms(project, track, playhead_ms)
 }
 
@@ -753,6 +765,49 @@ impl EditSession {
         Ok(())
     }
 
+    /// U2-c per-clip edge-drag trim. `edge` is `0` (left / in-point) or `1`
+    /// (right / out-point). `delta_ratio` is the drag distance as a fraction of
+    /// the chip's current duration (what the Slint handle emits), so:
+    ///
+    /// - left edge: `new_in  = in  + delta_ratio * (out - in)` (`out` unchanged)
+    /// - right edge: `new_out = out + delta_ratio * (out - in)` (`in` unchanged)
+    ///
+    /// Delegates to [`EditSession::trim_clip`] for invariant checking — so
+    /// rejecting trim past the source bounds, sub-50-ms duration, or a flipped
+    /// in/out doesn't pollute undo. Ripple is automatic: the project has no
+    /// absolute timeline positions, so shortening a clip pulls downstream
+    /// clips forward by the same delta without any extra bookkeeping here.
+    pub fn trim_clip_by_edge_drag(
+        &mut self,
+        clip_id: Uuid,
+        edge: u8,
+        delta_ratio: f64,
+    ) -> anyhow::Result<()> {
+        if !delta_ratio.is_finite() {
+            anyhow::bail!("delta_ratio must be finite");
+        }
+        let (cur_in, cur_out) = {
+            let p = self
+                .project
+                .as_ref()
+                .context("no project — open a file first")?;
+            let c = p
+                .clips
+                .iter()
+                .find(|c| c.id == clip_id)
+                .context("clip missing from project")?;
+            (c.in_point, c.out_point)
+        };
+        let dur = cur_out - cur_in;
+        let delta_s = delta_ratio * dur;
+        let (new_in, new_out) = match edge {
+            0 => (cur_in + delta_s, cur_out),
+            1 => (cur_in, cur_out + delta_s),
+            _ => anyhow::bail!("edge must be 0 (left) or 1 (right)"),
+        };
+        self.trim_clip(clip_id, new_in, new_out)
+    }
+
     /// Snapshot needed to populate the **Resize Video…** sheet for the clip at `seq_ms`.
     /// `None` when no project is loaded or the playhead isn't on a primary-track clip.
     pub fn resize_candidate_at_seq_ms(&self, seq_ms: f64) -> Option<ResizeCandidate> {
@@ -1242,6 +1297,146 @@ impl EditSession {
         Ok(())
     }
 
+    /// Insert a **subtitle clip** (`.srt`) at the playhead on the first
+    /// [`TrackKind::Subtitle`] lane. The lane must exist first
+    /// (**File → New Subtitle Track**).
+    ///
+    /// Duration comes from [`reel_core::probe_srt_file`] — the max cue end
+    /// time. Burn-in on export is handled by
+    /// [`crate::session::subtitle_burn_in_path`], which delegates to ffmpeg's
+    /// `subtitles=` filter.
+    pub fn insert_subtitle_clip_at_playhead(
+        &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+
+        let probe = reel_core::probe_srt_file(&path)
+            .with_context(|| format!("read subtitle file {}", path.display()))?;
+        if probe.cue_count == 0 {
+            anyhow::bail!("subtitle file has no cues: {}", path.display());
+        }
+
+        self.push_undo_snapshot();
+
+        let proj = self.project.as_mut().expect("project checked above");
+
+        let plan = insert_plan_for_first_subtitle_track_ms(proj, playhead_ms)
+            .context("add a subtitle track first (File → New Subtitle Track)")?;
+
+        let container = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_else(|| "srt".into());
+        let md = MediaMetadata {
+            path: path.clone(),
+            duration_seconds: probe.duration_seconds,
+            container,
+            video: None,
+            audio: None,
+            audio_disabled: false,
+            video_stream_count: 0,
+            audio_stream_count: 0,
+            subtitle_stream_count: 1,
+        };
+        let new_id = Uuid::new_v4();
+        let new_clip = Clip {
+            id: new_id,
+            source_path: path,
+            metadata: md,
+            in_point: 0.0,
+            out_point: probe.duration_seconds,
+            orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
+            extensions: Default::default(),
+        };
+
+        let track = proj
+            .tracks
+            .iter_mut()
+            .find(|t| t.kind == TrackKind::Subtitle)
+            .context("no subtitle track")?;
+
+        match plan {
+            InsertPlan::AtIndex(insert_at) => {
+                proj.clips.push(new_clip);
+                let insert_at = insert_at.min(track.clip_ids.len());
+                track.clip_ids.insert(insert_at, new_id);
+            }
+            InsertPlan::Split {
+                clip_index,
+                local_ms,
+            } => {
+                let old_id = *track.clip_ids.get(clip_index).context("split clip index")?;
+                let old = proj
+                    .clips
+                    .iter()
+                    .find(|c| c.id == old_id)
+                    .context("split clip missing")?
+                    .clone();
+                let split_sec = old.in_point + (local_ms / 1000.0).max(0.0);
+                let left_id = Uuid::new_v4();
+                let right_id = Uuid::new_v4();
+                let left = Clip {
+                    id: left_id,
+                    source_path: old.source_path.clone(),
+                    metadata: old.metadata.clone(),
+                    in_point: old.in_point,
+                    out_point: split_sec,
+                    orientation: old.orientation,
+                    scale: old.scale,
+                    audio_mute: old.audio_mute,
+                    extensions: Default::default(),
+                };
+                let right = Clip {
+                    id: right_id,
+                    source_path: old.source_path.clone(),
+                    metadata: old.metadata.clone(),
+                    in_point: split_sec,
+                    out_point: old.out_point,
+                    orientation: old.orientation,
+                    scale: old.scale,
+                    audio_mute: old.audio_mute,
+                    extensions: Default::default(),
+                };
+                proj.clips.retain(|c| c.id != old_id);
+                proj.clips.push(left);
+                proj.clips.push(right);
+                proj.clips.push(new_clip);
+                track
+                    .clip_ids
+                    .splice(clip_index..=clip_index, [left_id, new_id, right_id]);
+            }
+        }
+
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Absolute path to the **first subtitle clip** on the first
+    /// [`TrackKind::Subtitle`] lane, if any — used by export to decide whether
+    /// to burn captions into the video with ffmpeg's `subtitles=` filter.
+    ///
+    /// Returns `None` when there is no subtitle track, the track is empty, or
+    /// the referenced clip can't be canonicalised.
+    pub fn primary_subtitle_path(&self) -> Option<PathBuf> {
+        let proj = self.project.as_ref()?;
+        let track = proj
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Subtitle)?;
+        let first_id = *track.clip_ids.first()?;
+        let clip = proj.clips.iter().find(|c| c.id == first_id)?;
+        Some(clip.source_path.clone())
+    }
+
     fn push_undo_snapshot(&mut self) {
         if let Some(ref p) = self.project {
             if self.undo.len() >= MAX_UNDO {
@@ -1390,14 +1585,42 @@ pub fn path_matches_export_format(path: &Path, fmt: reel_core::WebExportFormat) 
         | reel_core::WebExportFormat::WebmVp9Opus
         | reel_core::WebExportFormat::WebmAv1Opus => ext == "webm",
         reel_core::WebExportFormat::MkvRemux => ext == "mkv",
+        reel_core::WebExportFormat::MovRemux => ext == "mov",
+    }
+}
+
+/// For the **remux** presets (`Mp4Remux`, `MkvRemux`, `MovRemux`) return a
+/// short hint the status line appends to the ffmpeg failure message, pointing
+/// the user at a transcode preset that doesn't require codec/container
+/// compatibility.
+///
+/// Non-remux presets already transcode, so their failures are not recoverable
+/// by switching presets — returns `None` there and the status stays terse.
+pub fn remux_failure_hint(fmt: reel_core::WebExportFormat) -> Option<&'static str> {
+    match fmt {
+        reel_core::WebExportFormat::Mp4Remux => Some(
+            "Remux requires H.264/HEVC + AAC in an MP4 container. \
+             Try the MP4 — H.264 + AAC or MP4 — HEVC + AAC preset.",
+        ),
+        reel_core::WebExportFormat::MkvRemux => Some(
+            "Remux copies the source streams unchanged. \
+             If the source codecs are incompatible, try a WebM preset \
+             (VP9 + Opus is a good default).",
+        ),
+        reel_core::WebExportFormat::MovRemux => Some(
+            "MOV remux accepts H.264/HEVC + AAC/PCM. \
+             For incompatible sources, transcode via MP4 — H.264 + AAC \
+             then rename, or use an MP4 preset directly.",
+        ),
+        _ => None,
     }
 }
 
 /// Preset row from **Export** dialog.
 ///
-/// Order groups by container then codec (MP4 → WebM → MKV):
+/// Order groups by container then codec (MP4 → WebM → MKV → MOV):
 /// `0` MP4 remux, `1` MP4 H.264+AAC, `2` MP4 H.265+AAC, `3` WebM VP8+Opus,
-/// `4` WebM VP9+Opus, `5` WebM AV1+Opus, `6` MKV remux.
+/// `4` WebM VP9+Opus, `5` WebM AV1+Opus, `6` MKV remux, `7` MOV remux.
 /// See `docs/SUPPORTED_FORMATS.md`.
 pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebExportFormat> {
     match index {
@@ -1408,6 +1631,7 @@ pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebE
         4 => Some(reel_core::WebExportFormat::WebmVp9Opus),
         5 => Some(reel_core::WebExportFormat::WebmAv1Opus),
         6 => Some(reel_core::WebExportFormat::MkvRemux),
+        7 => Some(reel_core::WebExportFormat::MovRemux),
         _ => None,
     }
 }
@@ -1694,6 +1918,31 @@ mod tests {
     }
 
     #[test]
+    fn remux_presets_get_transcode_hint_non_remux_dont() {
+        use reel_core::WebExportFormat as F;
+        // Remux presets fail when source codecs don't match the container,
+        // so their status should steer the user to a transcode alternative.
+        assert!(remux_failure_hint(F::Mp4Remux)
+            .map(|s| s.contains("H.264"))
+            .unwrap_or(false));
+        assert!(remux_failure_hint(F::MkvRemux)
+            .map(|s| s.contains("WebM"))
+            .unwrap_or(false));
+        // Transcode presets already re-encode, so ffmpeg errors there aren't
+        // a preset-choice problem — no hint.
+        assert!(remux_failure_hint(F::Mp4H264Aac).is_none());
+        assert!(remux_failure_hint(F::Mp4H265Aac).is_none());
+        assert!(remux_failure_hint(F::WebmVp8Opus).is_none());
+        assert!(remux_failure_hint(F::WebmVp9Opus).is_none());
+        assert!(remux_failure_hint(F::WebmAv1Opus).is_none());
+        // MOV remux is a fourth remux preset — it also gets a pointer to a
+        // transcode alternative when ffmpeg refuses the source streams.
+        assert!(remux_failure_hint(F::MovRemux)
+            .map(|s| s.contains("MP4"))
+            .unwrap_or(false));
+    }
+
+    #[test]
     fn path_matches_export_format_by_extension() {
         use reel_core::WebExportFormat as F;
         assert!(path_matches_export_format(Path::new("x.mp4"), F::Mp4Remux));
@@ -1711,11 +1960,16 @@ mod tests {
             F::WebmVp8Opus
         ));
         assert!(path_matches_export_format(Path::new("x.mkv"), F::MkvRemux));
+        assert!(path_matches_export_format(Path::new("x.mov"), F::MovRemux));
         assert!(!path_matches_export_format(
             Path::new("x.webm"),
             F::Mp4Remux
         ));
         assert!(!path_matches_export_format(Path::new("x.mp4"), F::MkvRemux));
+        // MOV is **not** an MP4 alias for the remux path — container magic
+        // differs (ftyp vs moov), and forcing a .mov into a .mp4 preset
+        // would mislabel the output on disk.
+        assert!(!path_matches_export_format(Path::new("x.mov"), F::Mp4Remux));
         assert!(!path_matches_export_format(
             Path::new("no_ext"),
             F::Mp4Remux
@@ -1752,8 +2006,12 @@ mod tests {
             web_export_format_from_preset_index(6),
             Some(reel_core::WebExportFormat::MkvRemux),
         );
+        assert_eq!(
+            web_export_format_from_preset_index(7),
+            Some(reel_core::WebExportFormat::MovRemux),
+        );
         assert_eq!(web_export_format_from_preset_index(-1), None);
-        assert_eq!(web_export_format_from_preset_index(7), None);
+        assert_eq!(web_export_format_from_preset_index(8), None);
     }
 
     fn clip_sec(id: Uuid, path: &str, sec: f64) -> Clip {
@@ -1981,6 +2239,107 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn insert_subtitle_fails_without_any_track() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let srt = dir.path().join("cap.srt");
+        std::fs::write(
+            &srt,
+            "1\n00:00:00,000 --> 00:00:02,000\nHello\n",
+        )
+        .unwrap();
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        let err = s
+            .insert_subtitle_clip_at_playhead(srt, 0.0)
+            .expect_err("no subtitle track yet");
+        let msg = format!("{err}");
+        assert!(
+            msg.to_lowercase().contains("subtitle"),
+            "expected subtitle-track error, got {msg}"
+        );
+    }
+
+    #[test]
+    fn insert_subtitle_appends_clip_and_is_undoable() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let srt = dir.path().join("cap.srt");
+        std::fs::write(
+            &srt,
+            "1\n00:00:00,500 --> 00:00:02,250\nHi\n",
+        )
+        .unwrap();
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        s.add_subtitle_track().unwrap();
+        s.insert_subtitle_clip_at_playhead(srt.clone(), 0.0)
+            .expect("happy path");
+        assert_eq!(s.primary_subtitle_path().as_deref(), Some(srt.as_path()));
+        let p = s.project().unwrap();
+        let sub_track = p
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Subtitle)
+            .unwrap();
+        assert_eq!(sub_track.clip_ids.len(), 1);
+        assert!(s.undo());
+        assert!(s.primary_subtitle_path().is_none());
+    }
+
+    #[test]
+    fn insert_subtitle_accepts_webvtt_file() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vtt = dir.path().join("cap.vtt");
+        std::fs::write(
+            &vtt,
+            "WEBVTT\n\n00:00:00.500 --> 00:00:02.000\nHi\n",
+        )
+        .unwrap();
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        s.add_subtitle_track().unwrap();
+        s.insert_subtitle_clip_at_playhead(vtt.clone(), 0.0)
+            .expect("WebVTT happy path");
+        assert_eq!(s.primary_subtitle_path().as_deref(), Some(vtt.as_path()));
+        let p = s.project().unwrap();
+        let clip = p
+            .clips
+            .iter()
+            .find(|c| c.source_path == vtt)
+            .expect("inserted clip present");
+        assert_eq!(clip.metadata.container, "vtt");
+    }
+
+    #[test]
+    fn insert_subtitle_rejects_empty_srt() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let srt = dir.path().join("empty.srt");
+        std::fs::write(&srt, "").unwrap();
+        let mut s = EditSession::default();
+        s.open_media(f).unwrap();
+        s.add_subtitle_track().unwrap();
+        let err = s
+            .insert_subtitle_clip_at_playhead(srt, 0.0)
+            .expect_err("empty srt should be rejected");
+        assert!(format!("{err}").to_lowercase().contains("no cues"));
     }
 
     #[test]
@@ -2225,6 +2584,105 @@ mod tests {
         assert!(s.trim_clip(first_id, f64::NAN, 1.0).is_err());
         assert!(s.trim_clip(first_id, 0.0, f64::INFINITY).is_err());
         assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_edge_drag_left_moves_in_point_by_ratio_of_duration() {
+        // Clip starts at [0.0, 2.0]s (2.0s duration). Left-edge drag by +0.25
+        // of the chip width → new_in = 0.0 + 0.25 * 2.0 = 0.5s.
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.trim_clip_by_edge_drag(first_id, 0, 0.25).expect("ok");
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!((c.in_point - 0.5).abs() < 1e-9);
+        assert!((c.out_point - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trim_edge_drag_right_moves_out_point_by_negative_ratio() {
+        // Clip [0.0, 2.0]s; right-edge drag by -0.25 of the chip width shrinks
+        // the tail: new_out = 2.0 + (-0.25) * 2.0 = 1.5s.
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.trim_clip_by_edge_drag(first_id, 1, -0.25).expect("ok");
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!((c.in_point - 0.0).abs() < 1e-9);
+        assert!((c.out_point - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trim_edge_drag_rejects_invalid_edge_and_non_finite_ratio() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        assert!(s.trim_clip_by_edge_drag(first_id, 2, 0.1).is_err());
+        assert!(s.trim_clip_by_edge_drag(first_id, 0, f64::NAN).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_edge_drag_rejects_over_extension_past_source_without_undo() {
+        // Source duration is 2.0s; dragging the right edge out by +1.0 of the
+        // current width would push out_point to 4.0s — reject via trim_clip's
+        // upper-bound check and leave the clip untouched.
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        assert!(s.trim_clip_by_edge_drag(first_id, 1, 1.0).is_err());
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!((c.out_point - 2.0).abs() < 1e-9);
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn trim_edge_drag_rejects_unknown_clip_id() {
+        let mut s = session_with_two_clip_project();
+        assert!(s
+            .trim_clip_by_edge_drag(Uuid::new_v4(), 0, 0.1)
+            .is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    /// Regression: shortening the **first** primary-track clip ripples the sequence
+    /// automatically — there's no explicit ripple because the project model
+    /// has no absolute timeline positions. Total duration after the trim equals
+    /// the new clip-1 duration + original clip-2 duration.
+    #[test]
+    fn trim_edge_drag_shrinks_first_clip_and_total_sequence_ripples() {
+        let mut s = session_with_two_clip_project();
+        let clip_ids = s.project().unwrap().tracks[0].clip_ids.clone();
+        let (first_id, second_id) = (clip_ids[0], clip_ids[1]);
+        // Pre-trim: clip-1 is [0.0, 2.0]s (2.0s), clip-2 is [0.0, 3.0]s (3.0s).
+        let second_dur_s = {
+            let p = s.project().unwrap();
+            let c = p.clips.iter().find(|c| c.id == second_id).unwrap();
+            c.out_point - c.in_point
+        };
+        // Drag clip-1's right edge by -0.25 → new clip-1 duration = 1.5s.
+        s.trim_clip_by_edge_drag(first_id, 1, -0.25).expect("ok");
+        let p = s.project().unwrap();
+        let c1 = p.clips.iter().find(|c| c.id == first_id).unwrap();
+        let new_first_dur_s = c1.out_point - c1.in_point;
+        assert!((new_first_dur_s - 1.5).abs() < 1e-9);
+        // Clip-2 is unchanged (no absolute position → no ripple math needed).
+        let c2 = p.clips.iter().find(|c| c.id == second_id).unwrap();
+        assert!((c2.out_point - c2.in_point - second_dur_s).abs() < 1e-9);
     }
 
     #[test]

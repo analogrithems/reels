@@ -29,16 +29,20 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
     };
     let is_video = kind == TrackKind::Video;
     let is_subtitle = kind == TrackKind::Subtitle;
-    let mut spans: Vec<(f64, String)> = Vec::new();
+    // (d_ms, label, clip_id, begin_ms, end_ms, source_duration_ms)
+    let mut spans: Vec<(f64, String, String, i32, i32, i32)> = Vec::new();
     for id in &track.clip_ids {
         if let Some(c) = p.clips.iter().find(|c| c.id == *id) {
             let d_ms = (c.out_point - c.in_point) * 1000.0;
             if d_ms > 0.0 {
-                spans.push((d_ms, clip_label(c)));
+                let begin_ms = (c.in_point * 1000.0).round() as i32;
+                let end_ms = (c.out_point * 1000.0).round() as i32;
+                let src_ms = (c.metadata.duration_seconds * 1000.0).round() as i32;
+                spans.push((d_ms, clip_label(c), c.id.to_string(), begin_ms, end_ms, src_ms));
             }
         }
     }
-    let total: f64 = spans.iter().map(|(d, _)| *d).sum();
+    let total: f64 = spans.iter().map(|(d, ..)| *d).sum();
     if spans.is_empty() {
         return Vec::new();
     }
@@ -46,13 +50,19 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
     spans
         .into_iter()
         .enumerate()
-        .map(|(i, (d_ms, label))| TlChip {
-            label: label.into(),
-            width_weight: (d_ms / total) as f32,
-            chip_idx: i as i32,
-            is_video,
-            is_subtitle,
-        })
+        .map(
+            |(i, (d_ms, label, clip_id, begin_ms, end_ms, src_ms))| TlChip {
+                label: label.into(),
+                width_weight: (d_ms / total) as f32,
+                chip_idx: i as i32,
+                is_video,
+                is_subtitle,
+                clip_id: clip_id.into(),
+                begin_ms,
+                end_ms,
+                source_duration_ms: src_ms,
+            },
+        )
         .collect()
 }
 
@@ -71,12 +81,19 @@ fn synthetic_full_width_chip(label: String, is_video: bool) -> Vec<TlChip> {
     // Synthetic chips cover single-media-mode container-stream lanes, which
     // are **never** subtitle lanes today (subtitles always come from project
     // `TrackKind::Subtitle` rows), so `is_subtitle: false` is correct here.
+    // Empty `clip_id` signals "no backing clip" — the trim-drag handles in
+    // Slint gate on this, since synthetic chips don't correspond to an
+    // editable `reel_core::project::Clip`.
     vec![TlChip {
         label: label.into(),
         width_weight: 1.0,
         chip_idx: 0,
         is_video,
         is_subtitle: false,
+        clip_id: "".into(),
+        begin_ms: 0,
+        end_ms: 0,
+        source_duration_ms: 0,
     }]
 }
 
@@ -328,6 +345,48 @@ mod tests {
             "one container video stream => one filmstrip chip"
         );
         assert_eq!(s.video[0][0].width_weight, 1.0);
+    }
+
+    /// U2-c: real (project-backed) chips expose a non-empty `clip_id` plus
+    /// `begin_ms` / `end_ms` / `source_duration_ms` so the Slint trim handles
+    /// can clamp against source bounds. Synthetic single-media container-stream
+    /// chips leave `clip_id` empty — handles are gated on that.
+    #[test]
+    fn chip_surfaces_clip_id_and_source_bounds_for_project_backed_clip() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../reel-core/tests/fixtures/tiny_h264_aac.mp4");
+        assert!(path.is_file(), "fixture {}", path.display());
+        let p = project_from_media_path(&path).expect("probe");
+        // `.reel` / project-document mode uses real clip chips.
+        let s = timeline_chip_sync(&p, true);
+        let chip = s.video[0].first().expect("primary video chip");
+        assert!(!chip.clip_id.is_empty(), "real clip must expose a uuid");
+        assert_eq!(chip.begin_ms, 0, "fresh probe in_point is 0 s");
+        assert!(chip.end_ms > 0, "end_ms must come from out_point");
+        // Fixture probes a known duration — source_duration_ms mirrors end_ms
+        // for a fresh un-trimmed clip.
+        assert_eq!(chip.end_ms, chip.source_duration_ms);
+    }
+
+    /// U2-c: synthetic full-width chips for single-media container-stream lanes
+    /// must **not** expose a `clip_id` — they have no backing `Clip` in the
+    /// project, so the Slint edge handles stay hidden.
+    #[test]
+    fn synthetic_container_stream_chip_has_empty_clip_id() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../reel-core/tests/fixtures/tiny_h264_aac.mp4");
+        assert!(path.is_file(), "fixture {}", path.display());
+        let p = project_from_media_path(&path).expect("probe");
+        let s = timeline_chip_sync(&p, false);
+        // Single-media mode with 1 video stream → synthetic full-width chip.
+        let vchip = s.video[0].first().expect("synthetic video chip");
+        assert!(
+            vchip.clip_id.is_empty(),
+            "synthetic single-media chip must not expose clip_id"
+        );
+        // And the audio lane too — synthetic "(audio)" chip has no backing clip.
+        let achip = s.audio[0].first().expect("synthetic audio chip");
+        assert!(achip.clip_id.is_empty());
     }
 
     /// **Single-media** mode: project subtitle lanes count toward display `max(project, container streams)`.

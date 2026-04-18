@@ -14,6 +14,11 @@ pub const AUDIO_FILE_EXTENSIONS: &[&str] = &[
     "wma",
 ];
 
+/// Subtitle sidecar extensions for **Insert Subtitle…**. SubRip (`.srt`) and
+/// WebVTT (`.vtt`) share a parser (see `reel_core::media::srt`); both are also
+/// accepted by ffmpeg's `subtitles=` filter at export time.
+pub const SUBTITLE_FILE_EXTENSIONS: &[&str] = &["srt", "vtt"];
+
 /// **File → Open…**: combined video/mux + audio extensions (includes MPEG program stream and MPEG-TS).
 pub const OPEN_MEDIA_EXTENSIONS: &[&str] = &[
     "3g2", "3gp", "aac", "ac3", "aif", "aiff", "asf", "avi", "caf", "divx", "dts", "eac3", "f4v",
