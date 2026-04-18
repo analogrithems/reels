@@ -44,24 +44,40 @@ pub enum WebExportFormat {
     /// incompatible source codecs, or when a fixed delivery target (H.264 / AAC-LC)
     /// is required regardless of the input.
     Mp4H264Aac,
+    /// MP4 container; HEVC (H.265) + AAC transcode — mobile-tier preset.
+    /// Useful for iOS-native delivery and smaller files at equivalent quality
+    /// vs H.264. Decode support in older browsers is limited.
+    Mp4H265Aac,
     /// WebM VP8 + Opus (faster to encode than VP9 for short fixtures).
     WebmVp8Opus,
+    /// WebM VP9 + Opus — better compression than VP8 at the cost of encode time.
+    WebmVp9Opus,
+    /// WebM AV1 + Opus (libaom-av1) — best compression, slowest encode. Good for
+    /// archival / streaming delivery where encode time is amortized.
+    WebmAv1Opus,
     /// Matroska; stream copy for quick container swap tests.
     MkvRemux,
 }
 
 impl WebExportFormat {
-    pub const ALL: [WebExportFormat; 4] = [
+    pub const ALL: [WebExportFormat; 7] = [
         WebExportFormat::Mp4Remux,
         WebExportFormat::Mp4H264Aac,
+        WebExportFormat::Mp4H265Aac,
         WebExportFormat::WebmVp8Opus,
+        WebExportFormat::WebmVp9Opus,
+        WebExportFormat::WebmAv1Opus,
         WebExportFormat::MkvRemux,
     ];
 
     pub fn file_extension(self) -> &'static str {
         match self {
-            WebExportFormat::Mp4Remux | WebExportFormat::Mp4H264Aac => "mp4",
-            WebExportFormat::WebmVp8Opus => "webm",
+            WebExportFormat::Mp4Remux
+            | WebExportFormat::Mp4H264Aac
+            | WebExportFormat::Mp4H265Aac => "mp4",
+            WebExportFormat::WebmVp8Opus
+            | WebExportFormat::WebmVp9Opus
+            | WebExportFormat::WebmAv1Opus => "webm",
             WebExportFormat::MkvRemux => "mkv",
         }
     }
@@ -487,6 +503,26 @@ fn append_dual_mux_format_args_with_vf(
                 "+faststart",
             ]);
         }
+        (WebExportFormat::Mp4H265Aac, _) => {
+            cmd.args([
+                "-c:v",
+                "libx265",
+                "-preset",
+                "medium",
+                "-crf",
+                "24",
+                "-pix_fmt",
+                "yuv420p",
+                "-tag:v",
+                "hvc1",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
         (WebExportFormat::WebmVp8Opus, _) => {
             cmd.args([
                 "-c:v",
@@ -495,6 +531,40 @@ fn append_dual_mux_format_args_with_vf(
                 "good",
                 "-cpu-used",
                 "4",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::WebmVp9Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                "32",
+                "-row-mt",
+                "1",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::WebmAv1Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libaom-av1",
+                "-crf",
+                "30",
+                "-b:v",
+                "0",
+                "-cpu-used",
+                "6",
+                "-row-mt",
+                "1",
                 "-c:a",
                 "libopus",
                 "-b:a",
@@ -580,6 +650,26 @@ fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_cha
                 "+faststart",
             ]);
         }
+        (WebExportFormat::Mp4H265Aac, _) => {
+            cmd.args([
+                "-c:v",
+                "libx265",
+                "-preset",
+                "medium",
+                "-crf",
+                "24",
+                "-pix_fmt",
+                "yuv420p",
+                "-tag:v",
+                "hvc1",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
         (WebExportFormat::WebmVp8Opus, _) => {
             cmd.args([
                 "-c:v",
@@ -588,6 +678,40 @@ fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_cha
                 "good",
                 "-cpu-used",
                 "4",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::WebmVp9Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                "32",
+                "-row-mt",
+                "1",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "96k",
+            ]);
+        }
+        (WebExportFormat::WebmAv1Opus, _) => {
+            cmd.args([
+                "-c:v",
+                "libaom-av1",
+                "-crf",
+                "30",
+                "-b:v",
+                "0",
+                "-cpu-used",
+                "6",
+                "-row-mt",
+                "1",
                 "-c:a",
                 "libopus",
                 "-b:a",
@@ -705,6 +829,24 @@ pub fn ffmpeg_args_for_format(format: WebExportFormat) -> Vec<&'static str> {
             "-movflags",
             "+faststart",
         ],
+        WebExportFormat::Mp4H265Aac => vec![
+            "-c:v",
+            "libx265",
+            "-preset",
+            "medium",
+            "-crf",
+            "24",
+            "-pix_fmt",
+            "yuv420p",
+            "-tag:v",
+            "hvc1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+        ],
         WebExportFormat::WebmVp8Opus => vec![
             "-c:v",
             "libvpx",
@@ -712,6 +854,36 @@ pub fn ffmpeg_args_for_format(format: WebExportFormat) -> Vec<&'static str> {
             "good",
             "-cpu-used",
             "4",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "96k",
+        ],
+        WebExportFormat::WebmVp9Opus => vec![
+            "-c:v",
+            "libvpx-vp9",
+            "-b:v",
+            "0",
+            "-crf",
+            "32",
+            "-row-mt",
+            "1",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            "96k",
+        ],
+        WebExportFormat::WebmAv1Opus => vec![
+            "-c:v",
+            "libaom-av1",
+            "-crf",
+            "30",
+            "-b:v",
+            "0",
+            "-cpu-used",
+            "6",
+            "-row-mt",
+            "1",
             "-c:a",
             "libopus",
             "-b:a",

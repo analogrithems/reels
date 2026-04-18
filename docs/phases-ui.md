@@ -46,8 +46,8 @@ A **v0 UI mock** (Next.js reference + a **Slint implementation guide**) defines 
 | Phase | Theme | Status | Notes |
 |-------|--------|--------|--------|
 | **U1** | Shell, menus, timeline scrub, Help | **Done** | Core exit criteria met; stretch shortcuts → **U4** |
-| **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); **seek-bar range markers** **shipped** (I/O keys + Edit menu); **range-scoped export** **shipped** (markers slice ffmpeg concat); multi-lane **partial**; **planned:** **audio** remove/replace/overlay+gain, **resize**, timeline in/out handles + ripple; **visual target:** multi-row timeline + track **+** affordances per **v0 Slint guide** |
-| **U3** | Export UX (presets, progress) | **In progress** | Cancel + **N%** + **strip** + **MP4 remux / MP4 H.264+AAC / WebM / MKV preset sheet** **done** (MP4 H.264+AAC is the guaranteed transcode path when remux fails); optional **layout** match to v0 **top** export bar — **open**; **planned:** VP9/AV1 WebM, HEVC MP4, resolution/bitrate (see **`SUPPORTED_FORMATS.md` roadmap**) |
+| **U2** | Project editing depth (tracks, trim, transforms) | **In progress** | Insert/split/blade **done**; **rotate/flip** **shipped** (per-clip, preview + export); **Trim Clip…** sheet **shipped** (**Edit** menu); **seek-bar range markers** **shipped** (I/O keys + Edit menu); **range-scoped export** **shipped** (markers slice ffmpeg concat); **U2-f Resize Video…** **shipped** (per-clip scale %, composed with rotate/flip in a combined `-vf`); **U2-e Mute Clip Audio** **shipped** (per-clip `audio_mute`; export emits `-an` when all primary-track clips muted — partial case pending **U2-b**); multi-lane **partial**; **draggable seek-bar In/Out handles** **shipped**; **planned:** **Replace/Overlay audio** + per-lane gain (**U2-b**), **per-clip timeline trim handles** (drag clip-chip edges) + ripple, **.srt** import; **visual target:** multi-row timeline + track **+** affordances per **v0 Slint guide** |
+| **U3** | Export UX (presets, progress) | **Done (core)** | Cancel + **N%** + **strip** + **7-row preset sheet** **shipped** — MP4 remux / H.264+AAC / HEVC+AAC / WebM VP8 / VP9 / AV1 / MKV remux; optional **layout** match to v0 **top** export bar — **open**; **roadmap:** MOV mux, ProRes/DNx intermediates (see **`SUPPORTED_FORMATS.md`**). |
 | **U4** | Polish (a11y, shortcuts, file & view chrome) | **In progress** (partial) | **File → Open Recent** + **Clear Recent** **done**; **menubar** **Lucide** icons + shortcuts aligned to v0 where Slint supports them **done**; **View** — **Loop**, **show Video/Audio/Subtitle track rows** (prefs), **Show Status**, **Always Show Controls**, **zoom** ladder + **Actual Size**, **Enter/Exit Fullscreen** (**Esc** exits) **done**; optional **Zoom to Video** / pan when zoomed / fullscreen on playback chrome **open**; transport + clip-move keys; **QuickTime-style** floating bar over **video** (Lucide icons, **z-order** for clicks, wider step/play spacing) — **converge** with **v0** (**Theme**, **~60%** bar, optional **drag**) — see **U4** body |
 | **U5** | AI & effects in product | **In progress** (MVP) | Frame → sidecar → PNG; **roadmap:** **AI upscale** / super-resolution |
 
@@ -65,7 +65,7 @@ A **v0 UI mock** (Next.js reference + a **Slint implementation guide**) defines 
   Parking lot (not phase-numbered yet): subtitles, keyframes, motion, **AI video upscale** — see FEATURES roadmap
 ```
 
-- **U2** unlocks *meaningful* **U4** shortcuts (blade, **Trim Clip…**, rotate, track moves) once those actions exist; further **U2** work adds more shortcut targets (e.g. ripple trim, **U2-e**).
+- **U2** unlocks *meaningful* **U4** shortcuts (blade, **Trim Clip…**, rotate, track moves, **Resize Video…**, **Mute Clip Audio**) once those actions exist; further **U2** work adds more shortcut targets (e.g. ripple trim, **U2-b** audio mix).
 - **U3** can proceed in parallel with U2 if contributors avoid conflicting `Export` UI refactors.
 - **U5** shares **`SidecarClient`** / **`grab_frame`** with the rest of the app; timeline-integrated effects depend on **U2** clip model richness.
 
@@ -77,7 +77,7 @@ A **v0 UI mock** (Next.js reference + a **Slint implementation guide**) defines 
 |----------|----------------------------------------|
 | U1 | Currently supported: Playback, Viewport, Help |
 | U2 | Project & timeline (partial) + **Currently supported:** seek-bar **in/out markers** + **range-scoped export**; **QuickTime-style** **rotate/flip** and **Trim Clip…**; **subtitle** project lanes (**New Subtitle Track**, strip merge); **Roadmap:** **audio** remove/replace/overlay, **resize**, **ripple**, on-timeline trim handles, **caption** import/burn-in; **v0 mock** optional **trim mode** (see **`assets/Knotreels.v0.ui/CURSOR_IMPLEMENTATION_PROMPT.md`**) |
-| U3 | Roadmap: **Export presets** (web/mobile from `SUPPORTED_FORMATS.md`), batch, progress UI; **v0** optional **top** progress bar vs. today’s strip |
+| U3 | Shipped: **Export preset sheet** (7 rows — MP4 remux/H.264+AAC/HEVC+AAC, WebM VP8/VP9/AV1, MKV remux), cancellable progress with **N%** + strip; **v0** optional **top** progress bar vs. today’s strip |
 | U4 | **Currently supported:** **File → Open Recent**; **menubar** Lucide icons + shortcuts (v0-style); **View** (loop, **track-row visibility**, show status, always-show controls, zoom, fullscreen) + partial shortcuts — see **Viewport** / **Playback** in **`FEATURES.md`**. **Roadmap:** a11y, bundle, optional zoom pan / toolbar fullscreen; optional **drag** on floating bar |
 | U5 | Currently supported: Effects + Roadmap: Export & effects (real models) |
 
@@ -156,16 +156,16 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 | Area | Shipped | Still open |
 |------|---------|------------|
 | **Tracks / lanes** | Primary-track video concat **preview**; **New Video / Audio / Subtitle Track**; **Subtitle** rows: project lanes + container streams (single-file) merged in the strip; per-lane **filmstrip** chips + delete on project subtitle lanes; **Move Clip** between primary ↔ second **video** lane | Preview/mix from **secondary video** lanes; **multiple audio lanes** mixed; **waveforms** (deferred); **.srt** (or insert-on-subtitle-lane) **open**; draggable moves |
-| **Audio** | **First** audio lane **concat** drives preview when it has clips (else embedded video audio); silence-pad after audio ends | **U2-e** remove/replace/overlay + per-lane **gain**; multi-lane **mix** |
-| **Trim** | **Blade**; **Trim Clip…** numeric sheet (**Edit** menu + **double-click** video lane strip); seek-bar **In/Out markers** + **range-scoped export** | Timeline **in/out handles**, **ripple** (markers on seek bar are **not** draggable handles yet) |
+| **Audio** | **First** audio lane **concat** drives preview when it has clips (else embedded video audio); silence-pad after audio ends; **Edit → Mute Clip Audio** toggle (per-clip `audio_mute`; export emits `-an` when every primary-track clip is muted) | **U2-e** replace/overlay + per-lane **gain**; multi-lane **mix** (unblocks partial-mute silence substitution) |
+| **Trim** | **Blade**; **Trim Clip…** numeric sheet (**Edit** menu + **double-click** video lane strip); seek-bar **In/Out markers** + **range-scoped export**; **draggable** seek-bar In/Out handles (`edit-drag-in-marker-ms` / `edit-drag-out-marker-ms`) | **Per-clip timeline trim handles** (drag clip edges on the lane chips), **ripple** trim |
 | **Transform** | Per-clip **rotate / flip** (preview + export **`-vf`**) | — |
-| **Resize** | — | **U2-f** **Edit → Resize Video…** |
+| **Resize** | **U2-f** **Edit → Resize Video…** per-clip scale % (10–400%); preset buttons + numeric entry; composes with rotate/flip into a combined `-vf` chain; export-only (preview unchanged) | — |
 
 **Exit criteria (not all met)**
 
 - [x] Non-destructive **project file** workflow with undo/redo and autosave (path-backed).
 - [ ] User can see and edit **more than one logical video/audio lane** in the UI (multi-track). *Progress:* **File → New Video Track** / **New Audio Track** + **Move Clip to Track Below / Above** (Edit menu) move between primary and second **video** lane (below = playhead on primary clip; above = first clip on second lane to end of primary). **First** audio lane drives **preview sound** when it has clips (else embedded primary-track audio); additional audio lanes have **no** mix yet. Secondary **video** lanes are still **not** in the preview decode graph. Not a full per-lane visual editor (waveforms, drag) yet.
-- [ ] User can **trim** in the NLE sense (handles, ripple, range on the scrub bar). *Shipped:* **blade** (**Split at Playhead** / **Ctrl+B**); **per-clip numeric trim** (**Trim Clip…** — **`docs/FEATURES.md`**); **seek-bar In/Out markers** (**I** / **O** / **Alt+X**, cyan/magenta overlay) **with range-scoped export** (markers slice the ffmpeg concat on both video and audio tracks, rebased to start at 0). *Still open:* timeline **in/out handles** and **ripple**.
+- [~] User can **trim** in the NLE sense (handles, ripple, range on the scrub bar). *Shipped:* **blade** (**Split at Playhead** / **Ctrl+B**); **per-clip numeric trim** (**Trim Clip…** — **`docs/FEATURES.md`**); **seek-bar In/Out markers** (**I** / **O** / **Alt+X**, cyan/magenta overlay) **with range-scoped export** (markers slice the ffmpeg concat on both video and audio tracks, rebased to start at 0); **draggable seek-bar In/Out handles** (yellow QuickTime-style grips, clamped so In ≤ Out − 10ms). *Still open:* **per-clip timeline trim handles** (drag clip edges on the lane chips) and **ripple**.
 
 **Done**
 
@@ -184,45 +184,44 @@ PRs that add or materially change **behavior** in **`reel-app`**, **`reel-cli`**
 
 1. **U2-a — Multi-track preview:** ~~Sequence-across-clips on the primary track~~ **done** for core playback; **New Video Track** + summary + **per-lane labels** **done**; **move clip to next video track** (menu) **done**; remaining: richer per-lane visuals, draggable moves, preview/mix for secondary lanes.
 2. **U2-b — Audio in timeline:** **Partial:** **New Audio Track**, **Insert Audio…**, first-lane **concat preview** (switch from embedded video audio when the lane has clips; silence-pad if audio ends early); **open:** multiple audio lanes, mix, levels, trim-on-lane.
-3. **U2-c — Trim / ripple:** **Numeric trim** via **Trim Clip…** **shipped**; **range-scoped export** (markers limit ffmpeg concat spans) **shipped**; still open: **in/out handles** on the timeline and **ripple**.
+3. **U2-c — Trim / ripple:** **Numeric trim** via **Trim Clip…** **shipped**; **range-scoped export** (markers limit ffmpeg concat spans) **shipped**; **draggable seek-bar In/Out handles** **shipped** (yellow grips on the scrub slider, clamped to a 10ms min gap). Still open: **per-clip timeline trim handles** (drag the edges of a clip chip on its lane) and **ripple**.
 4. **U2-d — QuickTime-style Edit menu:** **Rotate 90° Left** / **Rotate 90° Right** / **Flip Horizontal** / **Flip Vertical** — **shipped** (per-clip orientation persists in the project; applied in preview post-scaler and in ffmpeg export via `-vf`). **Trim Clip…** sheet — **shipped** (**Edit → Trim Clip…**; numeric begin/end in source-file seconds, inline validation, undoable). **Seek-bar range markers** — **shipped** (**Edit → Set In/Out Point** + **Clear Range Markers**; keys **I** / **O** / **Alt+X**; cyan/magenta overlay lines with a tinted range on the slider; ephemeral session state that clears on close / new project open). **Range-scoped export** — **shipped**: when both markers are set, `export_timeline_payload` slices the primary-video and first-audio concat inputs to the In/Out range (rebased to sequence 0) before handing them to `export_concat_with_audio_oriented`; empty slices refuse with a clear status message, and the run status reads **Exporting range In–Out s…**.
-5. **U2-e — Audio (Edit menu):** **Remove** embedded audio from the current clip/selection; **Replace** with an audio file; **Overlay** additional audio with **independent volume** vs the source (builds on **U2-b** mixing/export).
-6. **U2-f — Resize:** **Edit → Resize Video…** (target resolution / scale). **AI-assisted upsampling** to higher resolution is **not** in this milestone—see **U5** / parking lot.
+5. **U2-e — Audio (Edit menu):** **Remove audio** **shipped** as per-clip **Mute Clip Audio** toggle (export emits `-an` when every primary-track clip is muted). **Replace** with an audio file and **Overlay** with independent volume still open — both depend on **U2-b** mixing/export; partial-mute silence substitution also unblocks there.
+6. **U2-f — Resize:** **Edit → Resize Video…** **shipped** — per-clip scale percent (10–400%) with preset buttons (25/50/75/100/150/200%) + numeric entry; composes with rotate/flip into a combined `-vf` chain; export-only (preview is unchanged). **AI-assisted upsampling** to higher resolution is **not** in this milestone—see **U5** / parking lot.
 
 **Not yet**
 
 - **Multi-track** video: clips can be **moved to the next video track** via the Edit menu; there is still no **mix** or preview from secondary **video** lanes. **Audio:** the **first** lane can drive **preview sound** when it has clips; additional audio lanes have **no** mix yet.
-- **Ripple, roll**, slip/slide; multi-cam (blade **without** new media is **Split Clip at Playhead**). **U2-d**'s **double-click trim sheet**, **seek-bar range markers**, and **range-scoped export** are **shipped**; remaining under U2-d are **timeline in/out handles** and any future **batch operations** that should honor the marker range.
+- **Ripple, roll**, slip/slide; multi-cam (blade **without** new media is **Split Clip at Playhead**). **U2-d**'s **double-click trim sheet**, **seek-bar range markers**, **range-scoped export**, and **draggable seek-bar In/Out handles** are **shipped**; remaining under **U2-d** are **per-clip timeline trim handles** (drag a clip chip's left/right edge on the lane).
 - **Subtitles / captions** — **project lanes + UI** **shipped** (see **U2** subtitle bullet); **import / edit / burn-in export** remain **roadmap** (**FEATURES**).
 - Optional: adopt **`ProjectStore`** from `reel-core` inside the app (library already implements debounced atomic writes).
 
 ---
 
-## Phase U3 — Export UX 📋
+## Phase U3 — Export UX ✅
 
 **Goal:** User-controlled export presets and feedback.
 
-**Exit criteria (not all met)**
+**Exit criteria**
 
-- [ ] User picks **named export configurations** aligned with **`docs/SUPPORTED_FORMATS.md`** — **shipped tiers:** MP4 remux, **MP4 — H.264 + AAC** (web-tier transcode), WebM VP8+Opus, MKV remux. **Remaining:** **VP9 / AV1 WebM**, **HEVC + AAC MP4** (mobile tier), and any resolution/bitrate knobs.
-- [ ] User picks **preset** (resolution / bitrate / format family) from the app (may merge with the row above).
+- [x] User picks **named export configurations** aligned with **`docs/SUPPORTED_FORMATS.md`** — **shipped tiers:** MP4 remux, **MP4 — H.264 + AAC** (web-tier transcode), **MP4 — HEVC + AAC** (mobile tier, `libx265 -tag:v hvc1`), **WebM — VP8 + Opus**, **WebM — VP9 + Opus** (`libvpx-vp9`), **WebM — AV1 + Opus** (`libaom-av1`), MKV remux.
+- [x] User picks **preset** (format family) from the app — seven named presets in the sheet; resolution/bitrate knobs intentionally deferred (per-preset CRF defaults cover the common tiers).
 - [x] Long exports show **cancellable** ffmpeg work without killing the whole app (**Esc** / **Cancel export** on the progress modal).
 - [x] **Determinate export feedback** in the main window: status **%** plus a thin **progress strip** above the transport row (ffmpeg `out_time_ms` vs timeline duration).
 
-**Partial / shipped**
+**Shipped**
 
-- **Export** runs **off the UI thread**; **File → Export…** opens a **preset sheet** (**MP4 remux**, **MP4 — H.264 + AAC** transcode, **WebM VP8+Opus**, **MKV remux**), then a filtered save dialog; status line shows **Exporting…**, then **Exporting… N%**, with the **strip** filling left→right, then result (see **`docs/FEATURES.md`**). The **MP4 H.264+AAC** preset is the guaranteed MP4-side fallback when remux `-c copy` rejects a mix of codecs.
+- **Export** runs **off the UI thread**; **File → Export…** opens a **7-row preset sheet** (MP4 remux / H.264+AAC / HEVC+AAC / WebM VP8 / VP9 / AV1 / MKV remux), then a filtered save dialog; status line shows **Exporting…**, then **Exporting… N%**, with the **strip** filling left→right, then result (see **`docs/FEATURES.md`**). The **MP4 H.264+AAC** preset is the guaranteed MP4-side fallback when remux `-c copy` rejects a mix of codecs; **MP4 HEVC+AAC** targets iOS-native (hvc1) and smaller files at equal quality.
 
 **Optional chrome (v0 alignment)**
 
 - The v0 mock adds a **dedicated export progress bar** at the **top** of the window while exporting. Today’s **determinate %** + **thin strip** already meet core **U3** exit criteria; a **top bar** is **optional** polish if we want pixel-parity with the mock.
 
-**Not started (UI)**
+**Not started (roadmap)**
 
-- **Rich preset catalog extensions**: **VP9 / AV1** WebM, **HEVC + AAC** MP4 (mobile tier), resolution / bitrate fields per **`SUPPORTED_FORMATS.md`** roadmap.
-- **Batch** export.
+- **MOV mux**, **ProRes / DNx** intermediate paths (pro handoff), explicit resolution/bitrate fields.
 
-*Today:* preset sheet maps 1:1 to `WebExportFormat` variants (Mp4Remux, Mp4H264Aac, WebmVp8Opus, MkvRemux); further advanced transcodes remain **roadmap** work (see **`docs/SUPPORTED_FORMATS.md`**).
+*Today:* preset sheet maps 1:1 to `WebExportFormat` variants (Mp4Remux, Mp4H264Aac, Mp4H265Aac, WebmVp8Opus, WebmVp9Opus, WebmAv1Opus, MkvRemux); further advanced transcodes remain **roadmap** work (see **`docs/SUPPORTED_FORMATS.md`**).
 
 ---
 
@@ -312,8 +311,8 @@ Items live in **`docs/FEATURES.md`** until we carve **U6+**:
 
 Priorities change; this is **guidance for contributors**, not a commitment.
 
-1. **U2-e** — **audio** remove/replace/overlay with independent volume (depends on **U2-b** for mix/export). **Rotate/flip**, **Trim Clip…** sheet, **seek-bar range markers**, and **range-scoped export** are **shipped** (see **FEATURES.md**). Remaining under **U2-d**: **timeline in/out handles** so the markers also live on the scrub bar as drag handles.
-2. **U3** — **Export preset catalog** per **`SUPPORTED_FORMATS.md`**. **Shipped:** MP4 remux, **MP4 H.264+AAC** transcode, WebM (VP8+Opus), MKV remux; **remaining:** **VP9 / AV1 WebM**, **HEVC + AAC MP4** (mobile tier), and resolution/bitrate fields. Determinate **%** + strip already shipped — further **chrome** polish optional.
+1. **U2-e** — **Remove audio** **shipped** (per-clip **Mute Clip Audio** toggle; export `-an` when all primary clips muted). **Replace** / **Overlay** audio with independent volume still open — both depend on **U2-b** for mix/export, which also unblocks partial-mute silence substitution. **Rotate/flip**, **Trim Clip…** sheet, **Resize Video…** sheet, **seek-bar range markers**, and **range-scoped export** are **shipped** (see **FEATURES.md**). Remaining under **U2-d**: **timeline in/out handles** so the markers also live on the scrub bar as drag handles.
+2. **U3** — **Export preset catalog** per **`SUPPORTED_FORMATS.md`**. **Shipped:** MP4 remux, **MP4 H.264+AAC** (web tier), **MP4 HEVC+AAC** (mobile tier, hvc1), WebM **VP8+Opus** / **VP9+Opus** / **AV1+Opus**, MKV remux (7-row preset sheet). **Roadmap:** MOV mux, ProRes / DNx intermediates, explicit resolution/bitrate fields. Determinate **%** + strip already shipped — further **chrome** polish optional.
 3. **U4** — **a11y** audit; optional **View** polish (pan when zoomed, fullscreen on playback chrome). (**Open Recent**, **View** loop/zoom/fullscreen, timeline scrub reliability — shipped.)
 4. **U5-a** — Bridge quality: one **non-stub** transform or clearly labeled experimental paths (pairs with **U5** exit criteria).
 

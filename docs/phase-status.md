@@ -82,7 +82,7 @@ Detailed **status**, **exit criteria**, **dependencies**, **sub-milestones** (U2
 Implementation notes live in **`docs/phases-ui-test.md`**. This row tracks engineering shipments.
 
 - [x] **Strict version pin** — `i-slint-backend-testing = "=1.16.0"` in `[workspace.dependencies]`, consumed by `reel-app` as a dev-dep. Must be bumped in lockstep with `slint`.
-- [x] **Headless harness** — `ui_test_support::init()` (`crates/reel-app/src/lib.rs`) wraps `init_integration_test_with_system_time()` behind a `Once`; first smoke test boots `AppWindow`, verifies startup defaults, and round-trips `export-preset-index` across the full 0..=3 range.
+- [x] **Headless harness** — `ui_test_support::init()` (`crates/reel-app/src/lib.rs`) wraps `init_integration_test_with_system_time()` behind a `Once`; first smoke test boots `AppWindow`, verifies startup defaults, and round-trips `export-preset-index` across the full 0..=6 range.
 - [x] **Probe seam** (Phase 1b) — `MediaProbe` threaded through `project_from_media_path_with_probe` + `EditSession::{open_media,insert_clip_at_playhead,insert_audio_clip_at_playhead}_with_probe`; `FakeProbe` test helper in `session.rs` drives a no-ffmpeg Open → Insert scenario (`session::tests::open_and_insert_via_fake_probe_no_ffmpeg`).
 - [ ] **Player engine trait** — abstract `crates/reel-app/src/player.rs` so tests can inject a mock engine (returns static frames, no ffmpeg). Deferred until a UI test actually needs rendered frames or timing behavior.
 - [x] **`Open → Edit → Export` integration test** — three layers shipped: (a) headless UI smoke — `ui_smoke_tests::window_boots_and_round_trips_basic_properties` boots `AppWindow`, drives Open through `FakeProbe`, asserts Slint menu-gate properties, and invokes all three `file-export` preflight branches (sheet opens / status warns / silent); (b) preset-confirm seam — `prepare_export_job(&session, preset_index, &dyn SaveDialogProvider) -> ExportPreflight`, with `StubSaveDialog` covering invalid preset index, empty range, cancelled dialog, wrong extension, happy-path `Spawn`, marker range passthrough, and preset-index → `WebExportFormat` wiring for all four presets; (c) export pipeline — `export_payload_tests::payload_*` covers `export_timeline_payload` for single-clip, range-sliced, out-of-range, first-audio-lane cases. Still deferred: live click through `invoke_export_preset_confirm()` (needs wiring a `SaveDialogProvider` into `install_export_preset_confirm_callback` so tests can swap it) and `ElementHandle::find_by_accessible_label` usage (blocked on adding `accessible-label` to Slint buttons).
@@ -106,7 +106,8 @@ Implementation notes live in **`docs/phases-ui-test.md`**. This row tracks engin
 Source matrix: **`docs/SUPPORTED_FORMATS.md`**. These items track **first-class** support beyond “whatever FFmpeg accepts today.”
 
 - [x] **Export — H.264 + AAC MP4 transcode preset** — explicit encode preset **MP4 — H.264 + AAC** (`libx264 -preset medium -crf 20 -pix_fmt yuv420p`, AAC 160 kbps, `+faststart`); use when MP4 remux fails on codec mismatch or for fixed delivery targets
-- [ ] **Export — VP9 and/or AV1 WebM** as user-selectable presets (today: **VP8 + Opus** only for `.webm`)
+- [x] **Export — HEVC + AAC MP4 preset** — mobile-tier encode **MP4 — HEVC (H.265) + AAC** (`libx265 -preset medium -crf 24 -pix_fmt yuv420p -tag:v hvc1`, AAC 160 kbps, `+faststart`); smaller files at equal quality vs H.264, iOS-native playback
+- [x] **Export — VP9 / AV1 WebM presets** — **WebM — VP9 + Opus** (`libvpx-vp9 -b:v 0 -crf 32 -row-mt 1`, Opus 96 kbps) and **WebM — AV1 + Opus** (`libaom-av1 -crf 30 -b:v 0 -cpu-used 6 -row-mt 1`, Opus 96 kbps); better compression than VP8 at the cost of encode time
 - [ ] **Export — UX for remux failures** — clearer errors when MP4/MKV reject a stream (codec / licensing / mux constraints); link to transcode presets above
 - [ ] **Export — MOV mux** and/or **ProRes / DNx** intermediate paths for pro handoff
 - [ ] **Playback / export — Subtitles** — **WebVTT**, **SRT**, **TTML** (platform targets in `SUPPORTED_FORMATS.md`); **ASS/SSA** for advanced styling — not decoded, shown, or muxed today (see `MEDIA_FORMATS.md`)
@@ -122,8 +123,8 @@ Implementation tracking for **menu- and timeline-visible** features described in
 - [x] **Edit** — **Rotate 90°** left/right, **flip** horizontal/vertical (**QuickTime-style**) — per-clip, **Ctrl+R** / **Ctrl+Shift+R**; preview post-scaler + ffmpeg `-vf` on export
 - [x] **Trim Clip…** (**U2**) — **Edit → Trim Clip…**; per-clip begin/end in source seconds, inline validation, undoable (see **`docs/FEATURES.md`**, **`docs/KEYBOARD.md`**)
 - [x] **Timeline** — **two markers** on the seek bar (in/out range) — **Edit → Set In/Out Point** + **Clear Range Markers**; keys **I** / **O** / **Alt+X**; cyan/magenta overlay with tinted range on the slider; ephemeral per session (clears on close / new project). **Range-scoped export** (both markers set → ffmpeg concat is sliced to the range on video and first-audio tracks, rebased to sequence 0) — **shipped**. **Follow-on:** on-timeline drag handles and any additional batch operations that should honor the range.
-- [ ] **Edit** — **Remove / Replace / Overlay** audio with **per-track or overlay volume**
-- [ ] **Edit → Resize Video…** — pixel / scale presets (**AI upsampling** tracked under **U5** / format roadmap, not this row)
+- [~] **Edit → Mute Clip Audio** (**U2-e**) — per-clip `audio_mute` toggle, undoable; export emits `-an` when every primary-track clip is muted (partial-mute case surfaces a status pointing at **U2-b**). **Replace** / **Overlay** audio still open — blocked on **U2-b** (multi-audio mix)
+- [x] **Edit → Resize Video…** (**U2-f**) — per-clip scale percent (10–400%, 100% = identity); preset buttons (25/50/75/100/150/200%) + numeric entry; export-only (preview unchanged); composes with rotate/flip in a combined `-vf` chain; undoable
 - [x] **View** — **Loop Playback** (primary-track sequence; **prefs** + **Ctrl+L** / **⌘L**)
 - [x] **View** — **Show Video / Audio / Subtitle track rows** (each toggles timeline section; **prefs**; default all on)
 - [x] **View** — **Zoom** (in / out / fit / actual size; **prefs** + **Ctrl+=** / **+-** / **0**); **Enter/Exit Fullscreen** (menu; **Esc**)
@@ -131,7 +132,7 @@ Implementation tracking for **menu- and timeline-visible** features described in
 - [x] **Transport** — floating bar **Lucide** icons, **z-order** for click hit-testing, spacing vs **v0**
 - [x] **File** — **New Subtitle Track** (**Ctrl+Shift+T**); **`TrackKind::Subtitle`** project lanes; timeline merge with container streams (**U2**)
 - [ ] **View** (optional) — **Zoom to Video**; **pan** when zoomed; **fullscreen** on playback toolbar
-- [ ] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers). **Shipped today:** MP4 remux, **MP4 H.264 + AAC** (web-tier transcode), WebM (VP8 + Opus), MKV remux. **Remaining:** VP9 / AV1 WebM, HEVC + AAC MP4 (mobile tier), MOV / ProRes / DNx intermediates.
+- [~] **Export** — **preset catalog** aligned with **`docs/SUPPORTED_FORMATS.md`** (web + mobile tiers). **Shipped today:** MP4 remux, **MP4 H.264 + AAC** (web-tier transcode), **MP4 HEVC + AAC** (mobile tier), **WebM VP8 / VP9 / AV1 + Opus**, MKV remux. **Remaining:** MOV mux, ProRes / DNx intermediates for pro handoff.
 
 ---
 

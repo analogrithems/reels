@@ -1376,29 +1376,38 @@ impl EditSession {
 }
 
 /// True when `path`'s lowercase extension matches the container of `fmt`. Accepts `.m4v`
-/// alongside `.mp4` for both MP4 presets (remux and explicit H.264/AAC transcode).
+/// alongside `.mp4` for every MP4 preset (remux, H.264/AAC, HEVC/AAC).
 pub fn path_matches_export_format(path: &Path, fmt: reel_core::WebExportFormat) -> bool {
     let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
         return false;
     };
     let ext = ext.to_ascii_lowercase();
     match fmt {
-        reel_core::WebExportFormat::Mp4Remux | reel_core::WebExportFormat::Mp4H264Aac => {
-            ext == "mp4" || ext == "m4v"
-        }
-        reel_core::WebExportFormat::WebmVp8Opus => ext == "webm",
+        reel_core::WebExportFormat::Mp4Remux
+        | reel_core::WebExportFormat::Mp4H264Aac
+        | reel_core::WebExportFormat::Mp4H265Aac => ext == "mp4" || ext == "m4v",
+        reel_core::WebExportFormat::WebmVp8Opus
+        | reel_core::WebExportFormat::WebmVp9Opus
+        | reel_core::WebExportFormat::WebmAv1Opus => ext == "webm",
         reel_core::WebExportFormat::MkvRemux => ext == "mkv",
     }
 }
 
-/// Preset row from **Export** dialog (`0` = MP4 remux, `1` = MP4 H.264+AAC transcode,
-/// `2` = WebM, `3` = MKV). See `docs/SUPPORTED_FORMATS.md`.
+/// Preset row from **Export** dialog.
+///
+/// Order groups by container then codec (MP4 → WebM → MKV):
+/// `0` MP4 remux, `1` MP4 H.264+AAC, `2` MP4 H.265+AAC, `3` WebM VP8+Opus,
+/// `4` WebM VP9+Opus, `5` WebM AV1+Opus, `6` MKV remux.
+/// See `docs/SUPPORTED_FORMATS.md`.
 pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebExportFormat> {
     match index {
         0 => Some(reel_core::WebExportFormat::Mp4Remux),
         1 => Some(reel_core::WebExportFormat::Mp4H264Aac),
-        2 => Some(reel_core::WebExportFormat::WebmVp8Opus),
-        3 => Some(reel_core::WebExportFormat::MkvRemux),
+        2 => Some(reel_core::WebExportFormat::Mp4H265Aac),
+        3 => Some(reel_core::WebExportFormat::WebmVp8Opus),
+        4 => Some(reel_core::WebExportFormat::WebmVp9Opus),
+        5 => Some(reel_core::WebExportFormat::WebmAv1Opus),
+        6 => Some(reel_core::WebExportFormat::MkvRemux),
         _ => None,
     }
 }
@@ -1725,14 +1734,26 @@ mod tests {
         );
         assert_eq!(
             web_export_format_from_preset_index(2),
-            Some(reel_core::WebExportFormat::WebmVp8Opus),
+            Some(reel_core::WebExportFormat::Mp4H265Aac),
         );
         assert_eq!(
             web_export_format_from_preset_index(3),
+            Some(reel_core::WebExportFormat::WebmVp8Opus),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(4),
+            Some(reel_core::WebExportFormat::WebmVp9Opus),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(5),
+            Some(reel_core::WebExportFormat::WebmAv1Opus),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(6),
             Some(reel_core::WebExportFormat::MkvRemux),
         );
         assert_eq!(web_export_format_from_preset_index(-1), None);
-        assert_eq!(web_export_format_from_preset_index(4), None);
+        assert_eq!(web_export_format_from_preset_index(7), None);
     }
 
     fn clip_sec(id: Uuid, path: &str, sec: f64) -> Clip {
@@ -2272,6 +2293,53 @@ mod tests {
         let mut s = session_with_two_clip_project();
         assert!(s.resize_clip(Uuid::new_v4(), 75).is_err());
         assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn audio_mute_defaults_to_false_and_toggles() {
+        let mut s = session_with_two_clip_project();
+        s.saved_baseline = s.project().cloned();
+        s.dirty = false;
+        assert_eq!(s.audio_mute_state_at_seq_ms(500.0), Some(false));
+        s.toggle_audio_mute_at_seq_ms(500.0).expect("toggle ok");
+        assert_eq!(s.audio_mute_state_at_seq_ms(500.0), Some(true));
+        assert!(s.dirty);
+        assert!(s.undo_enabled());
+        // Toggle back.
+        s.toggle_audio_mute_at_seq_ms(500.0).unwrap();
+        assert_eq!(s.audio_mute_state_at_seq_ms(500.0), Some(false));
+    }
+
+    #[test]
+    fn audio_mute_undo_restores_previous_state() {
+        let mut s = session_with_two_clip_project();
+        s.toggle_audio_mute_at_seq_ms(500.0).unwrap();
+        assert!(s.undo());
+        assert_eq!(s.audio_mute_state_at_seq_ms(500.0), Some(false));
+    }
+
+    #[test]
+    fn audio_mute_past_end_returns_none() {
+        let s = session_with_two_clip_project();
+        // two_clip_project totals 5s; past end no clip.
+        assert!(s.audio_mute_state_at_seq_ms(999_999.0).is_none());
+        assert!(!s.audio_mute_enabled(999_999.0));
+    }
+
+    #[test]
+    fn audio_mute_all_and_any_reflect_per_clip_state() {
+        let mut s = session_with_two_clip_project();
+        // two_clip_project has clips at [0..2s, 2..5s] on the primary track.
+        assert!(!s.all_primary_clips_audio_muted());
+        assert!(!s.any_primary_clip_audio_muted());
+
+        s.toggle_audio_mute_at_seq_ms(500.0).unwrap(); // first clip only
+        assert!(!s.all_primary_clips_audio_muted());
+        assert!(s.any_primary_clip_audio_muted());
+
+        s.toggle_audio_mute_at_seq_ms(3_500.0).unwrap(); // second clip
+        assert!(s.all_primary_clips_audio_muted());
+        assert!(s.any_primary_clip_audio_muted());
     }
 
     #[test]

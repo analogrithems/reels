@@ -225,7 +225,12 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
         reel_core::WebExportFormat::Mp4H264Aac => {
             d.add_filter("MP4 (H.264 + AAC)", &["mp4", "m4v"])
         }
-        reel_core::WebExportFormat::WebmVp8Opus => d.add_filter("WebM", &["webm"]),
+        reel_core::WebExportFormat::Mp4H265Aac => {
+            d.add_filter("MP4 (HEVC + AAC)", &["mp4", "m4v"])
+        }
+        reel_core::WebExportFormat::WebmVp8Opus => d.add_filter("WebM (VP8 + Opus)", &["webm"]),
+        reel_core::WebExportFormat::WebmVp9Opus => d.add_filter("WebM (VP9 + Opus)", &["webm"]),
+        reel_core::WebExportFormat::WebmAv1Opus => d.add_filter("WebM (AV1 + Opus)", &["webm"]),
         reel_core::WebExportFormat::MkvRemux => d.add_filter("Matroska", &["mkv"]),
     }
 }
@@ -429,6 +434,7 @@ fn install_export_preset_confirm_callback(
                             audio_spans.as_deref(),
                             orientation,
                             scale,
+                            mute_audio,
                             &dest,
                             fmt,
                             Some(cancel.as_ref()),
@@ -713,6 +719,9 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_rotate_enabled(session.rotate_enabled(ph));
         window.set_trim_enabled(window.get_media_ready() && session.trim_enabled(ph));
         window.set_resize_enabled(window.get_media_ready() && session.resize_enabled(ph));
+        let mute_state = session.audio_mute_state_at_seq_ms(ph);
+        window.set_audio_mute_enabled(window.get_media_ready() && mute_state.is_some());
+        window.set_audio_mute_active(mute_state.unwrap_or(false));
     } else {
         window.set_duration_ms(0.0);
         window.set_move_clip_down_enabled(false);
@@ -721,6 +730,8 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_rotate_enabled(false);
         window.set_trim_enabled(false);
         window.set_resize_enabled(false);
+        window.set_audio_mute_enabled(false);
+        window.set_audio_mute_active(false);
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
@@ -887,6 +898,8 @@ pub fn run() -> Result<()> {
     window.set_trim_sheet_visible(false);
     window.set_resize_enabled(false);
     window.set_resize_sheet_visible(false);
+    window.set_audio_mute_enabled(false);
+    window.set_audio_mute_active(false);
     window.set_marker_in_ms(-1.0);
     window.set_marker_out_ms(-1.0);
     window.set_marker_any_set(false);
@@ -2030,6 +2043,33 @@ pub fn run() -> Result<()> {
     }
 
     {
+        // Edit → Mute Clip Audio: toggles audio_mute on the clip under the playhead.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_edit_toggle_audio_mute(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let ph = w.get_playhead_ms() as f64;
+            match session.borrow_mut().toggle_audio_mute_at_seq_ms(ph) {
+                Ok(()) => {
+                    sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                    let muted = session.borrow().audio_mute_state_at_seq_ms(ph).unwrap_or(false);
+                    w.set_status_text(
+                        if muted {
+                            "Clip audio muted"
+                        } else {
+                            "Clip audio restored"
+                        }
+                        .into(),
+                    );
+                }
+                Err(e) => w.set_status_text(format!("{e:#}").into()),
+            }
+        });
+    }
+
+    {
         // Set In Point: marks the current playhead as the range start. Clamped to timeline
         // duration so markers can't land past the end of a shrunk sequence.
         let weak = window.as_weak();
@@ -2503,11 +2543,12 @@ mod ui_smoke_tests {
         window.set_media_ready(false);
         assert!(!window.get_media_ready());
 
-        // Round-trip: export preset indices must accept the full 0..=3 range
+        // Round-trip: export preset indices must accept the full 0..=6 range
         // so the Slint picker stays in sync with
         // `web_export_format_from_preset_index` (session.rs):
-        // 0=Mp4Remux, 1=Mp4H264Aac, 2=WebmVp8Opus, 3=MkvRemux.
-        for idx in 0..=3 {
+        // 0=Mp4Remux, 1=Mp4H264Aac, 2=Mp4H265Aac,
+        // 3=WebmVp8Opus, 4=WebmVp9Opus, 5=WebmAv1Opus, 6=MkvRemux.
+        for idx in 0..=6 {
             window.set_export_preset_index(idx);
             assert_eq!(window.get_export_preset_index(), idx);
         }
@@ -2925,6 +2966,7 @@ mod export_payload_tests {
                 audio_spans,
                 orientation,
                 scale,
+                mute_audio,
                 dest: got_dest,
                 fmt,
                 range_ms,
@@ -2936,6 +2978,7 @@ mod export_payload_tests {
                     "single unrotated clip ⇒ orientation None"
                 );
                 assert!(scale.is_none(), "default scale ⇒ scale None");
+                assert!(!mute_audio, "default audio_mute ⇒ mute_audio false");
                 assert!(range_ms.is_none(), "no markers ⇒ full-span export");
                 assert_eq!(video_spans.len(), 1, "one clip → one span");
                 assert_eq!(video_spans[0].0, media);
@@ -2943,6 +2986,22 @@ mod export_payload_tests {
                     audio_spans.is_none(),
                     "single media file ⇒ no dedicated audio lane"
                 );
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_sets_mute_audio_when_all_clips_muted() {
+        // Single-clip session; mute it → preflight should request `-an`.
+        let (mut session, _media) = opened_session(2.5, "/tmp/fake-mute.mp4");
+        session.toggle_audio_mute_at_seq_ms(0.0).expect("toggle");
+        let dest = PathBuf::from("/tmp/muted.mp4");
+        let stub = StubSaveDialog::always(Some(dest.clone()));
+        let pf = prepare_export_job(&session, 0, &stub);
+        match pf {
+            ExportPreflight::Spawn { mute_audio, .. } => {
+                assert!(mute_audio, "all clips muted ⇒ mute_audio true");
             }
             other => panic!("expected Spawn, got {other:?}"),
         }
@@ -2971,13 +3030,16 @@ mod export_payload_tests {
     fn preflight_preset_index_maps_to_save_dialog_fmt() {
         // The stub records every `fmt` it was asked for; we use it to assert
         // preset-index → WebExportFormat wiring as seen by the save dialog
-        // (covers Mp4H264Aac, WebmVp8Opus, MkvRemux — Mp4Remux is covered
-        // by the happy-path test above).
+        // (covers every non-default preset — Mp4Remux is covered by the
+        // happy-path test above).
         let (session, _path) = opened_session(1.0, "/tmp/fake-presets.mp4");
         for (idx, fmt, ext) in [
             (1, reel_core::WebExportFormat::Mp4H264Aac, "mp4"),
-            (2, reel_core::WebExportFormat::WebmVp8Opus, "webm"),
-            (3, reel_core::WebExportFormat::MkvRemux, "mkv"),
+            (2, reel_core::WebExportFormat::Mp4H265Aac, "mp4"),
+            (3, reel_core::WebExportFormat::WebmVp8Opus, "webm"),
+            (4, reel_core::WebExportFormat::WebmVp9Opus, "webm"),
+            (5, reel_core::WebExportFormat::WebmAv1Opus, "webm"),
+            (6, reel_core::WebExportFormat::MkvRemux, "mkv"),
         ] {
             let dest = PathBuf::from(format!("/tmp/preset-{idx}.{ext}"));
             let stub = StubSaveDialog::always(Some(dest));
