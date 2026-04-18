@@ -25,6 +25,7 @@ If you use coding agents in this repo, share **`docs/AGENTS.md`** with the sessi
 - **Product direction** — **`docs/phases-ui.md`**, **`docs/FEATURES.md`**.
 - **Code layout** — **`docs/architecture.md`**, **`docs/DEVELOPERS.md`**.
 - **Formats & codecs** — **`docs/MEDIA_FORMATS.md`**.
+- **Shipping a version** — **`docs/RELEASING.md`** (tags, GitHub Releases).
 
 ## License
 

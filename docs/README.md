@@ -10,6 +10,7 @@
 | [CLI.md](CLI.md) | `reel-cli` usage + CLI **roadmap**. |
 | [EXTERNAL_AI.md](EXTERNAL_AI.md) | How Reel hands frames to **external processes** (JSON + files, no fixed vendor API). |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | **Start here** for contributing (links roadmap, workflow, CI). |
+| [RELEASING.md](RELEASING.md) | **Maintainers:** versioning, tags, and GitHub Releases workflow. |
 | [DEVELOPERS.md](DEVELOPERS.md) | Human contributor setup (build, test, layout). |
 | [AGENTS.md](AGENTS.md) | Guidance for **Cursor** and **Claude** (and similar agents) + doc-update duties. |
 | [architecture.md](architecture.md) | Crate graph, threading, sidecar protocol. |

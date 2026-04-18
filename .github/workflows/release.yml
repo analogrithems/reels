@@ -1,0 +1,57 @@
+# Builds a release .app on tag push (v*), zips it, and attaches it to a GitHub Release.
+# Prerequisite: maintainers create an annotated tag and push it (see docs/RELEASING.md).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    env:
+      PKG_CONFIG_PATH: /opt/homebrew/opt/ffmpeg@7/lib/pkgconfig
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos
+
+      - name: Install system deps
+        run: brew install ffmpeg@7 pkg-config
+
+      - name: Build Reel.app (release)
+        run: ./scripts/macos/build_app_bundle.sh release
+
+      - name: Zip app bundle
+        id: zip
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCH="$(uname -m)"
+          OUT="Reel-v${VERSION}-macos-${ARCH}.zip"
+          (cd target && zip -qr "../${OUT}" Reel.app)
+          echo "asset_path=${OUT}" >> "$GITHUB_OUTPUT"
+          ls -la "${OUT}"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ${{ steps.zip.outputs.asset_path }}
+          body: |
+            **Reel ${{ github.ref_name }}** — see [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md).
+
+            ### Install (macOS)
+
+            Unzip the attached **`${{ steps.zip.outputs.asset_path }}`** and open **Reel.app**. Requires **macOS 11+** and **FFmpeg 7.x** on your machine (`brew install ffmpeg@7`); it is not bundled in the app.
+
+            This artifact is built on an **Apple Silicon** runner (`uname -m` is reflected in the zip name). It is **not code-signed or notarized** — you may need **Right-click → Open** the first time.

@@ -15,6 +15,10 @@ The desktop app also bundles these under **Help** in the menu bar.
 
 Engineering phases (0–4) and UI roadmap (U1–U5) are tracked in **[docs/phase-status.md](docs/phase-status.md)** and **[docs/phases-ui.md](docs/phases-ui.md)**.
 
+## Releases
+
+Tagged versions are published on **GitHub Releases** with a **macOS `.app` zip** (see **[CHANGELOG.md](CHANGELOG.md)** and **[docs/RELEASING.md](docs/RELEASING.md)** for maintainers). FFmpeg is not bundled; install **ffmpeg@7** separately.
+
 ## Prerequisites (macOS)
 
 ```sh
