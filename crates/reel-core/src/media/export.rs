@@ -11,7 +11,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::project::ClipOrientation;
+use crate::project::{ClipOrientation, ClipScale};
+
+/// Build a combined ffmpeg `-vf` filter chain from optional per-project-clip
+/// transforms. Flips and rotation come first (matching [`ClipOrientation`]'s
+/// contract), scale last — so the scale filter sees post-rotation dimensions
+/// and the ffmpeg `yuv420p` even-dim constraint is satisfied on the final output.
+fn combined_vf_chain(
+    orientation: Option<ClipOrientation>,
+    scale: Option<ClipScale>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(chain) = orientation.and_then(|o| o.ffmpeg_filter_chain()) {
+        parts.push(chain);
+    }
+    if let Some(chain) = scale.and_then(|s| s.ffmpeg_filter_chain()) {
+        parts.push(chain);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(","))
+    }
+}
 
 /// Web-friendly outputs we guarantee in tests (see `tests/export_web_formats.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,15 +138,22 @@ pub fn export_concat_timeline(
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
-    export_concat_timeline_oriented(segments, None, output, format, cancel, on_ratio)
+    export_concat_timeline_oriented(
+        segments, None, None, false, output, format, cancel, on_ratio,
+    )
 }
 
-/// Like [`export_concat_timeline`] but applies `orientation` (rotate/flip) to the whole
-/// output via `-vf`. When non-identity, the preset is forced into a transcode path
-/// regardless of whether it would normally stream-copy.
+/// Like [`export_concat_timeline`] but applies `orientation` (rotate/flip) and/or
+/// `scale` to the whole output via `-vf`. When either is non-identity, the preset
+/// is forced into a transcode path regardless of whether it would normally stream-copy.
+///
+/// `mute_audio` emits `-an` so the output has no audio track. Paired with the
+/// **Edit → Mute Clip Audio** edit when every primary-track clip is muted.
 pub fn export_concat_timeline_oriented(
     segments: &[(PathBuf, f64, f64)],
     orientation: Option<ClipOrientation>,
+    scale: Option<ClipScale>,
+    mute_audio: bool,
     output: &Path,
     format: WebExportFormat,
     cancel: Option<&AtomicBool>,
@@ -158,7 +187,7 @@ pub fn export_concat_timeline_oriented(
     let total_ms = timeline_total_ms(segments);
     let progress = map_progress_fn(on_ratio, total_ms);
     let progress_pack = pack_progress_tempfile(progress)?;
-    let vf_chain = orientation.and_then(|o| o.ffmpeg_filter_chain());
+    let vf_chain = combined_vf_chain(orientation, scale);
 
     if segments.len() == 1 {
         let (p, in_s, out_s) = &segments[0];
@@ -179,6 +208,9 @@ pub fn export_concat_timeline_oriented(
             .arg(format!("{dur:.6}"))
             .stdout(Stdio::null());
         append_format_args_with_vf(&mut cmd, format, vf_chain.as_deref());
+        if mute_audio {
+            cmd.arg("-an");
+        }
         cmd.arg(output);
         return run_ffmpeg(cmd, output, cancel, progress_pack);
     }
@@ -205,6 +237,9 @@ pub fn export_concat_timeline_oriented(
         .arg(&list_path)
         .stdout(Stdio::null());
     append_format_args_with_vf(&mut cmd, format, vf_chain.as_deref());
+    if mute_audio {
+        cmd.arg("-an");
+    }
     cmd.arg(output);
     run_ffmpeg(cmd, output, cancel, progress_pack)
 }
@@ -261,6 +296,8 @@ pub fn export_concat_with_audio(
         video_segments,
         audio_segments,
         None,
+        None,
+        false,
         output,
         format,
         cancel,
@@ -268,22 +305,41 @@ pub fn export_concat_with_audio(
     )
 }
 
-/// Like [`export_concat_with_audio`] but applies `orientation` (rotate/flip) to the
-/// mapped video stream via `-vf`. Non-identity orientation forces the video codec into
-/// a transcode; audio stays stream-copied for remux presets.
+/// Like [`export_concat_with_audio`] but applies `orientation` (rotate/flip) and/or
+/// `scale` to the mapped video stream via `-vf`. Non-identity filters force the video
+/// codec into a transcode; audio stays stream-copied for remux presets.
+///
+/// `mute_audio` drops the audio track from the output (`-an`); when true, this
+/// function ignores `audio_segments` and delegates to the video-only pipeline.
 pub fn export_concat_with_audio_oriented(
     video_segments: &[(PathBuf, f64, f64)],
     audio_segments: Option<&[(PathBuf, f64, f64)]>,
     orientation: Option<ClipOrientation>,
+    scale: Option<ClipScale>,
+    mute_audio: bool,
     output: &Path,
     format: WebExportFormat,
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
+    if mute_audio {
+        return export_concat_timeline_oriented(
+            video_segments,
+            orientation,
+            scale,
+            true,
+            output,
+            format,
+            cancel,
+            on_ratio,
+        );
+    }
     let Some(audio_segments) = audio_segments.filter(|a| !a.is_empty()) else {
         return export_concat_timeline_oriented(
             video_segments,
             orientation,
+            scale,
+            false,
             output,
             format,
             cancel,
@@ -341,7 +397,7 @@ pub fn export_concat_with_audio_oriented(
     let total_ms = timeline_total_ms(video_segments);
     let progress = map_progress_fn(on_ratio, total_ms);
     let progress_pack = pack_progress_tempfile(progress)?;
-    let vf_chain = orientation.and_then(|o| o.ffmpeg_filter_chain());
+    let vf_chain = combined_vf_chain(orientation, scale);
 
     let dir = tempfile::tempdir().map_err(|e| ExportError {
         message: format!("timeline export: temp dir: {e}"),
@@ -791,5 +847,32 @@ mod tests {
     fn orientation_driven_vf_chain_rejects_identity() {
         let id = ClipOrientation::default();
         assert!(id.ffmpeg_filter_chain().is_none());
+    }
+
+    #[test]
+    fn combined_vf_chain_orders_orientation_then_scale() {
+        let mut o = ClipOrientation::default();
+        o.rotate_right();
+        let mut s = ClipScale::default();
+        s.set_percent(50);
+        let chain = combined_vf_chain(Some(o), Some(s)).unwrap();
+        let rot = chain.find("transpose=1").unwrap();
+        let scl = chain.find("scale=").unwrap();
+        assert!(rot < scl, "rotation must precede scale: {chain}");
+    }
+
+    #[test]
+    fn combined_vf_chain_identity_is_none() {
+        assert!(combined_vf_chain(None, None).is_none());
+        assert!(combined_vf_chain(Some(ClipOrientation::default()), Some(ClipScale::default()))
+            .is_none());
+    }
+
+    #[test]
+    fn combined_vf_chain_scale_only() {
+        let mut s = ClipScale::default();
+        s.set_percent(75);
+        let chain = combined_vf_chain(None, Some(s)).unwrap();
+        assert!(chain.starts_with("scale="));
     }
 }

@@ -215,6 +215,18 @@ export component AppWindow inherits Window {
     in property <bool> rotate-enabled: false;
     /// Same gate as `rotate-enabled` — the **Trim Clip…** sheet needs a clip under the playhead.
     in property <bool> trim-enabled: false;
+    /// Same gate as `rotate-enabled` — the **Resize Video…** sheet needs a clip under the playhead.
+    in property <bool> resize-enabled: false;
+
+    // --- Resize sheet (Edit → Resize Video…) ---
+    in-out property <bool> resize-sheet-visible: false;
+    /// Current scale percent for the clip under the playhead (100 = identity).
+    in-out property <int> resize-percent: 100;
+    /// Source video dimensions for display in the sheet (0 when unknown).
+    in property <int> resize-source-width: 0;
+    in property <int> resize-source-height: 0;
+    /// Error label under the field; empty hides it.
+    in property <string> resize-error: "";
 
     // --- Trim sheet (Edit → Trim Clip…) ---
     in-out property <bool> trim-sheet-visible: false;
@@ -330,6 +342,12 @@ export component AppWindow inherits Window {
     /// User pressed Trim in the sheet. Args are the entered begin / end seconds.
     callback trim-confirm(float, float);
     callback trim-cancel();
+
+    /// Opens the Resize Video… sheet for the clip under the playhead.
+    callback edit-resize-clip();
+    /// User pressed Resize in the sheet. Arg is the entered scale percent.
+    callback resize-confirm(int);
+    callback resize-cancel();
 
     /// **Edit → Set In Point** (`I`): marks the current playhead as the range start.
     callback edit-set-in-marker();
@@ -662,6 +680,12 @@ export component AppWindow inherits Window {
                 icon: @image-url("icons/lucide/crop.svg");
                 enabled: root.trim-enabled;
                 activated => { root.edit-trim-clip(); }
+            }
+            MenuItem {
+                title: "Resize Video…";
+                icon: @image-url("icons/lucide/maximize.svg");
+                enabled: root.resize-enabled;
+                activated => { root.edit-resize-clip(); }
             }
             MenuSeparator { }
             MenuItem {
@@ -2598,6 +2622,119 @@ export component AppWindow inherits Window {
                                             trim-begin-input.text.to-float(),
                                             trim-end-input.text.to-float(),
                                         );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.resize-sheet-visible: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: rgba(0, 0, 0, 55%);
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    root.resize-cancel();
+                }
+            }
+            VerticalBox {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                HorizontalBox {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: min(parent.width * 0.92, 440px);
+                        background: #2e2e36;
+                        border-radius: 8px;
+                        TouchArea {
+                            // Swallow clicks inside the card so the backdrop doesn't close the sheet.
+                            width: 100%;
+                            height: 100%;
+                        }
+                        VerticalBox {
+                            padding: 16px;
+                            spacing: 10px;
+                            Text {
+                                text: "Resize Video";
+                                color: #eee;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.resize-source-width > 0 && root.resize-source-height > 0
+                                    ? "Source: " + root.resize-source-width + "×" + root.resize-source-height + " px. Scale applies to export only (preview is unchanged)."
+                                    : "Scale applies to export only (preview is unchanged).";
+                                color: #888;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                spacing: 6px;
+                                alignment: center;
+                                Button {
+                                    text: "25%";
+                                    clicked => { resize-input.text = "25"; }
+                                }
+                                Button {
+                                    text: "50%";
+                                    clicked => { resize-input.text = "50"; }
+                                }
+                                Button {
+                                    text: "75%";
+                                    clicked => { resize-input.text = "75"; }
+                                }
+                                Button {
+                                    text: "100%";
+                                    clicked => { resize-input.text = "100"; }
+                                }
+                                Button {
+                                    text: "150%";
+                                    clicked => { resize-input.text = "150"; }
+                                }
+                                Button {
+                                    text: "200%";
+                                    clicked => { resize-input.text = "200"; }
+                                }
+                            }
+                            VerticalBox {
+                                spacing: 4px;
+                                Text {
+                                    text: "Scale (%) — range 10–400";
+                                    color: #bbb;
+                                    font-size: 11px;
+                                }
+                                resize-input := LineEdit {
+                                    text: root.resize-percent;
+                                    input-type: number;
+                                }
+                            }
+                            if root.resize-error != "": Text {
+                                text: root.resize-error;
+                                color: #ff8080;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                spacing: 10px;
+                                alignment: end;
+                                Button {
+                                    text: "Cancel";
+                                    clicked => {
+                                        root.resize-cancel();
+                                    }
+                                }
+                                Button {
+                                    text: "Resize";
+                                    primary: true;
+                                    clicked => {
+                                        root.resize-confirm(round(resize-input.text.to-float()));
                                     }
                                 }
                             }

@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use reel_core::project::ClipOrientation;
+use reel_core::project::{ClipOrientation, ClipScale};
 use reel_core::TrackKind;
 use reel_core::{export_concat_with_audio_oriented, ExportProgressFn};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
@@ -114,7 +114,14 @@ fn unified_export_video_orientation(
     let Some(clips) = timeline::clips_from_project(p) else {
         return Ok(None);
     };
-    let mut iter = clips.iter().map(|c| c.orientation);
+    // `timeline::clips_from_project` builds a reduced view; look up the real
+    // `Clip.orientation` by source path so we don't have to thread `orientation`
+    // through the timeline cache.
+    let orientations: Vec<ClipOrientation> = clips
+        .iter()
+        .map(|c| c.orientation)
+        .collect();
+    let mut iter = orientations.into_iter();
     let Some(first) = iter.next() else {
         return Ok(None);
     };
@@ -122,6 +129,42 @@ fn unified_export_video_orientation(
         if o != first {
             return Err("Cannot export: primary video clips have different rotate/flip settings. \
                         Apply the same orientation to all clips (or remove the outliers) and try again."
+                .into());
+        }
+    }
+    Ok(if first.is_identity() {
+        None
+    } else {
+        Some(first)
+    })
+}
+
+/// Same policy as [`unified_export_video_orientation`] but for [`ClipScale`]. Mixed scales across
+/// primary-track clips are rejected — applying one `-vf scale=…` on a concat of differently-scaled
+/// sources would pick one scale and apply it uniformly, producing visible distortion.
+fn unified_export_video_scale(session: &EditSession) -> Result<Option<ClipScale>, String> {
+    let Some(p) = session.project() else {
+        return Ok(None);
+    };
+    let video_track = p
+        .tracks
+        .iter()
+        .find(|t| t.kind == reel_core::TrackKind::Video);
+    let Some(track) = video_track else {
+        return Ok(None);
+    };
+    let mut iter = track
+        .clip_ids
+        .iter()
+        .filter_map(|id| p.clips.iter().find(|c| c.id == *id))
+        .map(|c| c.scale);
+    let Some(first) = iter.next() else {
+        return Ok(None);
+    };
+    for s in iter {
+        if s != first {
+            return Err("Cannot export: primary video clips have different resize settings. \
+                        Apply the same scale to all clips (or remove the outliers) and try again."
                 .into());
         }
     }
@@ -228,6 +271,11 @@ pub(crate) enum ExportPreflight {
         video_spans: ExportSpanVec,
         audio_spans: Option<ExportSpanVec>,
         orientation: Option<ClipOrientation>,
+        scale: Option<ClipScale>,
+        /// True when the ffmpeg call should pass `-an`, dropping audio from the
+        /// output entirely. Set when **all** primary-track clips are muted and
+        /// there's no dedicated audio lane to layer on top.
+        mute_audio: bool,
         dest: PathBuf,
         fmt: reel_core::WebExportFormat,
         range_ms: Option<(f64, f64)>,
@@ -263,6 +311,24 @@ pub(crate) fn prepare_export_job(
         Ok(o) => o,
         Err(msg) => return ExportPreflight::Status(msg),
     };
+    let scale = match unified_export_video_scale(session) {
+        Ok(s) => s,
+        Err(msg) => return ExportPreflight::Status(msg),
+    };
+
+    // Per-clip audio mute (U2-e "Remove audio"). The single-audio-track export
+    // can only emit `-an` when *every* primary-track clip is muted. The partial
+    // case needs silence substitution, which depends on the U2-b multi-audio
+    // mix infrastructure.
+    let mute_audio = session.all_primary_clips_audio_muted() && audio_spans.is_none();
+    if !mute_audio
+        && audio_spans.is_none()
+        && session.any_primary_clip_audio_muted()
+    {
+        return ExportPreflight::Status(
+            "Mute applies only when every clip is muted. Mute the rest or add an audio track (U2-b, coming soon).".into(),
+        );
+    }
 
     let Some(dest) = save_dialog.pick(fmt) else {
         return ExportPreflight::NoOp;
@@ -279,6 +345,8 @@ pub(crate) fn prepare_export_job(
         video_spans,
         audio_spans,
         orientation,
+        scale,
+        mute_audio,
         dest,
         fmt,
         range_ms,
@@ -322,6 +390,8 @@ fn install_export_preset_confirm_callback(
                 video_spans,
                 audio_spans,
                 orientation,
+                scale,
+                mute_audio,
                 dest,
                 fmt,
                 range_ms,
@@ -358,6 +428,7 @@ fn install_export_preset_confirm_callback(
                             &video_spans,
                             audio_spans.as_deref(),
                             orientation,
+                            scale,
                             &dest,
                             fmt,
                             Some(cancel.as_ref()),
@@ -641,6 +712,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         );
         window.set_rotate_enabled(session.rotate_enabled(ph));
         window.set_trim_enabled(window.get_media_ready() && session.trim_enabled(ph));
+        window.set_resize_enabled(window.get_media_ready() && session.resize_enabled(ph));
     } else {
         window.set_duration_ms(0.0);
         window.set_move_clip_down_enabled(false);
@@ -648,6 +720,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_split_at_playhead_enabled(false);
         window.set_rotate_enabled(false);
         window.set_trim_enabled(false);
+        window.set_resize_enabled(false);
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
@@ -812,6 +885,8 @@ pub fn run() -> Result<()> {
     window.set_rotate_enabled(false);
     window.set_trim_enabled(false);
     window.set_trim_sheet_visible(false);
+    window.set_resize_enabled(false);
+    window.set_resize_sheet_visible(false);
     window.set_marker_in_ms(-1.0);
     window.set_marker_out_ms(-1.0);
     window.set_marker_any_set(false);
@@ -845,6 +920,8 @@ pub fn run() -> Result<()> {
     // Tracks the clip currently loaded into the Trim Clip… sheet, so `on_trim_confirm` can
     // apply the edit without racing against the playhead after the sheet opens.
     let trim_target: Rc<RefCell<Option<Uuid>>> = Rc::new(RefCell::new(None));
+    // Tracks the clip currently loaded into the Resize Video… sheet.
+    let resize_target: Rc<RefCell<Option<Uuid>>> = Rc::new(RefCell::new(None));
     let export_cancel = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
 
     let player = match player::spawn_player(
@@ -1889,6 +1966,70 @@ pub fn run() -> Result<()> {
     }
 
     {
+        // Edit → Resize Video… opens the sheet prefilled from the clip under the playhead.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let resize_target = Rc::clone(&resize_target);
+        window.on_edit_resize_clip(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let ph = w.get_playhead_ms() as f64;
+            let cand = session.borrow().resize_candidate_at_seq_ms(ph);
+            if let Some(c) = cand {
+                *resize_target.borrow_mut() = Some(c.clip_id);
+                w.set_resize_percent(c.current_percent as i32);
+                w.set_resize_source_width(c.source_width as i32);
+                w.set_resize_source_height(c.source_height as i32);
+                w.set_resize_error("".into());
+                w.set_resize_sheet_visible(true);
+            } else {
+                w.set_status_text("No clip at playhead to resize".into());
+            }
+        });
+    }
+
+    {
+        // Resize sheet Cancel: hide; don't touch the project.
+        let weak = window.as_weak();
+        let resize_target = Rc::clone(&resize_target);
+        window.on_resize_cancel(move || {
+            *resize_target.borrow_mut() = None;
+            if let Some(w) = weak.upgrade() {
+                w.set_resize_sheet_visible(false);
+                w.set_resize_error("".into());
+            }
+        });
+    }
+
+    {
+        // Resize sheet Confirm: validate through session.resize_clip, close on success.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        let resize_target = Rc::clone(&resize_target);
+        window.on_resize_confirm(move |percent| {
+            let Some(w) = weak.upgrade() else { return };
+            let Some(clip_id) = *resize_target.borrow() else {
+                w.set_resize_sheet_visible(false);
+                return;
+            };
+            let r = session.borrow_mut().resize_clip(clip_id, percent as u32);
+            match r {
+                Ok(()) => {
+                    *resize_target.borrow_mut() = None;
+                    w.set_resize_sheet_visible(false);
+                    w.set_resize_error("".into());
+                    sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                    w.set_status_text(format!("Resized clip to {percent}%").into());
+                }
+                Err(e) => {
+                    w.set_resize_error(format!("{e:#}").into());
+                }
+            }
+        });
+    }
+
+    {
         // Set In Point: marks the current playhead as the range start. Clamped to timeline
         // duration so markers can't land past the end of a shrunk sequence.
         let weak = window.as_weak();
@@ -2783,6 +2924,7 @@ mod export_payload_tests {
                 video_spans,
                 audio_spans,
                 orientation,
+                scale,
                 dest: got_dest,
                 fmt,
                 range_ms,
@@ -2793,6 +2935,7 @@ mod export_payload_tests {
                     orientation.is_none(),
                     "single unrotated clip ⇒ orientation None"
                 );
+                assert!(scale.is_none(), "default scale ⇒ scale None");
                 assert!(range_ms.is_none(), "no markers ⇒ full-span export");
                 assert_eq!(video_spans.len(), 1, "one clip → one span");
                 assert_eq!(video_spans[0].0, media);

@@ -6,10 +6,12 @@
 
 mod autosave;
 mod orientation;
+mod scale;
 mod schema;
 
 pub use autosave::ProjectStore;
 pub use orientation::ClipOrientation;
+pub use scale::{ClipScale, IDENTITY_PERCENT, MAX_PERCENT, MIN_PERCENT};
 pub use schema::{migrate, MigrationError, SCHEMA_VERSION};
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,20 @@ pub struct Clip {
     /// omitted from JSON in that case so existing snapshots stay stable.
     #[serde(default, skip_serializing_if = "ClipOrientation::is_identity")]
     pub orientation: ClipOrientation,
+    /// User-applied output scale (Edit → Resize Video…). Identity is omitted from
+    /// JSON so existing snapshots stay stable. Export-only (preview ignores it).
+    #[serde(default, skip_serializing_if = "ClipScale::is_identity")]
+    pub scale: ClipScale,
+    /// **Edit → Mute Clip Audio**: drop this clip's embedded audio from the export.
+    /// Omitted from JSON when `false` so existing snapshots stay stable.
+    ///
+    /// Preview still plays the clip's audio — muting is an export-time flag so
+    /// the user can toggle it freely without losing the source. Partial muting
+    /// across multi-clip timelines requires the multi-audio-mix infrastructure
+    /// (U2-b); until then, export silences only when **every** primary-track
+    /// clip is muted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio_mute: bool,
     /// Future filter graphs, AI params, etc. Unknown keys round-trip here.
     #[serde(flatten)]
     pub extensions: Map<String, serde_json::Value>,

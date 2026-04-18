@@ -41,6 +41,8 @@ fn sample_project() -> Project {
             in_point: 1.0,
             out_point: 10.0,
             orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
             extensions: Default::default(),
         }],
         tracks: vec![Track {

@@ -30,6 +30,18 @@ pub struct TrimCandidate {
     pub source_duration_s: f64,
 }
 
+/// Data the **Resize Video…** sheet needs to prefill: the target clip's id,
+/// the current scale percent (100 = identity), and the source pixel dimensions
+/// (width × height). Zero dims mean the probe didn't report them, so the sheet
+/// shows `—` instead of an estimated output size.
+#[derive(Debug, Clone, Copy)]
+pub struct ResizeCandidate {
+    pub clip_id: Uuid,
+    pub current_percent: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+}
+
 /// How **Insert Video** should place the new clip on the main video track.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum InsertPlan {
@@ -566,6 +578,8 @@ impl EditSession {
             in_point: old.in_point,
             out_point: split_sec,
             orientation: old.orientation,
+            scale: old.scale,
+            audio_mute: old.audio_mute,
             extensions: Default::default(),
         };
         let right = Clip {
@@ -575,6 +589,8 @@ impl EditSession {
             in_point: split_sec,
             out_point: old.out_point,
             orientation: old.orientation,
+            scale: old.scale,
+            audio_mute: old.audio_mute,
             extensions: Default::default(),
         };
 
@@ -737,6 +753,144 @@ impl EditSession {
         Ok(())
     }
 
+    /// Snapshot needed to populate the **Resize Video…** sheet for the clip at `seq_ms`.
+    /// `None` when no project is loaded or the playhead isn't on a primary-track clip.
+    pub fn resize_candidate_at_seq_ms(&self, seq_ms: f64) -> Option<ResizeCandidate> {
+        let p = self.project.as_ref()?;
+        let id = crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms)?;
+        let c = p.clips.iter().find(|c| c.id == id)?;
+        let (w, h) = c
+            .metadata
+            .video
+            .as_ref()
+            .map(|v| (v.width, v.height))
+            .unwrap_or((0, 0));
+        Some(ResizeCandidate {
+            clip_id: id,
+            current_percent: c.scale.display_percent(),
+            source_width: w,
+            source_height: h,
+        })
+    }
+
+    /// True when [`resize_candidate_at_seq_ms`] would return `Some` — used to gate the
+    /// **Edit → Resize Video…** menu item. Same policy as rotate/trim: project state only,
+    /// so decode readiness doesn't have to be wired through.
+    pub fn resize_enabled(&self, playhead_ms: f64) -> bool {
+        self.resize_candidate_at_seq_ms(playhead_ms).is_some()
+    }
+
+    /// Set `clip_id.scale` to the given percent (clamped in [`ClipScale::set_percent`]).
+    /// Undoable. Fails without pushing undo when no project is loaded or the clip is missing.
+    ///
+    /// `100` (identity) is accepted and restores the stream-copy fast path on export.
+    pub fn resize_clip(&mut self, clip_id: Uuid, percent: u32) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+        {
+            let p = self.project.as_ref().expect("checked");
+            p.clips
+                .iter()
+                .find(|c| c.id == clip_id)
+                .context("clip missing from project")?;
+        }
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        let clip = proj
+            .clips
+            .iter_mut()
+            .find(|c| c.id == clip_id)
+            .expect("clip existed a moment ago");
+        let mut new_scale = clip.scale;
+        new_scale.set_percent(percent);
+        clip.scale = new_scale;
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Current `audio_mute` state of the primary-track clip at `seq_ms`, if any.
+    /// Returns `None` when no project is loaded or no clip sits under the playhead —
+    /// the caller uses this to gate/uncheck the **Edit → Mute Clip Audio** menu item.
+    pub fn audio_mute_state_at_seq_ms(&self, seq_ms: f64) -> Option<bool> {
+        let p = self.project.as_ref()?;
+        let id = crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms)?;
+        p.clips.iter().find(|c| c.id == id).map(|c| c.audio_mute)
+    }
+
+    /// Convenience gate for the **Edit → Mute Clip Audio** menu item.
+    pub fn audio_mute_enabled(&self, playhead_ms: f64) -> bool {
+        self.audio_mute_state_at_seq_ms(playhead_ms).is_some()
+    }
+
+    /// Toggle the `audio_mute` flag on the primary-track clip at `seq_ms`. Undoable.
+    /// Fails without pushing undo when no project is loaded or no clip sits under
+    /// the playhead.
+    pub fn toggle_audio_mute_at_seq_ms(&mut self, seq_ms: f64) -> anyhow::Result<()> {
+        let id = {
+            let p = self
+                .project
+                .as_ref()
+                .context("no project — open a file first")?;
+            crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms)
+                .context("no clip at playhead to mute")?
+        };
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        let clip = proj
+            .clips
+            .iter_mut()
+            .find(|c| c.id == id)
+            .expect("clip existed a moment ago");
+        clip.audio_mute = !clip.audio_mute;
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// True when every clip on the primary video track has `audio_mute = true`.
+    /// Used by the export pipeline to decide whether to pass `-an` for the
+    /// single-track embedded-audio case.
+    pub fn all_primary_clips_audio_muted(&self) -> bool {
+        let Some(p) = self.project.as_ref() else {
+            return false;
+        };
+        let Some(track) = p.tracks.iter().find(|t| t.kind == TrackKind::Video) else {
+            return false;
+        };
+        if track.clip_ids.is_empty() {
+            return false;
+        }
+        track.clip_ids.iter().all(|id| {
+            p.clips
+                .iter()
+                .find(|c| c.id == *id)
+                .map(|c| c.audio_mute)
+                .unwrap_or(false)
+        })
+    }
+
+    /// True when at least one primary-track clip has `audio_mute = true` and at
+    /// least one does not — the mixed case that would need silence substitution.
+    pub fn any_primary_clip_audio_muted(&self) -> bool {
+        let Some(p) = self.project.as_ref() else {
+            return false;
+        };
+        let Some(track) = p.tracks.iter().find(|t| t.kind == TrackKind::Video) else {
+            return false;
+        };
+        track.clip_ids.iter().any(|id| {
+            p.clips
+                .iter()
+                .find(|c| c.id == *id)
+                .map(|c| c.audio_mute)
+                .unwrap_or(false)
+        })
+    }
+
     /// Current seek-bar **In** marker in sequence ms, or `None` when unset.
     pub fn in_marker_ms(&self) -> Option<f64> {
         self.in_marker_ms
@@ -894,6 +1048,8 @@ impl EditSession {
             in_point: 0.0,
             out_point: dur,
             orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
             extensions: Default::default(),
         };
 
@@ -936,6 +1092,8 @@ impl EditSession {
                     in_point: old.in_point,
                     out_point: split_sec,
                     orientation: old.orientation,
+                    scale: old.scale,
+                    audio_mute: old.audio_mute,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -945,6 +1103,8 @@ impl EditSession {
                     in_point: split_sec,
                     out_point: old.out_point,
                     orientation: old.orientation,
+                    scale: old.scale,
+                    audio_mute: old.audio_mute,
                     extensions: Default::default(),
                 };
 
@@ -1005,6 +1165,8 @@ impl EditSession {
             in_point: 0.0,
             out_point: dur,
             orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
             extensions: Default::default(),
         };
 
@@ -1047,6 +1209,8 @@ impl EditSession {
                     in_point: old.in_point,
                     out_point: split_sec,
                     orientation: old.orientation,
+                    scale: old.scale,
+                    audio_mute: old.audio_mute,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -1056,6 +1220,8 @@ impl EditSession {
                     in_point: split_sec,
                     out_point: old.out_point,
                     orientation: old.orientation,
+                    scale: old.scale,
+                    audio_mute: old.audio_mute,
                     extensions: Default::default(),
                 };
 
@@ -1587,6 +1753,8 @@ mod tests {
             in_point: 0.0,
             out_point: sec,
             orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
             extensions: Default::default(),
         }
     }
@@ -2035,6 +2203,74 @@ mod tests {
         let first_id = s.project().unwrap().tracks[0].clip_ids[0];
         assert!(s.trim_clip(first_id, f64::NAN, 1.0).is_err());
         assert!(s.trim_clip(first_id, 0.0, f64::INFINITY).is_err());
+        assert!(!s.undo_enabled());
+    }
+
+    #[test]
+    fn resize_candidate_reports_current_percent_and_source_dims() {
+        let s = session_with_two_clip_project();
+        let cand = s.resize_candidate_at_seq_ms(500.0).expect("cand");
+        assert_eq!(cand.current_percent, 100); // default == identity
+        assert!(s.resize_enabled(500.0));
+        // two_clip_project totals 5s; past the end returns None.
+        assert!(s.resize_candidate_at_seq_ms(999_999.0).is_none());
+        assert!(!s.resize_enabled(999_999.0));
+    }
+
+    #[test]
+    fn resize_clip_happy_path_updates_scale_and_marks_dirty() {
+        let mut s = session_with_two_clip_project();
+        s.saved_baseline = s.project().cloned();
+        s.dirty = false;
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.resize_clip(first_id, 50).expect("resize ok");
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert_eq!(c.scale.display_percent(), 50);
+        assert!(s.dirty);
+        assert!(s.undo_enabled());
+    }
+
+    #[test]
+    fn resize_clip_100_percent_is_identity() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.resize_clip(first_id, 100).unwrap();
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!(c.scale.is_identity());
+    }
+
+    #[test]
+    fn resize_clip_undo_restores_original_scale() {
+        let mut s = session_with_two_clip_project();
+        let first_id = s.project().unwrap().tracks[0].clip_ids[0];
+        s.resize_clip(first_id, 200).unwrap();
+        assert!(s.undo());
+        let c = s
+            .project()
+            .unwrap()
+            .clips
+            .iter()
+            .find(|c| c.id == first_id)
+            .unwrap();
+        assert!(c.scale.is_identity());
+    }
+
+    #[test]
+    fn resize_clip_rejects_unknown_clip_id() {
+        let mut s = session_with_two_clip_project();
+        assert!(s.resize_clip(Uuid::new_v4(), 75).is_err());
         assert!(!s.undo_enabled());
     }
 

@@ -19,5 +19,7 @@ pub use media::{
     AudioStreamInfo, ExportProgressFn, FfmpegProbe, MediaMetadata, MediaProbe, VideoStreamInfo,
     WebExportFormat,
 };
-pub use project::{migrate, Clip, MigrationError, Project, ProjectStore, Track, TrackKind};
+pub use project::{
+    migrate, Clip, ClipScale, MigrationError, Project, ProjectStore, Track, TrackKind,
+};
 pub use sidecar::{SidecarClient, SidecarError};
