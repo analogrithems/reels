@@ -1503,12 +1503,12 @@ impl EditSession {
     /// * A **new** `TrackKind::Audio` lane is appended with a single clip
     ///   spanning the probed duration — same shape as
     ///   [`EditSession::insert_overlay_audio_clip_at_playhead_with_probe`].
-    /// * Secondary audio lanes are untouched — the user can manually remove
-    ///   them first if they want a clean single-track replacement. (Future
-    ///   work: a "Replace & Clear Other Audio" variant.)
-    /// * Preview-side mix is still first-lane-only; until the audio-thread
-    ///   rewrite lands, a fresh replacement is audible only after export when
-    ///   another audio lane already exists. Menu copy flags the caveat.
+    /// * Secondary audio lanes are untouched — use
+    ///   [`EditSession::replace_audio_clip_at_playhead_clear_others`] if you
+    ///   want the swap to drop existing audio lanes too.
+    /// * Preview-side mix sums all `TrackKind::Audio` lanes with per-lane
+    ///   gain (see `player::AudioLane`), so the replacement clip is audible
+    ///   immediately alongside any existing overlays.
     pub fn replace_audio_clip_at_playhead(
         &mut self,
         path: PathBuf,
@@ -1516,6 +1516,104 @@ impl EditSession {
     ) -> anyhow::Result<()> {
         let probe = FfmpegProbe::new();
         self.replace_audio_clip_at_playhead_with_probe(&probe, path, playhead_ms)
+    }
+
+    /// **Edit → Replace & Clear Other Audio…**: like
+    /// [`EditSession::replace_audio_clip_at_playhead`] but first **removes every
+    /// existing `TrackKind::Audio` lane** so the project is left with exactly
+    /// one audio source — the new clip. Every operation lives under a single
+    /// undo snapshot so one **Edit → Undo** restores the pre-call state
+    /// (existing audio lanes and their clips, all original mute states)
+    /// exactly.
+    ///
+    /// Use this when the intent is "swap the soundtrack" rather than
+    /// "voice-over on top of what's there". `Replace Audio…` is the stacking
+    /// variant and is usually the safer default; this one is destructive
+    /// toward existing audio lanes.
+    pub fn replace_audio_clip_at_playhead_clear_others(
+        &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        let probe = FfmpegProbe::new();
+        self.replace_audio_clip_at_playhead_clear_others_with_probe(&probe, path, playhead_ms)
+    }
+
+    /// Probe-injected variant of
+    /// [`EditSession::replace_audio_clip_at_playhead_clear_others`]. See the
+    /// non-probe version for semantics.
+    pub fn replace_audio_clip_at_playhead_clear_others_with_probe(
+        &mut self,
+        probe: &dyn MediaProbe,
+        path: PathBuf,
+        _playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+
+        let md = probe.probe(&path).context("probe replace audio")?;
+        let dur = md.duration_seconds;
+
+        // One snapshot covers the mute pass, every lane removal, and the
+        // replacement-lane append — so one Undo unwinds the whole
+        // "swap soundtrack" atomically.
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("project checked above");
+
+        let primary_clip_ids: Vec<Uuid> = proj
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .map(|t| t.clip_ids.clone())
+            .unwrap_or_default();
+        for clip in proj.clips.iter_mut() {
+            if primary_clip_ids.contains(&clip.id) {
+                clip.audio_mute = true;
+            }
+        }
+
+        // Collect audio-lane indices descending so `remove_track_at` doesn't
+        // invalidate later ones as it mutates `proj.tracks`. `remove_track_at`
+        // also drops any orphaned clips, matching `remove_audio_track_lane`.
+        let audio_indices: Vec<usize> = proj
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind == TrackKind::Audio)
+            .map(|(i, _)| i)
+            .rev()
+            .collect();
+        for idx in audio_indices {
+            remove_track_at(proj, idx)?;
+        }
+
+        let new_track_id = Uuid::new_v4();
+        let new_clip_id = Uuid::new_v4();
+        let new_clip = Clip {
+            id: new_clip_id,
+            source_path: path,
+            metadata: md,
+            in_point: 0.0,
+            out_point: dur,
+            orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
+            extensions: Default::default(),
+        };
+        proj.clips.push(new_clip);
+        proj.tracks.push(Track {
+            id: new_track_id,
+            kind: TrackKind::Audio,
+            clip_ids: vec![new_clip_id],
+            gain_db: 0.0,
+            extensions: Default::default(),
+        });
+
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
     }
 
     /// Probe-injected variant of
@@ -2756,6 +2854,181 @@ mod tests {
             .replace_audio_clip_at_playhead_with_probe(
                 &probe,
                 PathBuf::from("/tmp/ra.wav"),
+                0.0,
+            )
+            .expect_err("no-project path must error");
+        assert!(err.to_string().contains("no project"));
+        assert!(s.project().is_none());
+    }
+
+    #[test]
+    fn replace_audio_clear_others_drops_existing_lanes_and_leaves_one() {
+        // After overlaying two audio lanes, replace-and-clear must result in
+        // exactly one audio lane — the replacement — and every primary-track
+        // clip must be muted. This is the headline contract of the clear-
+        // others variant; regressing it reverts the "swap soundtrack" intent
+        // into the stacking behaviour of plain Replace Audio.
+        let probe = FakeProbe::with_duration(2.5);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-rco.mp4"))
+            .unwrap();
+        s.insert_overlay_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/overlay-1.wav"),
+            0.0,
+        )
+        .unwrap();
+        s.insert_overlay_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/overlay-2.wav"),
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            2,
+            "two overlays ⇒ two audio lanes pre-clear"
+        );
+
+        let replace_path = PathBuf::from("/tmp/fake-swap.wav");
+        s.replace_audio_clip_at_playhead_clear_others_with_probe(
+            &probe,
+            replace_path.clone(),
+            0.0,
+        )
+        .expect("clear-others replace ok");
+
+        let p = s.project().unwrap();
+        let lanes: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(lanes.len(), 1, "exactly one audio lane after clear-others");
+        assert_eq!(lanes[0].clip_ids.len(), 1);
+        let clip_id = lanes[0].clip_ids[0];
+        let clip = p
+            .clips
+            .iter()
+            .find(|c| c.id == clip_id)
+            .expect("replacement clip");
+        assert_eq!(clip.source_path, replace_path);
+        // Overlay clips' source paths must no longer live in the project
+        // (remove_track_at drops orphaned clips).
+        assert!(
+            !p.clips
+                .iter()
+                .any(|c| c.source_path == PathBuf::from("/tmp/overlay-1.wav")),
+            "overlay-1 clip should be gone"
+        );
+        assert!(
+            !p.clips
+                .iter()
+                .any(|c| c.source_path == PathBuf::from("/tmp/overlay-2.wav")),
+            "overlay-2 clip should be gone"
+        );
+        assert!(s.all_primary_clips_audio_muted(), "primary track muted");
+    }
+
+    #[test]
+    fn replace_audio_clear_others_is_one_undo_step() {
+        // The whole mute + drop-existing-lanes + append-new-lane sequence
+        // must live under a single undo snapshot so one Edit → Undo restores
+        // the pre-call project byte-exact. Two overlays pre-call ⇒ after
+        // Undo those two lanes must be back and the replacement gone, with
+        // primary clips un-muted.
+        let probe = FakeProbe::with_duration(1.5);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-rcou.mp4"))
+            .unwrap();
+        s.insert_overlay_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/ov-a.wav"),
+            0.0,
+        )
+        .unwrap();
+        s.insert_overlay_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/ov-b.wav"),
+            0.0,
+        )
+        .unwrap();
+        let pre_snapshot = s.project().cloned().unwrap();
+
+        s.replace_audio_clip_at_playhead_clear_others_with_probe(
+            &probe,
+            PathBuf::from("/tmp/swap.wav"),
+            0.0,
+        )
+        .unwrap();
+
+        assert!(s.undo(), "one undo must be available");
+        let after = s.project().cloned().unwrap();
+        assert_eq!(
+            after.tracks.len(),
+            pre_snapshot.tracks.len(),
+            "tracks fully restored"
+        );
+        assert_eq!(
+            after.clips.len(),
+            pre_snapshot.clips.len(),
+            "clips fully restored"
+        );
+        assert!(!s.any_primary_clip_audio_muted(), "mute pass undone");
+    }
+
+    #[test]
+    fn replace_audio_clear_others_handles_no_existing_audio_lanes() {
+        // With zero existing audio lanes the clear step is a no-op and this
+        // call must behave identically to plain Replace Audio: primary
+        // muted, exactly one new audio lane with the replacement. Exercises
+        // the boundary where `audio_indices` is empty so `remove_track_at`
+        // is never called.
+        let probe = FakeProbe::with_duration(2.0);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-rcoe.mp4"))
+            .unwrap();
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
+        );
+
+        let replace_path = PathBuf::from("/tmp/fake-only.wav");
+        s.replace_audio_clip_at_playhead_clear_others_with_probe(
+            &probe,
+            replace_path.clone(),
+            0.0,
+        )
+        .unwrap();
+
+        let p = s.project().unwrap();
+        let lanes: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(lanes.len(), 1);
+        assert!(s.all_primary_clips_audio_muted());
+    }
+
+    #[test]
+    fn replace_audio_clear_others_without_project_errors_without_mutation() {
+        let probe = FakeProbe::with_duration(1.0);
+        let mut s = EditSession::default();
+        let err = s
+            .replace_audio_clip_at_playhead_clear_others_with_probe(
+                &probe,
+                PathBuf::from("/tmp/rc.wav"),
                 0.0,
             )
             .expect_err("no-project path must error");

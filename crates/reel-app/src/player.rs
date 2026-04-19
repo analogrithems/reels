@@ -21,7 +21,7 @@
 //! both and reset the clock.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -40,13 +40,28 @@ use crate::ui_bridge::on_ui;
 use crate::{reset_tools_popup_ui, AppWindow};
 use reel_core::project::ClipOrientation;
 
+/// One audio lane handed to the player: its concat timeline plus the per-lane
+/// gain in decibels (matches the `Track::gain_db` stored in the project). The
+/// audio thread converts to linear scale once per `LoadTimeline` and multiplies
+/// each sample on its way into the mix — parallel to the export-side
+/// `[i:a:0]volume=XdB[aI]` prefilters ahead of ffmpeg `amix`.
+#[derive(Clone)]
+pub struct AudioLaneLoad {
+    pub timeline: Arc<TimelineSync>,
+    pub gain_db: f32,
+}
+
 #[derive(Clone)]
 pub enum Cmd {
-    /// Primary video track + optional dedicated audio concat (first audio lane with clips).
-    /// When `audio` is `None`, audio follows embedded streams in each **video** segment’s file.
+    /// Primary video track + per-lane dedicated audio concats.
+    ///
+    /// `audio_lanes` is the full project order of `TrackKind::Audio` lanes
+    /// that actually carry clips. An **empty** vec means "no dedicated audio
+    /// lanes" — the audio thread falls back to the embedded audio stream on
+    /// each video segment's file, matching the pre-multi-lane behavior.
     LoadTimeline {
         video: Arc<TimelineSync>,
-        audio: Option<Arc<TimelineSync>>,
+        audio_lanes: Vec<AudioLaneLoad>,
     },
     /// Drop the current source and reset transport (no decoder teardown of threads).
     Close,
@@ -96,11 +111,23 @@ const OUT_CHANNELS: u16 = 2;
 /// see **audible-now**, keeping video in lockstep with sound.
 /// [`AudioClock::get_raw`] returns the uncorrected value for internal
 /// audio-thread use so audio bookkeeping doesn't chase its own offset.
+///
+/// `user_offset_us` is a **signed** per-device nudge dialed in by the
+/// user (Preferences → A/V Offset). cpal's timestamp-based calibration
+/// handles most devices, but Bluetooth stacks / external DACs / HDMI
+/// receivers often add 40–200 ms of audio-side delay that the driver
+/// doesn't surface. A positive offset says "audio is *later* than the
+/// calibrated estimate" and makes the video thread hold each frame
+/// proportionally longer. A negative offset (video is later than audio)
+/// is accepted but clamps the effective latency at 0 — we won't run the
+/// clock *ahead* of the raw write head, since there's nothing audible
+/// past there yet. Persisted in `AppPrefs::audio_offset_ms`.
 #[derive(Clone, Debug, Default)]
 pub struct AudioClock {
     pos_us: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
     output_latency_us: Arc<AtomicU64>,
+    user_offset_us: Arc<AtomicI64>,
 }
 
 impl AudioClock {
@@ -114,10 +141,21 @@ impl AudioClock {
     }
     /// Latency-compensated read: audible-now in sequence ms. Use this from
     /// the **video** thread / UI so picture matches sound.
+    ///
+    /// Total compensation = `output_latency_us` (auto-calibrated) +
+    /// `user_offset_us` (manual nudge). If the sum goes non-positive the
+    /// compensation is pinned at 0 — the raw write head is the earliest
+    /// meaningful audible-now, so reading further ahead would be lying.
     pub fn get(&self) -> u64 {
         let raw_us = self.pos_us.load(Ordering::Acquire);
-        let lat_us = self.output_latency_us.load(Ordering::Acquire);
-        raw_us.saturating_sub(lat_us) / 1_000
+        let lat_us = self.output_latency_us.load(Ordering::Acquire) as i64;
+        let user_us = self.user_offset_us.load(Ordering::Acquire);
+        let effective = lat_us.saturating_add(user_us);
+        if effective <= 0 {
+            raw_us / 1_000
+        } else {
+            raw_us.saturating_sub(effective as u64) / 1_000
+        }
     }
     /// Raw written-to-OS position. Use this from the **audio** thread so
     /// audio decode doesn't chase its own latency offset.
@@ -147,6 +185,28 @@ impl AudioClock {
     pub fn output_latency_ms(&self) -> u64 {
         self.output_latency_us.load(Ordering::Acquire) / 1_000
     }
+    /// Manual user-supplied A/V offset in **signed** milliseconds. Positive
+    /// values say "audio arrives later than the auto-calibrated estimate"
+    /// and effectively hold the picture back; negative values pull the
+    /// picture forward (clamped at 0 total compensation in [`get`]).
+    /// Clamped to [`AudioClock::USER_OFFSET_RANGE_MS`] so a runaway slider
+    /// can't overflow the atomic or stall the video thread indefinitely.
+    pub fn set_user_offset_ms(&self, ms: i32) {
+        let clamped = ms.clamp(-Self::USER_OFFSET_RANGE_MS, Self::USER_OFFSET_RANGE_MS);
+        self.user_offset_us
+            .store((clamped as i64) * 1_000, Ordering::Release);
+    }
+    /// Current user offset in signed ms. Source of truth for the UI
+    /// "A/V Offset: ±NNN ms" readout — we store µs internally and only
+    /// expose ms because device latency is itself only good to a few ms.
+    pub fn user_offset_ms(&self) -> i32 {
+        (self.user_offset_us.load(Ordering::Acquire) / 1_000) as i32
+    }
+    /// Absolute bound on [`set_user_offset_ms`]. ±500 ms covers every
+    /// real-world consumer device (Bluetooth, HDMI ARC, wireless speakers)
+    /// while still being small enough that a user can't accidentally dial
+    /// out to the point where the picture visibly freezes.
+    pub const USER_OFFSET_RANGE_MS: i32 = 500;
 
     /// Advance the raw position by the time represented by `frames` at
     /// `sample_rate`, scaled by preview speed (`speed_signed` is in the
@@ -214,6 +274,9 @@ pub struct PlayerHandle {
     #[allow(dead_code)]
     // Exposed for future UI sync / debugging; threads hold the canonical `Arc`.
     pub playback_signed_milli: Arc<AtomicI32>,
+    /// Shared with the audio + video threads. The UI holds a clone to
+    /// drive `set_user_offset_ms` from the Preferences → A/V Offset menu.
+    pub audio_clock: AudioClock,
 }
 
 impl PlayerHandle {
@@ -334,6 +397,7 @@ pub fn spawn_player(
         audio_thread: Some(audio_thread),
         master_volume_1000,
         playback_signed_milli,
+        audio_clock: clock,
     })
 }
 
@@ -408,7 +472,7 @@ fn video_loop(
             match c {
                 Cmd::LoadTimeline {
                     video: sync,
-                    audio: _,
+                    audio_lanes: _,
                 } => {
                     ctx = None;
                     playing = false;
@@ -890,6 +954,137 @@ impl AudioSpeedCarry {
 
 // ---------- audio thread ----------
 
+/// Per-lane playback state for the multi-audio mixer. Mirrors what the
+/// pre-multi-lane code tracked via a single `(AudioCtx, TimelineSync,
+/// active_index)` triple, but one copy per audio lane so the mixer can pull
+/// from all lanes each tick.
+///
+/// `pending` buffers the most recently decoded interleaved stereo samples
+/// from `ctx` — the mixer drains `min(pending.len)` across lanes per pass so
+/// the output stays sample-aligned regardless of lanes returning
+/// different-sized packets. `exhausted` flips true when a lane has no more
+/// segments to open; from then on the lane contributes silence (it's
+/// skipped in the mix pass, which is mathematically equivalent to adding 0).
+struct AudioLane {
+    timeline: Arc<TimelineSync>,
+    ctx: Option<AudioCtx>,
+    pending: std::collections::VecDeque<f32>,
+    gain_linear: f32,
+    seg_idx: usize,
+    exhausted: bool,
+}
+
+impl AudioLane {
+    fn new(load: AudioLaneLoad) -> Self {
+        Self {
+            timeline: load.timeline,
+            ctx: None,
+            pending: std::collections::VecDeque::new(),
+            gain_linear: db_to_linear(load.gain_db),
+            seg_idx: 0,
+            exhausted: false,
+        }
+    }
+}
+
+/// Convert a gain in decibels to its linear multiplier. Matches the
+/// `volume=XdB` ffmpeg filter used on the export side: `10^(dB/20)`. Unity
+/// (`0 dB`) returns exactly `1.0` so unity lanes are a no-op in the mix.
+///
+/// The session clamps input to `[-40, +40]` dB, and `f32::NAN` becomes `0.0`
+/// at the setter, so this function doesn't need to guard those ranges — but
+/// it stays well-defined for any finite input a caller might hand it.
+fn db_to_linear(db: f32) -> f32 {
+    if db == 0.0 {
+        return 1.0;
+    }
+    10f32.powf(db / 20.0)
+}
+
+/// Pull one mix pass of samples from `lanes`, applying per-lane gain.
+///
+/// Strategy: for each lane that has no pending samples and isn't exhausted,
+/// refill once from its current `AudioCtx`. If refill hits EOF, advance to
+/// the next segment; if there are no more segments, mark the lane
+/// exhausted. Then mix `n = min(pending.len)` across lanes that still have
+/// pending samples — exhausted / empty lanes contribute `0.0` implicitly.
+///
+/// Returns `None` only when **every** lane is exhausted *and* drained —
+/// the caller is expected to treat that as the "fall back to silence-pad"
+/// signal (dedicated_audio + video still playing) or to stop (no audio
+/// anywhere).
+fn next_mixed_samples(lanes: &mut [AudioLane]) -> Option<Vec<f32>> {
+    for lane in lanes.iter_mut() {
+        if lane.exhausted || !lane.pending.is_empty() {
+            continue;
+        }
+        let Some(ctx) = lane.ctx.as_mut() else {
+            lane.exhausted = true;
+            continue;
+        };
+        if let Some(samples) = ctx.next_packet_samples() {
+            lane.pending.extend(samples);
+            continue;
+        }
+        // Current segment ran out; advance to the next one if any.
+        let next_idx = lane.seg_idx + 1;
+        if next_idx < lane.timeline.segments.len() {
+            lane.seg_idx = next_idx;
+            lane.timeline
+                .active_index
+                .store(next_idx, Ordering::SeqCst);
+            let s = &lane.timeline.segments[next_idx];
+            match try_open_audio(&s.path) {
+                Ok(mut a) => {
+                    if let Err(e) = a.seek(s.media_in_ms) {
+                        tracing::warn!(error = %e, "audio lane segment seek failed");
+                        lane.exhausted = true;
+                        lane.ctx = None;
+                    } else {
+                        lane.ctx = Some(a);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "audio lane segment open failed");
+                    lane.exhausted = true;
+                    lane.ctx = None;
+                }
+            }
+        } else {
+            lane.exhausted = true;
+            lane.ctx = None;
+        }
+    }
+
+    let min_pending = lanes
+        .iter()
+        .filter(|l| !l.pending.is_empty())
+        .map(|l| l.pending.len())
+        .min()?;
+    Some(drain_and_mix(lanes, min_pending))
+}
+
+/// Drain `n` samples from each non-empty lane, applying `gain_linear`, and
+/// sum into one `Vec<f32>`. Separated from `next_mixed_samples` so the mix
+/// math is unit-testable without ffmpeg / segment advancement.
+fn drain_and_mix(lanes: &mut [AudioLane], n: usize) -> Vec<f32> {
+    let mut mix = vec![0f32; n];
+    for lane in lanes.iter_mut() {
+        if lane.pending.is_empty() {
+            continue;
+        }
+        let g = lane.gain_linear;
+        for mix_slot in mix.iter_mut() {
+            match lane.pending.pop_front() {
+                Some(s) => *mix_slot += s * g,
+                None => break,
+            }
+        }
+    }
+    mix
+}
+
+
 #[allow(clippy::too_many_arguments)]
 fn audio_loop<P, C>(
     rx: Receiver<Cmd>,
@@ -971,15 +1166,20 @@ fn audio_loop<P, C>(
 
     let mut speed_carry = AudioSpeedCarry::default();
     let clock_playing = clock.clone();
-    let mut actx: Option<AudioCtx> = None;
+    let mut lanes: Vec<AudioLane> = Vec::new();
     let mut playing = false;
-    let mut decode_timeline: Option<Arc<TimelineSync>> = None;
     let mut video_master: Option<Arc<TimelineSync>> = None;
+    // At least one dedicated `TrackKind::Audio` lane carries clips. When
+    // false, `lanes` contains a single synthetic lane sourced from the
+    // video timeline (embedded audio in each video file).
     let mut dedicated_audio = false;
+    // All lanes exhausted but video still playing — push zeros so the
+    // clock keeps advancing until video ends.
     let mut silence_pad = false;
 
     loop {
-        let cmd = if playing && (actx.is_some() || silence_pad) {
+        let any_active = lanes.iter().any(|l| !l.exhausted || !l.pending.is_empty());
+        let cmd = if playing && (any_active || silence_pad) {
             rx.try_recv().ok()
         } else {
             match rx.recv() {
@@ -990,40 +1190,59 @@ fn audio_loop<P, C>(
 
         if let Some(c) = cmd {
             match c {
-                Cmd::LoadTimeline { video, audio } => {
-                    actx = None;
+                Cmd::LoadTimeline {
+                    video,
+                    audio_lanes,
+                } => {
+                    lanes.clear();
                     playing = false;
                     silence_pad = false;
                     speed_carry.reset();
                     clock.set(0);
                     video_master = Some(video.clone());
-                    dedicated_audio = audio.is_some();
-                    let decode = audio.unwrap_or_else(|| video.clone());
-                    decode_timeline = Some(decode.clone());
-                    decode.active_index.store(0, Ordering::SeqCst);
-                    if decode.segments.is_empty() {
-                        decode_timeline = None;
-                        video_master = None;
-                        continue;
-                    }
-                    let s0 = &decode.segments[0];
-                    match try_open_audio(&s0.path) {
-                        Ok(mut a) => {
-                            if let Err(e) = a.seek(s0.media_in_ms) {
-                                tracing::warn!(error = %e, "audio initial seek failed");
+                    dedicated_audio = !audio_lanes.is_empty();
+                    // Build per-lane state. Empty vec → fall back to embedded
+                    // audio from video files (single synthetic lane at unit
+                    // gain).
+                    let loads: Vec<AudioLaneLoad> = if audio_lanes.is_empty() {
+                        vec![AudioLaneLoad {
+                            timeline: video.clone(),
+                            gain_db: 0.0,
+                        }]
+                    } else {
+                        audio_lanes
+                    };
+                    for load in loads {
+                        if load.timeline.segments.is_empty() {
+                            continue;
+                        }
+                        let mut lane = AudioLane::new(load);
+                        lane.timeline.active_index.store(0, Ordering::SeqCst);
+                        let s0 = &lane.timeline.segments[0];
+                        match try_open_audio(&s0.path) {
+                            Ok(mut a) => {
+                                if let Err(e) = a.seek(s0.media_in_ms) {
+                                    tracing::warn!(error = %e, "audio initial seek failed");
+                                }
+                                lane.ctx = Some(a);
                             }
-                            actx = Some(a);
-                            silence_pad = false;
+                            Err(e) => {
+                                tracing::warn!(error = %e, "audio lane open failed");
+                                lane.exhausted = true;
+                            }
                         }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "audio open failed");
-                            actx = None;
-                            silence_pad = dedicated_audio && video.total_sequence_ms() > 0;
-                        }
+                        lanes.push(lane);
+                    }
+                    if lanes.is_empty() {
+                        video_master = None;
+                    } else if lanes.iter().all(|l| l.exhausted) {
+                        // Every lane failed to open but there's still video
+                        // — treat as silence-pad so the clock advances.
+                        silence_pad = dedicated_audio && video.total_sequence_ms() > 0;
                     }
                 }
                 Cmd::Play => {
-                    if decode_timeline.is_none() {
+                    if lanes.is_empty() {
                         continue;
                     }
                     let sgn = playback_signed_milli.load(Ordering::Relaxed);
@@ -1032,7 +1251,8 @@ fn audio_loop<P, C>(
                         clock.set_playing(true);
                         continue;
                     }
-                    if actx.is_none() && !silence_pad {
+                    let any_open = lanes.iter().any(|l| l.ctx.is_some());
+                    if !any_open && !silence_pad {
                         continue;
                     }
                     playing = true;
@@ -1046,20 +1266,32 @@ fn audio_loop<P, C>(
                     let Some(ref vm) = video_master else {
                         continue;
                     };
-                    let Some(ref dt) = decode_timeline else {
+                    if lanes.is_empty() {
                         continue;
-                    };
+                    }
                     let cap = vm.total_sequence_ms();
                     let seq_ms = seq_ms.min(cap);
-                    if dedicated_audio && seq_ms >= dt.total_sequence_ms() {
-                        actx = None;
-                        silence_pad = true;
-                        if !dt.segments.is_empty() {
-                            dt.active_index
-                                .store(dt.segments.len() - 1, Ordering::SeqCst);
+                    silence_pad = false;
+                    let mut any_open = false;
+                    for lane in lanes.iter_mut() {
+                        lane.pending.clear();
+                        lane.ctx = None;
+                        let dt = &lane.timeline;
+                        if seq_ms >= dt.total_sequence_ms() {
+                            lane.exhausted = true;
+                            if !dt.segments.is_empty() {
+                                dt.active_index
+                                    .store(dt.segments.len() - 1, Ordering::SeqCst);
+                                lane.seg_idx = dt.segments.len() - 1;
+                            }
+                            continue;
                         }
-                    } else if let Some((idx, local_ms)) = dt.resolve_seek(seq_ms) {
-                        silence_pad = false;
+                        let Some((idx, local_ms)) = dt.resolve_seek(seq_ms) else {
+                            lane.exhausted = true;
+                            continue;
+                        };
+                        lane.seg_idx = idx;
+                        lane.exhausted = false;
                         dt.active_index.store(idx, Ordering::SeqCst);
                         let s = &dt.segments[idx];
                         match try_open_audio(&s.path) {
@@ -1067,22 +1299,24 @@ fn audio_loop<P, C>(
                                 if let Err(e) = a.seek(local_ms) {
                                     tracing::warn!(error = %e, seq_ms, "audio seek failed");
                                 }
-                                actx = Some(a);
+                                lane.ctx = Some(a);
+                                any_open = true;
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "audio reopen failed");
-                                actx = None;
-                                silence_pad = dedicated_audio;
+                                lane.exhausted = true;
                             }
                         }
+                    }
+                    if !any_open && dedicated_audio && seq_ms < cap {
+                        silence_pad = true;
                     }
                     clock.set(seq_ms);
                     speed_carry.reset();
                     let _ = producer.try_push(0.0);
                 }
                 Cmd::Close => {
-                    actx = None;
-                    decode_timeline = None;
+                    lanes.clear();
                     video_master = None;
                     dedicated_audio = false;
                     silence_pad = false;
@@ -1095,10 +1329,14 @@ fn audio_loop<P, C>(
 
         if playing {
             let sgn = playback_signed_milli.load(Ordering::Relaxed);
+            let all_done = !lanes.is_empty()
+                && lanes
+                    .iter()
+                    .all(|l| l.exhausted && l.pending.is_empty());
             let should_output_silence = sgn < 0
                 || silence_pad
                 || (dedicated_audio
-                    && actx.is_none()
+                    && all_done
                     && video_master
                         .as_ref()
                         .map(|v| clock.get() < v.total_sequence_ms())
@@ -1127,44 +1365,32 @@ fn audio_loop<P, C>(
                         }
                     }
                 }
-            } else if let Some(a) = actx.as_mut() {
-                if let Some(samples) = a.next_packet_samples() {
-                    let sp = (playback_signed_milli.load(Ordering::Relaxed).unsigned_abs() as f64)
-                        .clamp(250.0, 4000.0)
-                        / 1000.0;
-                    speed_carry.push_speed_samples(samples, sp, &mut producer, || {
-                        clock_playing.is_playing()
-                    });
-                } else if let Some(ref t) = decode_timeline {
-                    let idx = t.active_index.load(Ordering::SeqCst);
-                    if idx + 1 < t.segments.len() {
-                        t.active_index.store(idx + 1, Ordering::SeqCst);
-                        let s = &t.segments[idx + 1];
-                        match try_open_audio(&s.path) {
-                            Ok(mut na) => {
-                                if let Err(e) = na.seek(s.media_in_ms) {
-                                    tracing::warn!(error = %e, "audio segment seek failed");
+            } else if !lanes.is_empty() {
+                match next_mixed_samples(&mut lanes) {
+                    Some(mixed) => {
+                        let sp = (playback_signed_milli
+                            .load(Ordering::Relaxed)
+                            .unsigned_abs() as f64)
+                            .clamp(250.0, 4000.0)
+                            / 1000.0;
+                        speed_carry.push_speed_samples(mixed, sp, &mut producer, || {
+                            clock_playing.is_playing()
+                        });
+                    }
+                    None => {
+                        // All lanes exhausted. For dedicated-audio timelines
+                        // with video still running, flip into silence-pad on
+                        // the next iteration; otherwise stop (or loop).
+                        if dedicated_audio {
+                            if let Some(vm) = video_master.as_ref() {
+                                if clock.get() < vm.total_sequence_ms() {
+                                    speed_carry.reset();
+                                    silence_pad = true;
+                                } else if !loop_seek_restart(&loop_playback, &restart) {
                                     playing = false;
                                     clock.set_playing(false);
                                     on_ui(weak.clone(), |w| w.set_is_playing(false));
-                                } else {
-                                    speed_carry.reset();
-                                    actx = Some(na);
                                 }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "audio segment open failed");
-                                playing = false;
-                                clock.set_playing(false);
-                                on_ui(weak.clone(), |w| w.set_is_playing(false));
-                            }
-                        }
-                    } else if dedicated_audio {
-                        if let Some(vm) = video_master.as_ref() {
-                            if clock.get() < vm.total_sequence_ms() {
-                                actx = None;
-                                speed_carry.reset();
-                                silence_pad = true;
                             } else if !loop_seek_restart(&loop_playback, &restart) {
                                 playing = false;
                                 clock.set_playing(false);
@@ -1175,13 +1401,7 @@ fn audio_loop<P, C>(
                             clock.set_playing(false);
                             on_ui(weak.clone(), |w| w.set_is_playing(false));
                         }
-                    } else if !loop_seek_restart(&loop_playback, &restart) {
-                        playing = false;
-                        clock.set_playing(false);
-                        on_ui(weak.clone(), |w| w.set_is_playing(false));
                     }
-                } else {
-                    playing = false;
                 }
             } else {
                 std::thread::sleep(Duration::from_millis(16));
@@ -1286,7 +1506,6 @@ mod sync_tests {
     //! - 30-second simulated playback drifts less than 1 ms from wall-time
     //!   audio advance (i.e. the math is rounding-stable, not cumulative).
     use super::*;
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
     #[cfg(test)]
     use std::time::Instant;
@@ -1509,6 +1728,106 @@ mod sync_tests {
     }
 
     #[test]
+    fn user_offset_defaults_to_zero() {
+        // Brand-new clocks must start neutral — any non-zero default
+        // would silently corrupt sync on first launch before the user
+        // has dialed anything in.
+        let c = AudioClock::new();
+        assert_eq!(c.user_offset_ms(), 0);
+    }
+
+    #[test]
+    fn positive_user_offset_adds_to_calibrated_latency() {
+        // User reports "picture runs 30 ms ahead of sound" → +30 ms
+        // offset holds the frame back that much longer on top of the
+        // 20 ms cpal estimate. Picture should read 50 ms behind raw.
+        let c = AudioClock::new();
+        c.set(1_000);
+        c.set_output_latency_ms(20);
+        c.set_user_offset_ms(30);
+        assert_eq!(c.get_raw(), 1_000);
+        assert_eq!(c.get(), 950);
+    }
+
+    #[test]
+    fn negative_user_offset_subtracts_from_calibrated_latency() {
+        // Over-estimated auto-latency: user dials back -10 ms so the
+        // 20 ms estimate effectively becomes 10 ms of compensation.
+        let c = AudioClock::new();
+        c.set(1_000);
+        c.set_output_latency_ms(20);
+        c.set_user_offset_ms(-10);
+        assert_eq!(c.get(), 990);
+    }
+
+    #[test]
+    fn effective_latency_clamps_at_zero_when_user_offset_exceeds_calibration() {
+        // If the user nukes the offset below -calibrated, `get()` must
+        // not run *ahead* of raw — picture can't legitimately arrive
+        // before the audio write head. Pin at `raw / 1000` instead of
+        // wrapping or reading future samples.
+        let c = AudioClock::new();
+        c.set(1_000);
+        c.set_output_latency_ms(20);
+        c.set_user_offset_ms(-100);
+        assert_eq!(c.get(), 1_000);
+    }
+
+    #[test]
+    fn user_offset_clamps_to_declared_range() {
+        // Guarantees the atomic can't overflow and that a runaway
+        // slider wire-up can't stall the picture by seconds. ±500 ms
+        // is the public contract documented on the const.
+        let c = AudioClock::new();
+        c.set_user_offset_ms(10_000);
+        assert_eq!(c.user_offset_ms(), AudioClock::USER_OFFSET_RANGE_MS);
+        c.set_user_offset_ms(-10_000);
+        assert_eq!(c.user_offset_ms(), -AudioClock::USER_OFFSET_RANGE_MS);
+    }
+
+    #[test]
+    fn user_offset_survives_roundtrip_through_setter() {
+        // Prefs → clock → readout must round-trip exactly so the UI
+        // displayed value stays consistent with what the clock is
+        // actually applying.
+        let c = AudioClock::new();
+        c.set_user_offset_ms(42);
+        assert_eq!(c.user_offset_ms(), 42);
+        c.set_user_offset_ms(-37);
+        assert_eq!(c.user_offset_ms(), -37);
+        c.set_user_offset_ms(0);
+        assert_eq!(c.user_offset_ms(), 0);
+    }
+
+    #[test]
+    fn user_offset_does_not_mutate_raw_position() {
+        // A nudge to the compensation is read-side only — the audio
+        // write head must not move, or seeking / EOF detection on the
+        // audio thread would drift with every slider wiggle.
+        let c = AudioClock::new();
+        c.set(1_234);
+        c.set_user_offset_ms(250);
+        assert_eq!(c.get_raw(), 1_234);
+        c.set_user_offset_ms(-250);
+        assert_eq!(c.get_raw(), 1_234);
+    }
+
+    #[test]
+    fn user_offset_does_not_block_calibration_stickiness() {
+        // The user nudge is orthogonal to auto-calibration; the
+        // sticky-after-first-call guard still applies to the auto half.
+        let c = AudioClock::new();
+        c.set_user_offset_ms(50);
+        c.calibrate_from_cpal(Some(15_000_000), 480, 48_000);
+        assert_eq!(c.output_latency_ms(), 15);
+        // A later callback must not overwrite the first one even though
+        // the user has dialed in an offset.
+        c.calibrate_from_cpal(Some(60_000_000), 480, 48_000);
+        assert_eq!(c.output_latency_ms(), 15);
+        assert_eq!(c.user_offset_ms(), 50);
+    }
+
+    #[test]
     fn atomic_ordering_serializes_across_threads() {
         // Advance from one thread, read from another — verifies the
         // Acquire/Release ordering on the atomics is tight enough
@@ -1542,5 +1861,107 @@ mod sync_tests {
         // Use `UNIX_EPOCH` to silence the unused-import lint on
         // platforms where the `time` imports are otherwise untouched.
         let _ = UNIX_EPOCH;
+    }
+}
+
+#[cfg(test)]
+mod mix_tests {
+    //! Pure-math tests for the multi-lane mix helpers. Exercises the gain
+    //! conversion and the drain/sum step without touching ffmpeg, cpal, or
+    //! segment advancement — so a regression in mix arithmetic surfaces
+    //! here instead of as a quiet gain error in preview playback.
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
+
+    fn empty_timeline() -> Arc<TimelineSync> {
+        Arc::new(TimelineSync {
+            segments: Arc::new(Vec::new()),
+            active_index: AtomicUsize::new(0),
+        })
+    }
+
+    fn lane(samples: &[f32], gain_linear: f32) -> AudioLane {
+        AudioLane {
+            timeline: empty_timeline(),
+            ctx: None,
+            pending: samples.iter().copied().collect::<VecDeque<_>>(),
+            gain_linear,
+            seg_idx: 0,
+            exhausted: false,
+        }
+    }
+
+    #[test]
+    fn db_to_linear_unity_is_exact_one() {
+        // Unity is a fast-path: we want it *exactly* 1.0, not `10^0` which
+        // rounds to ~0.99999994 on f32.
+        assert_eq!(db_to_linear(0.0), 1.0);
+    }
+
+    #[test]
+    fn db_to_linear_minus_six_is_about_half() {
+        // -6 dB ≈ 0.5012. Matches the export-side `volume=-6dB` filter so
+        // preview and render stay audibly in sync.
+        let v = db_to_linear(-6.0);
+        assert!((v - 0.5011872).abs() < 1e-5, "got {v}");
+    }
+
+    #[test]
+    fn db_to_linear_plus_six_is_about_two() {
+        let v = db_to_linear(6.0);
+        assert!((v - 1.9952624).abs() < 1e-5, "got {v}");
+    }
+
+    #[test]
+    fn drain_and_mix_single_lane_passes_through_at_unity() {
+        let mut lanes = vec![lane(&[0.25, -0.5, 0.75], 1.0)];
+        let out = drain_and_mix(&mut lanes, 3);
+        assert_eq!(out, vec![0.25, -0.5, 0.75]);
+        assert!(lanes[0].pending.is_empty());
+    }
+
+    #[test]
+    fn drain_and_mix_applies_per_lane_gain() {
+        let mut lanes = vec![lane(&[1.0, 1.0, 1.0], 0.5)];
+        let out = drain_and_mix(&mut lanes, 3);
+        assert_eq!(out, vec![0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn drain_and_mix_sums_two_lanes_with_gain() {
+        // Two equal-length lanes, one at unity and one halved. The output
+        // should be a sample-wise sum — this is the core mix invariant.
+        let mut lanes = vec![
+            lane(&[1.0, 0.5, -0.25], 1.0),
+            lane(&[0.1, 0.2, 0.3], 0.5),
+        ];
+        let out = drain_and_mix(&mut lanes, 3);
+        assert_eq!(out.len(), 3);
+        assert!((out[0] - 1.05).abs() < 1e-6);
+        assert!((out[1] - 0.6).abs() < 1e-6);
+        assert!((out[2] - (-0.1)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn drain_and_mix_skips_empty_lane() {
+        // An exhausted / drained lane must contribute silence (i.e. it's
+        // skipped, which is mathematically the same as adding 0) — any
+        // other behavior would produce clicks every time a lane runs out.
+        let mut lanes = vec![lane(&[], 1.0), lane(&[0.3, 0.3, 0.3], 1.0)];
+        let out = drain_and_mix(&mut lanes, 3);
+        assert_eq!(out, vec![0.3, 0.3, 0.3]);
+    }
+
+    #[test]
+    fn drain_and_mix_leaves_extra_samples_pending() {
+        // If `n` is smaller than a lane's pending queue, the remainder
+        // must stay in `pending` for the next pass — otherwise we'd lose
+        // audio at every mix boundary.
+        let mut lanes = vec![lane(&[1.0, 2.0, 3.0, 4.0], 1.0)];
+        let out = drain_and_mix(&mut lanes, 2);
+        assert_eq!(out, vec![1.0, 2.0]);
+        assert_eq!(lanes[0].pending.len(), 2);
+        assert_eq!(lanes[0].pending.front().copied(), Some(3.0));
     }
 }

@@ -416,6 +416,11 @@ export component AppWindow inherits Window {
     /// and appends a fresh audio lane in a single undoable step, so it only
     /// needs a project to work against.
     in property <bool> replace-audio-enabled: false;
+    /// True when **Edit → Replace & Clear Other Audio…** is clickable. Same
+    /// gate as `replace-audio-enabled`; this variant additionally drops every
+    /// existing `TrackKind::Audio` lane so the project ends up with exactly
+    /// one audio source (the new clip), all under one undo snapshot.
+    in property <bool> replace-audio-clear-others-enabled: false;
     /// True when **Edit → Audio Lane Gain…** is clickable — requires `media-ready`
     /// AND at least one `TrackKind::Audio` lane (otherwise the sheet has nothing
     /// to act on). Gate flipped in `sync_menu` via `session::audio_track_count`.
@@ -603,10 +608,17 @@ export component AppWindow inherits Window {
     /// **Edit → Replace Audio…**: open an audio-file picker, mute every clip
     /// on the primary video track, and append the pick on a new dedicated
     /// audio lane — all in a single undo step. Export mixes via the same
-    /// `amix` path as overlay. Preview remains first-lane-only until the
-    /// audio-thread rewrite, so a fresh replace is audible only after export
-    /// when it becomes the first (or sole) audio lane.
+    /// `amix` path as overlay. Preview now sums every audio lane with
+    /// per-lane gain, so the replacement clip is audible alongside any
+    /// existing overlays immediately after confirm.
     callback edit-replace-audio();
+
+    /// **Edit → Replace & Clear Other Audio…**: like `edit-replace-audio` but
+    /// additionally removes every existing `TrackKind::Audio` lane before
+    /// appending the new one, so the project ends up with exactly one audio
+    /// source. All three steps (mute primary, drop existing lanes, append the
+    /// new lane) live under one undo snapshot.
+    callback edit-replace-audio-clear-others();
 
     /// **Edit → Audio Lane Gain…**: open a sheet for adjusting the per-lane
     /// `gain_db` on a `TrackKind::Audio` track (1-based lane number; ±40 dB
@@ -671,6 +683,17 @@ export component AppWindow inherits Window {
     callback view-toggle-video-tracks();
     callback view-toggle-audio-tracks();
     callback view-toggle-subtitle-tracks();
+
+    /// Manual A/V offset in **signed** milliseconds (Preferences → A/V
+    /// Offset). Positive values say audio arrives later than the auto-
+    /// calibrated device latency and hold the picture back. Driven by
+    /// submenu nudges (±10 ms) and a Reset; persisted in prefs. The
+    /// Rust-side clamp is ±500 ms (`AUDIO_OFFSET_RANGE_MS`).
+    in-out property <int> audio-offset-ms: 0;
+    /// Nudge the offset by `delta_ms`. Rust clamps and persists; the
+    /// property is updated on return. `0` = reset to zero.
+    callback audio-offset-nudge(int);
+    callback audio-offset-reset();
 
     /// Last decoded frame size (pixels); used for zoom and **Actual Size**.
     in property <float> preview-frame-width: 640.0;
@@ -997,6 +1020,12 @@ export component AppWindow inherits Window {
                 activated => { root.edit-replace-audio(); }
             }
             MenuItem {
+                title: "Replace & Clear Other Audio…";
+                icon: @image-url("icons/lucide/replace.svg");
+                enabled: root.replace-audio-clear-others-enabled;
+                activated => { root.edit-replace-audio-clear-others(); }
+            }
+            MenuItem {
                 title: "Audio Lane Gain…";
                 icon: @image-url("icons/lucide/volume-2.svg");
                 enabled: root.audio-gain-enabled;
@@ -1125,6 +1154,35 @@ export component AppWindow inherits Window {
                 checked: root.controls-overlay-always-visible;
                 icon: @image-url("icons/lucide/layers.svg");
                 activated => { root.view-toggle-controls-always-visible(); }
+            }
+            MenuSeparator { }
+            // A/V Offset submenu — manual device-latency nudge on top of
+            // the cpal auto-calibration. Stored in prefs and applied to
+            // the audio clock at startup / on every change.
+            Menu {
+                title: "A/V Offset";
+                icon: @image-url("icons/lucide/clock.svg");
+                MenuItem {
+                    title: "Current: " + root.audio-offset-ms + " ms";
+                    enabled: false;
+                }
+                MenuSeparator { }
+                MenuItem {
+                    title: "Shift Earlier (−10 ms)";
+                    icon: @image-url("icons/lucide/arrow-left.svg");
+                    activated => { root.audio-offset-nudge(-10); }
+                }
+                MenuItem {
+                    title: "Shift Later (+10 ms)";
+                    icon: @image-url("icons/lucide/arrow-right.svg");
+                    activated => { root.audio-offset-nudge(10); }
+                }
+                MenuSeparator { }
+                MenuItem {
+                    title: "Reset to 0 ms";
+                    enabled: root.audio-offset-ms != 0;
+                    activated => { root.audio-offset-reset(); }
+                }
             }
         }
         Menu {

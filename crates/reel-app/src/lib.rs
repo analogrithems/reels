@@ -1045,6 +1045,10 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     // Replace shares the same gate — same reasoning (helper creates its own
     // lane and the per-primary-clip mute pass only needs a project to scan).
     window.set_replace_audio_enabled(window.get_media_ready());
+    // Replace-and-clear uses the same gate as plain Replace; when there are no
+    // existing audio lanes it still does the right thing (it's a no-op on the
+    // clear pass and behaves identically to Replace Audio).
+    window.set_replace_audio_clear_others_enabled(window.get_media_ready());
     // Audio Lane Gain needs a project AND at least one audio lane to act on;
     // the sheet would have nothing to prefill otherwise. Using `media-ready`
     // alone would let the menu open into an empty sheet, which is worse than
@@ -1132,12 +1136,31 @@ fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSessio
         sender.send(player::Cmd::Close);
         return;
     };
-    if let Some(video) = timeline::timeline_sync_from_project(p) {
-        let audio = timeline::dedicated_audio_timeline_sync_from_project(p);
-        sender.send(player::Cmd::LoadTimeline { video, audio });
-    } else {
+    let Some(video) = timeline::timeline_sync_from_project(p) else {
         sender.send(player::Cmd::Close);
-    }
+        return;
+    };
+    // Build one `AudioLaneLoad` per non-empty audio lane. `clips_from_all_audio_tracks`
+    // and `audio_track_gains_db` are both in `TrackKind::Audio` project order, so
+    // the zip is 1:1. Empty lanes (no clips) are filtered out in lock-step with
+    // their gain — an empty resulting vec tells the audio thread to fall back to
+    // the video segment's embedded audio (pre-multi-lane behavior).
+    let lane_clip_lists = timeline::clips_from_all_audio_tracks(p);
+    let all_gains = session.audio_track_gains_db();
+    let audio_lanes: Vec<player::AudioLaneLoad> = lane_clip_lists
+        .into_iter()
+        .zip(all_gains.into_iter())
+        .filter_map(|(clips, gain_db)| {
+            timeline::TimelineSync::from_clips(&clips).map(|sync| player::AudioLaneLoad {
+                timeline: sync,
+                gain_db,
+            })
+        })
+        .collect();
+    sender.send(player::Cmd::LoadTimeline {
+        video,
+        audio_lanes,
+    });
 }
 
 fn sync_menu_and_autosave(
@@ -1255,6 +1278,7 @@ pub fn run() -> Result<()> {
     window.set_insert_audio_enabled(false);
     window.set_overlay_audio_enabled(false);
     window.set_replace_audio_enabled(false);
+    window.set_replace_audio_clear_others_enabled(false);
     window.set_audio_gain_enabled(false);
     window.set_insert_subtitle_enabled(false);
     window.set_move_clip_down_enabled(false);
@@ -1318,6 +1342,16 @@ pub fn run() -> Result<()> {
             return Err(e);
         }
     };
+
+    // Apply the persisted manual A/V offset to the audio clock before the
+    // UI becomes responsive — otherwise a user with e.g. +120 ms Bluetooth
+    // compensation saved would see one playback frame of misaligned
+    // picture between load and the first menu interaction.
+    {
+        let ms = app_prefs.borrow().audio_offset_ms;
+        player.audio_clock.set_user_offset_ms(ms);
+        window.set_audio_offset_ms(ms);
+    }
 
     // Background asset cache: decodes audio peaks / thumbnails off the UI
     // thread and swaps them into TlChip waveforms as they finish. The
@@ -1466,6 +1500,47 @@ pub fn run() -> Result<()> {
             let new = !w.get_view_show_subtitle_tracks();
             w.set_view_show_subtitle_tracks(new);
             app_prefs.borrow_mut().show_subtitle_tracks = new;
+            app_prefs.borrow().save();
+        });
+    }
+
+    // A/V Offset: nudge the manual output-latency offset by ±10 ms. The
+    // audio clock clamps to ±500 ms, then we mirror the clamped value
+    // back to the window + prefs so the menu readout, the actual
+    // compensation, and the on-disk pref stay in lockstep.
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        let clock = player.audio_clock.clone();
+        window.on_audio_offset_nudge(move |delta_ms| {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            let next = w.get_audio_offset_ms().saturating_add(delta_ms);
+            clock.set_user_offset_ms(next);
+            // Read back the clamped value so the UI reflects the actual
+            // state of the clock (a user spamming +10 past the 500 ms cap
+            // would otherwise see a stale property).
+            let applied = clock.user_offset_ms();
+            w.set_audio_offset_ms(applied);
+            app_prefs.borrow_mut().audio_offset_ms = applied;
+            app_prefs.borrow().save();
+        });
+    }
+
+    // A/V Offset reset → 0. Separate callback from nudge so the menu item
+    // reads naturally and the property binding can disable "Reset" at 0.
+    {
+        let weak = window.as_weak();
+        let app_prefs = Rc::clone(&app_prefs);
+        let clock = player.audio_clock.clone();
+        window.on_audio_offset_reset(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            clock.set_user_offset_ms(0);
+            w.set_audio_offset_ms(0);
+            app_prefs.borrow_mut().audio_offset_ms = 0;
             app_prefs.borrow().save();
         });
     }
@@ -1897,7 +1972,7 @@ pub fn run() -> Result<()> {
                             w.set_status_text(
                                 format!(
                                     "Audio replaced — primary track muted, new lane added \
-                                    ({lanes} audio track{}). Audible at export.",
+                                    ({lanes} audio track{}).",
                                     if lanes == 1 { "" } else { "s" }
                                 )
                                 .into(),
@@ -1914,6 +1989,53 @@ pub fn run() -> Result<()> {
             }
             None => tracing::debug!("replace audio cancelled"),
         });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        // Replace & Clear Other Audio = mute every primary clip, drop every
+        // existing `TrackKind::Audio` lane, then append the replacement — all
+        // under one undo snapshot. Same dialog as Replace so the user sees a
+        // familiar picker; status text differs so "audio swapped" reads as
+        // distinct from "audio added".
+        window.on_edit_replace_audio_clear_others(
+            move || match prompt_insert_audio_dialog() {
+                Some(replace_path) => {
+                    let mru_path = replace_path.clone();
+                    let playhead_ms = weak
+                        .upgrade()
+                        .map(|w| w.get_playhead_ms() as f64)
+                        .unwrap_or(0.0);
+                    let result = session
+                        .borrow_mut()
+                        .replace_audio_clip_at_playhead_clear_others(replace_path, playhead_ms);
+                    match result {
+                        Ok(()) => {
+                            recent.borrow_mut().record_media(mru_path);
+                            if let Some(w) = weak.upgrade() {
+                                sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                                w.set_status_text(
+                                    "Audio replaced — existing audio lanes cleared, new lane \
+                                    added (1 audio track)."
+                                        .into(),
+                                );
+                            }
+                            reload_player_timeline(&sender, &session.borrow());
+                        }
+                        Err(e) => {
+                            if let Some(w) = weak.upgrade() {
+                                w.set_status_text(format!("Replace audio failed: {e}").into());
+                            }
+                        }
+                    }
+                }
+                None => tracing::debug!("replace-and-clear audio cancelled"),
+            },
+        );
     }
 
     {

@@ -280,12 +280,6 @@ pub(crate) fn timeline_sync_from_project(p: &Project) -> Option<Arc<TimelineSync
     TimelineSync::from_clips(&clips)
 }
 
-/// When the first **audio** track has clips, a separate concat timeline for the audio thread (preview uses this instead of embedded audio from video files).
-pub(crate) fn dedicated_audio_timeline_sync_from_project(p: &Project) -> Option<Arc<TimelineSync>> {
-    let clips = clips_from_first_audio_track(p)?;
-    TimelineSync::from_clips(&clips)
-}
-
 pub(crate) fn resolve_for_project(p: &Project, sequence_ms: f64) -> Option<(PathBuf, u64)> {
     let clips = clips_from_project(p)?;
     resolve_sequence_media_ms(&clips, sequence_ms)
@@ -438,7 +432,7 @@ mod tests {
         let c = clips_from_first_audio_track(&p).unwrap();
         assert_eq!(c.len(), 2);
         assert!((sequence_duration_ms(&c) - 5000.0).abs() < 0.1);
-        assert!(dedicated_audio_timeline_sync_from_project(&p).is_some());
+        assert!(TimelineSync::from_clips(&c).is_some());
     }
 
     #[test]

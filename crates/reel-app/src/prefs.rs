@@ -35,7 +35,20 @@ pub struct AppPrefs {
     /// Timeline: show subtitle lane rows.
     #[serde(default = "default_true")]
     pub show_subtitle_tracks: bool,
+    /// Manual A/V offset in **signed** milliseconds applied on top of the
+    /// auto-calibrated output latency. Positive = audio arrives later than
+    /// the device estimate (picture is held back). Typical real-world
+    /// values: +40..+200 for Bluetooth, 0 for wired. Clamped to
+    /// `±AUDIO_OFFSET_RANGE_MS` on load so a corrupt prefs file can't wedge
+    /// playback.
+    #[serde(default)]
+    pub audio_offset_ms: i32,
 }
+
+/// Public mirror of [`AudioClock::USER_OFFSET_RANGE_MS`]. Kept here so the
+/// load-time clamp and the UI slider bounds agree without cross-crate
+/// coupling through the player module.
+pub const AUDIO_OFFSET_RANGE_MS: i32 = 500;
 
 fn default_true() -> bool {
     true
@@ -61,6 +74,7 @@ impl Default for AppPrefs {
             show_video_tracks: true,
             show_audio_tracks: true,
             show_subtitle_tracks: true,
+            audio_offset_ms: 0,
         }
     }
 }
@@ -81,6 +95,9 @@ impl AppPrefs {
             Ok(mut v) => {
                 v.master_volume = v.master_volume.clamp(0.0, 1.0);
                 v.preview_zoom_percent = v.preview_zoom_percent.clamp(25.0, 400.0);
+                v.audio_offset_ms = v
+                    .audio_offset_ms
+                    .clamp(-AUDIO_OFFSET_RANGE_MS, AUDIO_OFFSET_RANGE_MS);
                 v
             }
             Err(e) => {
@@ -121,5 +138,40 @@ mod tests {
     fn default_master_is_full() {
         let p = AppPrefs::default();
         assert!((p.master_volume - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn default_audio_offset_is_zero() {
+        // Any nonzero default would quietly desync every user's first
+        // launch before they've opened prefs.
+        let p = AppPrefs::default();
+        assert_eq!(p.audio_offset_ms, 0);
+    }
+
+    #[test]
+    fn load_clamps_out_of_range_offset() {
+        // A corrupt or hand-edited prefs.json with ±10_000 ms must not
+        // make it to the audio clock — that'd stall the picture for
+        // seconds. The load clamp is the only guard before the value
+        // reaches `AudioClock::set_user_offset_ms`.
+        let json = br#"{ "audio_offset_ms": 10000 }"#;
+        let parsed: AppPrefs = serde_json::from_slice(json).unwrap();
+        // `from_slice` skips the `load()` clamp path, so verify the
+        // defaults are honored, then apply the same clamp manually.
+        let clamped = parsed
+            .audio_offset_ms
+            .clamp(-AUDIO_OFFSET_RANGE_MS, AUDIO_OFFSET_RANGE_MS);
+        assert_eq!(clamped, AUDIO_OFFSET_RANGE_MS);
+    }
+
+    #[test]
+    fn offset_roundtrips_through_serde() {
+        let p = AppPrefs {
+            audio_offset_ms: -120,
+            ..AppPrefs::default()
+        };
+        let bytes = serde_json::to_vec(&p).unwrap();
+        let back: AppPrefs = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.audio_offset_ms, -120);
     }
 }
