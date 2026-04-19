@@ -12,7 +12,7 @@ This document complements **`docs/MEDIA_FORMATS.md`**: that file explains *how* 
 
 ### Playback (preview)
 
-- **Yes** — The **first video** stream decodes to RGBA; the **first decodable audio** stream plays (stereo float @ 48 kHz). **No (subs)** — Subtitle tracks are **not** shown (decode graph has no subtitle path yet).
+- **Yes** — The **first video** stream decodes to RGBA; audio plays at stereo float @ 48 kHz, defaulting to the **first decodable** stream but user-selectable per clip via **Edit → Audio Track** on any source with ≥ 2 decodable audio streams. **No (subs)** — Subtitle tracks are **not** shown (decode graph has no subtitle path yet).
 - **Partial** — Often works, but **first stream only**, `audio_disabled` if audio fails, or **container/codec** depends on your FFmpeg build.
 
 ### Export (**File → Export…**)
@@ -100,7 +100,7 @@ A practical **delivery default** for wide compatibility:
 3. **Clear remux errors** — When MP4 rejects HEVC/AC‑3/etc., surface a path to **transcode presets** (licensing / mux constraints). The **MP4 — H.264 + AAC** preset is the existing MP4-side fallback; update error copy to point users at it when remux stream-copy fails.
 4. ~~**MOV export** and/or **ProRes / DNx** handoff — **iOS / pro** workflows.~~ **Shipped:** **MOV** remux preset, **MOV — ProRes 422 HQ + PCM** and **MKV — DNxHR HQ + PCM** intermediate presets (`prores_ks -profile:v 3` / `dnxhd -profile:v dnxhr_hq`, both with `pcm_s16le`).
 5. **Subtitles — WebVTT, SRT, TTML** (preview, edit, mux or burn-in); **ASS/SSA** as a follow-on for styled captions.
-6. **Multi-audio** stream selection — **First audio only** today.
+6. **Multi-audio** stream selection — **Preview-side shipped.** **Edit → Audio Track** lists every decodable audio stream probed off the source and lets you pick per-clip; preview honours the selection, `Clip.audio_stream_index: Option<u32>` is serialised with `None` elided so existing projects round-trip byte-stable. **Remaining:** export-side stream selection (today the ffmpeg audio graph still picks the first decodable stream per clip), and a language/title-aware default for dubs-heavy sources.
 
 **Product alignment:** The **export preset picker** (see **`docs/phases-ui.md` Phase U3**, **`docs/FEATURES.md`**) should map user-visible options to the tiers above (web + mobile **golden stack**, compatibility remux).
 

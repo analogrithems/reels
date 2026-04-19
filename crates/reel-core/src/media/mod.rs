@@ -12,12 +12,15 @@ pub use export::{
     export_concat_with_audio, export_concat_with_audio_lanes_oriented,
     export_concat_with_audio_lanes_oriented_with_gains, export_concat_with_audio_oriented,
     export_with_ffmpeg, ffmpeg_args_for_format,
-    generate_silence_wav, ExportProgressFn, WebExportFormat,
+    generate_silence_wav, ExportProgressFn, GifPreset, WebExportFormat,
 };
 pub use frame::grab_frame;
 pub use metadata::{AudioStreamInfo, MediaMetadata, VideoStreamInfo};
 pub use probe::FfmpegProbe;
-pub use srt::{parse_file as parse_srt_file, parse_str as parse_srt_str, probe_file as probe_srt_file, SrtCue, SrtProbe};
+pub use srt::{
+    find_cue_at_seconds as find_srt_cue_at_seconds, parse_file as parse_srt_file,
+    parse_str as parse_srt_str, probe_file as probe_srt_file, SrtCue, SrtProbe,
+};
 
 use std::path::Path;
 
@@ -56,6 +59,7 @@ mod tests {
             video_stream_count: 1,
             audio_stream_count: 0,
             subtitle_stream_count: 0,
+            audio_streams: Vec::new(),
         }
     }
 

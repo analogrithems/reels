@@ -59,6 +59,7 @@ impl MediaProbe for FfmpegProbe {
 
         let mut video: Option<VideoStreamInfo> = None;
         let mut audio: Option<AudioStreamInfo> = None;
+        let mut audio_streams: Vec<AudioStreamInfo> = Vec::new();
         let mut audio_disabled = false;
         let mut video_stream_count: u8 = 0;
         let mut audio_stream_count: u8 = 0;
@@ -108,27 +109,38 @@ impl MediaProbe for FfmpegProbe {
                 }
                 MediaType::Audio => {
                     audio_stream_count = audio_stream_count.saturating_add(1);
-                    if audio.is_none() && !audio_disabled {
-                        match ffmpeg::codec::context::Context::from_parameters(stream.parameters())
-                            .and_then(|c| c.decoder().audio())
-                        {
-                            Ok(a) => {
-                                audio = Some(AudioStreamInfo {
-                                    codec: a
-                                        .codec()
-                                        .map(|c| c.name().to_string())
-                                        .unwrap_or_else(|| "unknown".into()),
-                                    sample_rate: a.rate(),
-                                    channels: a.channels(),
-                                });
+                    let stream_index = stream.index() as u32;
+                    let language = stream.metadata().get("language").map(str::to_string);
+                    let title = stream.metadata().get("title").map(str::to_string);
+                    match ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+                        .and_then(|c| c.decoder().audio())
+                    {
+                        Ok(a) => {
+                            let info = AudioStreamInfo {
+                                codec: a
+                                    .codec()
+                                    .map(|c| c.name().to_string())
+                                    .unwrap_or_else(|| "unknown".into()),
+                                sample_rate: a.rate(),
+                                channels: a.channels(),
+                                index: stream_index,
+                                language,
+                                title,
+                            };
+                            if audio.is_none() && !audio_disabled {
+                                audio = Some(info.clone());
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "reel_core::media",
-                                    path = %path.display(),
-                                    error = %e,
-                                    "unrecognized audio codec; disabling audio track"
-                                );
+                            audio_streams.push(info);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "reel_core::media",
+                                path = %path.display(),
+                                stream_index,
+                                error = %e,
+                                "unrecognized audio codec; skipping stream"
+                            );
+                            if audio.is_none() {
                                 audio_disabled = true;
                             }
                         }
@@ -147,6 +159,14 @@ impl MediaProbe for FfmpegProbe {
             });
         }
 
+        // A file with a single decodable audio stream whose decoder failed
+        // still sets `audio_disabled = true` so the UI displays muted-but-
+        // present (mirrors the previous behavior). Recoverable when later
+        // streams decode — in that case we clear the flag.
+        if !audio_streams.is_empty() {
+            audio_disabled = false;
+        }
+
         Ok(MediaMetadata {
             path: path.to_path_buf(),
             duration_seconds,
@@ -157,6 +177,7 @@ impl MediaProbe for FfmpegProbe {
             video_stream_count,
             audio_stream_count,
             subtitle_stream_count,
+            audio_streams,
         })
     }
 }

@@ -59,6 +59,15 @@ pub struct Clip {
     /// clip is muted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub audio_mute: bool,
+    /// **Edit → Audio Track…**: which audio stream from `source_path` to play /
+    /// export for this clip. `None` means "first decodable stream" — the
+    /// player's legacy behavior and what every pre-existing project gets on
+    /// deserialize. `Some(i)` targets container stream index `i` (matches
+    /// `AudioStreamInfo::index` and ffmpeg's `stream.index()`). Preserved on
+    /// undo/redo. Omitted from JSON when `None` so existing snapshots stay
+    /// byte-stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_stream_index: Option<u32>,
     /// Future filter graphs, AI params, etc. Unknown keys round-trip here.
     #[serde(flatten)]
     pub extensions: Map<String, serde_json::Value>,

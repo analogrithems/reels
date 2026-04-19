@@ -451,6 +451,42 @@ export component AppWindow inherits Window {
     /// AND at least one `TrackKind::Audio` lane (otherwise the sheet has nothing
     /// to act on). Gate flipped in `sync_menu` via `session::audio_track_count`.
     in property <bool> audio-gain-enabled: false;
+    /// Edit → Audio Track submenu. The primary-track clip at the playhead may
+    /// expose several audio streams (language, commentary, 5.1+stereo). Up to
+    /// six slots are shown; `audio-track-label-N` is empty when that slot is
+    /// unused and the corresponding `MenuItem` disables + hides its text.
+    /// `audio-track-checked-N` is the radio state for stream N.
+    /// `audio-track-default-checked` flips true when the clip has no explicit
+    /// pick (`Clip.audio_stream_index = None` — the pre-multi-audio default).
+    /// `audio-track-enabled` gates the whole submenu on media-ready + ≥ 2
+    /// audio streams on the current clip (single-stream files have nothing
+    /// to pick between).
+    in property <bool> audio-track-enabled: false;
+    in property <bool> audio-track-default-checked: true;
+    in property <string> audio-track-label-0: "";
+    in property <string> audio-track-label-1: "";
+    in property <string> audio-track-label-2: "";
+    in property <string> audio-track-label-3: "";
+    in property <string> audio-track-label-4: "";
+    in property <string> audio-track-label-5: "";
+    in property <bool> audio-track-checked-0: false;
+    in property <bool> audio-track-checked-1: false;
+    in property <bool> audio-track-checked-2: false;
+    in property <bool> audio-track-checked-3: false;
+    in property <bool> audio-track-checked-4: false;
+    in property <bool> audio-track-checked-5: false;
+    /// Container stream index corresponding to each slot (`AudioStreamInfo.index`).
+    /// Needed because slot positions are dense (0..N) but container indices may
+    /// be sparse (e.g. 1, 2, 5 on files with interleaved subtitle streams).
+    in property <int> audio-track-index-0: -1;
+    in property <int> audio-track-index-1: -1;
+    in property <int> audio-track-index-2: -1;
+    in property <int> audio-track-index-3: -1;
+    in property <int> audio-track-index-4: -1;
+    in property <int> audio-track-index-5: -1;
+    /// Fires when the user picks an entry. `stream-index < 0` → reset to the
+    /// "Default (auto)" state (`Clip.audio_stream_index = None`).
+    callback edit-set-audio-track(int);
 
     // --- Audio lane gain sheet (Edit → Audio Lane Gain…) ---
     /// Visibility flag; flipped by Rust when the menu item fires and off again
@@ -1058,6 +1094,59 @@ export component AppWindow inherits Window {
                 icon: @image-url("icons/lucide/volume-2.svg");
                 enabled: root.audio-gain-enabled;
                 activated => { root.edit-audio-lane-gain(); }
+            }
+            Menu {
+                title: "Audio Track";
+                icon: @image-url("icons/lucide/music.svg");
+                MenuItem {
+                    title: "Default (auto)";
+                    checkable: true;
+                    checked: root.audio-track-default-checked;
+                    enabled: root.audio-track-enabled;
+                    activated => { root.edit-set-audio-track(-1); }
+                }
+                MenuItem {
+                    title: root.audio-track-label-0;
+                    checkable: true;
+                    checked: root.audio-track-checked-0;
+                    enabled: root.audio-track-enabled && root.audio-track-label-0 != "";
+                    activated => { root.edit-set-audio-track(root.audio-track-index-0); }
+                }
+                MenuItem {
+                    title: root.audio-track-label-1;
+                    checkable: true;
+                    checked: root.audio-track-checked-1;
+                    enabled: root.audio-track-enabled && root.audio-track-label-1 != "";
+                    activated => { root.edit-set-audio-track(root.audio-track-index-1); }
+                }
+                MenuItem {
+                    title: root.audio-track-label-2;
+                    checkable: true;
+                    checked: root.audio-track-checked-2;
+                    enabled: root.audio-track-enabled && root.audio-track-label-2 != "";
+                    activated => { root.edit-set-audio-track(root.audio-track-index-2); }
+                }
+                MenuItem {
+                    title: root.audio-track-label-3;
+                    checkable: true;
+                    checked: root.audio-track-checked-3;
+                    enabled: root.audio-track-enabled && root.audio-track-label-3 != "";
+                    activated => { root.edit-set-audio-track(root.audio-track-index-3); }
+                }
+                MenuItem {
+                    title: root.audio-track-label-4;
+                    checkable: true;
+                    checked: root.audio-track-checked-4;
+                    enabled: root.audio-track-enabled && root.audio-track-label-4 != "";
+                    activated => { root.edit-set-audio-track(root.audio-track-index-4); }
+                }
+                MenuItem {
+                    title: root.audio-track-label-5;
+                    checkable: true;
+                    checked: root.audio-track-checked-5;
+                    enabled: root.audio-track-enabled && root.audio-track-label-5 != "";
+                    activated => { root.edit-set-audio-track(root.audio-track-index-5); }
+                }
             }
             MenuSeparator { }
             MenuItem {
@@ -3333,6 +3422,122 @@ export component AppWindow inherits Window {
                                             Text {
                                                 text: "Avid/resolve-friendly intermediate; visually lossless, large files.";
                                                 color: #888;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: Animated GIF sharp";
+                                    clicked => {
+                                        root.export-preset-index = 10;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 10 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 10 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "GIF — Sharp (720 px, 24 fps, 256 colors)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Best quality; large files. Audio will be removed — GIFs are silent.";
+                                                color: #e8a94a;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: Animated GIF good";
+                                    clicked => {
+                                        root.export-preset-index = 11;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 11 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 11 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "GIF — Good (540 px, 20 fps, 128 colors)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Balanced quality and size. Audio will be removed — GIFs are silent.";
+                                                color: #e8a94a;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: Animated GIF share";
+                                    clicked => {
+                                        root.export-preset-index = 12;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 12 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 12 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "GIF — Share (480 px, 15 fps, 96 colors)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Chat/forum friendly size. Audio will be removed — GIFs are silent.";
+                                                color: #e8a94a;
+                                                font-size: 10px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                                TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: Animated GIF tiny";
+                                    clicked => {
+                                        root.export-preset-index = 13;
+                                    }
+                                    Rectangle {
+                                        background: root.export-preset-index == 13 ? #3a3a48 : #2a2a32;
+                                        border-width: 1px;
+                                        border-color: root.export-preset-index == 13 ? #4a9eff : #444;
+                                        border-radius: 4px;
+                                        VerticalBox {
+                                            padding: 8px;
+                                            spacing: 2px;
+                                            Text {
+                                                text: "GIF — Tiny (320 px, 12 fps, 64 colors)";
+                                                color: #ddd;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Smallest files; noticeable banding. Audio will be removed — GIFs are silent.";
+                                                color: #e8a94a;
                                                 font-size: 10px;
                                                 wrap: word-wrap;
                                             }

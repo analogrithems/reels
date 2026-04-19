@@ -22,6 +22,10 @@ pub(crate) struct PrimaryTimelineClip {
     /// build a silence-substituted audio lane for the partial-mute case without
     /// re-walking the project. Audio-lane clips leave this `false`.
     pub audio_mute: bool,
+    /// Mirror of `Clip.audio_stream_index` (Edit → Audio Track). `None` = player /
+    /// export pick the first decodable stream — preserves pre-multi-audio
+    /// behavior for every project without the field set.
+    pub audio_stream_index: Option<u32>,
 }
 
 /// First [`TrackKind::Audio`] track in project order (if any), concatenated like the primary video lane.
@@ -69,6 +73,7 @@ fn clips_for_audio_track_idx(p: &Project, idx: usize) -> Option<Vec<PrimaryTimel
             seq_start_ms: seq,
             orientation: c.orientation,
             audio_mute: false,
+            audio_stream_index: c.audio_stream_index,
         });
         seq += dur_ms;
     }
@@ -95,6 +100,7 @@ pub(crate) fn clips_from_project(p: &Project) -> Option<Vec<PrimaryTimelineClip>
             seq_start_ms: seq,
             orientation: c.orientation,
             audio_mute: c.audio_mute,
+            audio_stream_index: c.audio_stream_index,
         });
         seq += dur_ms;
     }
@@ -150,6 +156,7 @@ pub(crate) fn slice_clips_to_range_ms(
             seq_start_ms: new_seq,
             orientation: c.orientation,
             audio_mute: c.audio_mute,
+            audio_stream_index: c.audio_stream_index,
         });
         new_seq += new_span_ms;
     }
@@ -211,6 +218,10 @@ pub(crate) struct TimelineSegment {
     pub media_out_ms: u64,
     pub seq_start_ms: u64,
     pub orientation: ClipOrientation,
+    /// Carried from `Clip.audio_stream_index`: when `Some(i)`, the audio thread
+    /// opens container stream `i` for this segment; `None` keeps the legacy
+    /// `best(Audio)` fallback so pre-multi-audio projects behave unchanged.
+    pub audio_stream_index: Option<u32>,
 }
 
 impl TimelineSegment {
@@ -221,6 +232,7 @@ impl TimelineSegment {
             media_out_ms: (c.media_out_s * 1000.0).round() as u64,
             seq_start_ms: c.seq_start_ms.round() as u64,
             orientation: c.orientation,
+            audio_stream_index: c.audio_stream_index,
         }
     }
 
@@ -376,12 +388,14 @@ mod tests {
                 video_stream_count: 0,
                 audio_stream_count: 0,
                 subtitle_stream_count: 0,
+                audio_streams: Vec::new(),
             },
             in_point: 0.0,
             out_point: dur,
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         }
     }
@@ -465,6 +479,7 @@ mod tests {
             seq_start_ms,
             orientation: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
         }
     }
 

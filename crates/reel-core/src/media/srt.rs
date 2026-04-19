@@ -126,6 +126,21 @@ fn parse_timestamp(s: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec)
 }
 
+/// Active cue at source-file time `seconds_in_source`, or `None` when no cue
+/// brackets that instant (pre-roll, post-roll, or inter-cue gap). Inclusive on
+/// `start`, exclusive on `end` — a seek landing exactly on `end` shows nothing,
+/// matching the convention subtitle renderers use to avoid a frame of overlap
+/// between adjacent cues. Input is expected to be in **source-file seconds**
+/// (i.e. subtitle-clip `in_point` already added); the caller handles the
+/// seq-time → source-time mapping so this helper stays format-agnostic.
+///
+/// Linear scan — fine in practice because SRT/WebVTT files are rarely above a
+/// few hundred cues, and we run this at preview-tick frequency (≤ 10 Hz).
+pub fn find_cue_at_seconds(cues: &[SrtCue], seconds_in_source: f64) -> Option<&SrtCue> {
+    cues.iter()
+        .find(|c| seconds_in_source >= c.start && seconds_in_source < c.end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +231,25 @@ World\n";
         assert_eq!(cues.len(), 1);
         assert!((cues[0].start - 62.5).abs() < 1e-9);
         assert!((cues[0].end - 65.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn find_cue_at_seconds_returns_match_in_range_and_none_in_gap() {
+        let cues = parse_str(TWO_CUES);
+        // Pre-roll: no cue yet.
+        assert!(find_cue_at_seconds(&cues, 0.5).is_none());
+        // Inside cue 0 (1.0..3.5): inclusive at start, interior.
+        assert_eq!(find_cue_at_seconds(&cues, 1.0).map(|c| c.text.as_str()), Some("Hello"));
+        assert_eq!(find_cue_at_seconds(&cues, 2.0).map(|c| c.text.as_str()), Some("Hello"));
+        // End of cue 0 is exclusive — landing exactly on 3.5 shows nothing
+        // (avoids a one-frame flash of the prior cue on boundary seeks).
+        assert!(find_cue_at_seconds(&cues, 3.5).is_none());
+        // Inter-cue gap.
+        assert!(find_cue_at_seconds(&cues, 3.9).is_none());
+        // Cue 1 body.
+        assert_eq!(find_cue_at_seconds(&cues, 5.0).map(|c| c.text.as_str()), Some("World"));
+        // Past the last cue.
+        assert!(find_cue_at_seconds(&cues, 99.0).is_none());
     }
 
     #[test]

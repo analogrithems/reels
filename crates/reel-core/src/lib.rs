@@ -18,9 +18,10 @@ pub use media::{
     export_concat_with_audio, export_concat_with_audio_lanes_oriented,
     export_concat_with_audio_lanes_oriented_with_gains, export_concat_with_audio_oriented,
     export_with_ffmpeg, ffmpeg_args_for_format,
-    generate_silence_wav, grab_frame, parse_srt_file, parse_srt_str, probe_srt_file,
-    AudioStreamInfo, ExportProgressFn, FfmpegProbe, MediaMetadata, MediaProbe, SrtCue, SrtProbe,
-    VideoStreamInfo, WebExportFormat,
+    find_srt_cue_at_seconds, generate_silence_wav, grab_frame, parse_srt_file, parse_srt_str,
+    probe_srt_file,
+    AudioStreamInfo, ExportProgressFn, FfmpegProbe, GifPreset, MediaMetadata, MediaProbe, SrtCue,
+    SrtProbe, VideoStreamInfo, WebExportFormat,
 };
 pub use project::{
     migrate, Clip, ClipScale, MigrationError, Project, ProjectStore, Track, TrackKind,

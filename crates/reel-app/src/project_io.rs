@@ -59,6 +59,7 @@ pub fn project_from_media_path_with_probe(
         orientation: Default::default(),
         scale: Default::default(),
         audio_mute: false,
+        audio_stream_index: None,
         extensions: Default::default(),
     });
     p.tracks.push(Track {

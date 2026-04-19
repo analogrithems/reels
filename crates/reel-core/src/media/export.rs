@@ -100,10 +100,78 @@ pub enum WebExportFormat {
     /// 8-bit mastering; pick ProRes 422 HQ if the downstream tool prefers
     /// Apple codecs.
     MkvDnxhrHq,
+    /// Animated GIF — Sharp preset (~720 px wide, 24 fps, 256 colors).
+    /// Single-pass `palettegen`+`paletteuse` with Bayer dithering. No audio
+    /// — GIF is a silent image format; audio tracks are dropped via `-an`.
+    /// Largest of the GIF tiers; use when you need crisp motion on a
+    /// full-resolution screenshot-style capture.
+    GifSharp,
+    /// Animated GIF — Good preset (~540 px wide, 20 fps, 128 colors).
+    /// Balanced default: visibly smoother than "Share" without a dramatic
+    /// size penalty. No audio.
+    GifGood,
+    /// Animated GIF — Share preset (~480 px wide, 15 fps, 96 colors).
+    /// Sized for chat / Slack / Discord attachments; 15 fps is the
+    /// perceptual floor for motion that still reads as "video". No audio.
+    GifShare,
+    /// Animated GIF — Tiny preset (~320 px wide, 12 fps, 64 colors).
+    /// Aggressive quantization for email embedding or low-bandwidth
+    /// uploads. Dithering is rougher to keep the palette budget honest.
+    /// No audio.
+    GifTiny,
+}
+
+/// Parameters used to build the `palettegen`+`paletteuse` filter graph for
+/// a GIF export preset. Exposed so the UI can display the numeric settings
+/// ("480 px · 15 fps · 96 colors") and test code can assert on the values
+/// that actually get fed to ffmpeg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GifPreset {
+    /// Output caps at `min(max_width, iw)` px wide, auto-computing even
+    /// height with `-2`. Caps only — source smaller than `max_width`
+    /// passes through untouched (no upscaling).
+    pub max_width: u32,
+    /// Output frame rate. 15 is the visual floor for motion; 24 is close
+    /// to film. Below ~10 looks like a slideshow.
+    pub fps: u32,
+    /// `palettegen=max_colors=` — GIF supports up to 256. Dropping below
+    /// 64 quickly produces visible banding on gradients.
+    pub colors: u32,
+    /// `paletteuse=dither=` argument. `"bayer:bayer_scale=N"` for ordered
+    /// dithering (lower N = more dither, bigger files); `"sierra2_4a"` for
+    /// error-diffusion (sharper, slightly bigger).
+    pub dither: &'static str,
+}
+
+impl GifPreset {
+    pub const SHARP: Self = Self {
+        max_width: 720,
+        fps: 24,
+        colors: 256,
+        dither: "bayer:bayer_scale=5",
+    };
+    pub const GOOD: Self = Self {
+        max_width: 540,
+        fps: 20,
+        colors: 128,
+        dither: "bayer:bayer_scale=5",
+    };
+    pub const SHARE: Self = Self {
+        max_width: 480,
+        fps: 15,
+        colors: 96,
+        dither: "bayer:bayer_scale=4",
+    };
+    pub const TINY: Self = Self {
+        max_width: 320,
+        fps: 12,
+        colors: 64,
+        dither: "bayer:bayer_scale=3",
+    };
 }
 
 impl WebExportFormat {
-    pub const ALL: [WebExportFormat; 10] = [
+    pub const ALL: [WebExportFormat; 14] = [
         WebExportFormat::Mp4Remux,
         WebExportFormat::Mp4H264Aac,
         WebExportFormat::Mp4H265Aac,
@@ -114,6 +182,10 @@ impl WebExportFormat {
         WebExportFormat::MovRemux,
         WebExportFormat::MovProResHq,
         WebExportFormat::MkvDnxhrHq,
+        WebExportFormat::GifSharp,
+        WebExportFormat::GifGood,
+        WebExportFormat::GifShare,
+        WebExportFormat::GifTiny,
     ];
 
     pub fn file_extension(self) -> &'static str {
@@ -126,7 +198,34 @@ impl WebExportFormat {
             | WebExportFormat::WebmAv1Opus => "webm",
             WebExportFormat::MkvRemux | WebExportFormat::MkvDnxhrHq => "mkv",
             WebExportFormat::MovRemux | WebExportFormat::MovProResHq => "mov",
+            WebExportFormat::GifSharp
+            | WebExportFormat::GifGood
+            | WebExportFormat::GifShare
+            | WebExportFormat::GifTiny => "gif",
         }
+    }
+
+    /// Returns the quantization parameters for animated GIF presets, or
+    /// `None` for every non-GIF format. Used by
+    /// `append_format_args_with_vf` to build the palette filter graph
+    /// and by the UI to show the "WxH · FPSfps · Ncolors" line without
+    /// duplicating the constants.
+    pub fn gif_preset(self) -> Option<GifPreset> {
+        match self {
+            WebExportFormat::GifSharp => Some(GifPreset::SHARP),
+            WebExportFormat::GifGood => Some(GifPreset::GOOD),
+            WebExportFormat::GifShare => Some(GifPreset::SHARE),
+            WebExportFormat::GifTiny => Some(GifPreset::TINY),
+            _ => None,
+        }
+    }
+
+    /// True for any animated GIF preset. Callers use this to skip the
+    /// audio-bearing branches of the export pipeline (GIF drops audio
+    /// regardless of source), to override the file-dialog filter to
+    /// `*.gif`, and to show the "no audio" UI affordance.
+    pub fn is_gif(self) -> bool {
+        self.gif_preset().is_some()
     }
 }
 
@@ -536,7 +635,12 @@ pub fn export_concat_with_audio_lanes_oriented_with_gains(
             });
         }
     }
-    if mute_audio || audio_lanes.is_empty() {
+    if mute_audio || audio_lanes.is_empty() || format.is_gif() {
+        // GIF cannot carry audio, so any audio-lane setup is dropped on
+        // the floor and we route through the single-input path. We pass
+        // `mute_audio` through rather than forcing it true so preview
+        // behavior for audio-bearing formats is unaffected — the GIF
+        // branch just adds another "no audio in output" reason.
         return export_concat_timeline_oriented(
             video_segments,
             orientation,
@@ -601,7 +705,7 @@ pub fn export_concat_with_audio_oriented(
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
-    if mute_audio {
+    if mute_audio || format.is_gif() {
         return export_concat_timeline_oriented(
             video_segments,
             orientation,
@@ -1129,6 +1233,18 @@ fn append_mixed_audio_format_args(
                 "pcm_s16le",
             ]);
         }
+        // GIF never reaches the amix path — the public entry points
+        // (`export_concat_with_audio_lanes_oriented_with_gains` et al.)
+        // detect GIF and route to the single-input no-audio pipeline
+        // before we get here. This arm exists only so the match stays
+        // exhaustive; hitting it means the routing was bypassed.
+        (
+            WebExportFormat::GifSharp
+            | WebExportFormat::GifGood
+            | WebExportFormat::GifShare
+            | WebExportFormat::GifTiny,
+            _,
+        ) => unreachable!("gif is routed to the audio-less single-input path"),
     }
 }
 
@@ -1299,6 +1415,15 @@ fn append_dual_mux_format_args_with_vf(
                 "pcm_s16le",
             ]);
         }
+        // GIF never reaches the dual-mux path — see the matching note
+        // in `append_mixed_audio_format_args`.
+        (
+            WebExportFormat::GifSharp
+            | WebExportFormat::GifGood
+            | WebExportFormat::GifShare
+            | WebExportFormat::GifTiny,
+            _,
+        ) => unreachable!("gif is routed to the audio-less single-input path"),
     }
 }
 
@@ -1335,6 +1460,22 @@ fn append_format_args(cmd: &mut Command, format: WebExportFormat) {
 /// When present, `-c copy` presets are swapped to an H.264/AAC transcode so the filter
 /// can actually run (ffmpeg cannot apply a filter and stream-copy the same video stream).
 fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_chain: Option<&str>) {
+    // GIF takes a completely different path: we build our own `-vf` that
+    // composes the caller's orientation/scale chain with a
+    // `palettegen`+`paletteuse` single-pass graph, so emit nothing here
+    // and let the GIF arm below own the full `-vf`. For every other
+    // format the caller's chain goes in as-is.
+    if let Some(preset) = format.gif_preset() {
+        let full_chain = build_gif_vf(vf_chain, preset);
+        cmd.arg("-vf").arg(full_chain);
+        // GIF is an image-only format; drop any input audio streams so
+        // the output contains just the animated image. Also force the
+        // `gif` muxer — redundant with the .gif extension in practice
+        // but explicit avoids a muxer guess when exporting to a path
+        // without the extension.
+        cmd.args(["-an", "-c:v", "gif", "-f", "gif"]);
+        return;
+    }
     if let Some(chain) = vf_chain {
         cmd.arg("-vf").arg(chain);
     }
@@ -1487,7 +1628,55 @@ fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_cha
                 "pcm_s16le",
             ]);
         }
+        // GIF is handled by the early return at the top of this
+        // function. Listed here so the match stays exhaustive and any
+        // future GIF variant we add doesn't silently fall through to a
+        // non-GIF codec arm.
+        (
+            WebExportFormat::GifSharp
+            | WebExportFormat::GifGood
+            | WebExportFormat::GifShare
+            | WebExportFormat::GifTiny,
+            _,
+        ) => unreachable!("gif variants handled via early return above"),
     }
+}
+
+/// Compose the caller's orientation/scale chain with the GIF palette
+/// graph. Output shape:
+///
+/// ```text
+/// [extra,]fps=F,scale='min(W,iw)':-2:flags=lanczos,split[s0][s1];
+/// [s0]palettegen=max_colors=N[p];[s1][p]paletteuse=dither=D
+/// ```
+///
+/// - `iw` is the input width; `min(max_width,iw)` caps width without
+///   ever upscaling (a 180 px source stays 180 px). `-2` auto-computes
+///   an even height so libavfilter won't reject odd dimensions.
+/// - `flags=lanczos` gives a perceptibly sharper downscale than the
+///   default `bilinear`, which matters more for GIF than for H.264 since
+///   the palette step will then flatten nearby colors together.
+/// - The `split`→`palettegen`/`paletteuse` branching is a single pass.
+///   A two-pass approach (palette to a temp PNG, then encode) yields
+///   marginally better palettes for long clips but complicates the
+///   progress plumbing; Phase 1 stays single-pass.
+fn build_gif_vf(extra: Option<&str>, p: GifPreset) -> String {
+    let prefix = match extra {
+        Some(e) if !e.is_empty() => {
+            let mut s = String::with_capacity(e.len() + 1);
+            s.push_str(e);
+            s.push(',');
+            s
+        }
+        _ => String::new(),
+    };
+    format!(
+        "{prefix}fps={fps},scale='min({w}\\,iw)':-2:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors={c}[p];[s1][p]paletteuse=dither={d}",
+        fps = p.fps,
+        w = p.max_width,
+        c = p.colors,
+        d = p.dither,
+    )
 }
 
 fn max_out_time_ms_from_progress(contents: &str) -> Option<u64> {
@@ -1674,6 +1863,17 @@ pub fn ffmpeg_args_for_format(format: WebExportFormat) -> Vec<&'static str> {
             "-c:a",
             "pcm_s16le",
         ],
+        // The real GIF path builds a full `-vf` chain with palettegen /
+        // paletteuse per preset, so it can't be represented as a flat
+        // `&'static str` argv. For tests and UI readouts we return just
+        // the codec/container/no-audio tail; callers that need the
+        // filter graph go through `append_format_args_with_vf`.
+        WebExportFormat::GifSharp
+        | WebExportFormat::GifGood
+        | WebExportFormat::GifShare
+        | WebExportFormat::GifTiny => {
+            vec!["-an", "-c:v", "gif", "-f", "gif"]
+        }
     }
 }
 
@@ -2060,5 +2260,157 @@ mod tests {
         // a non-empty `-vf` must swap to a libx264 transcode.
         assert!(args.iter().any(|a| a == "libx264"));
         assert!(!args.iter().any(|a| a == "copy"));
+    }
+
+    // --- GIF export preset tests ---------------------------------------------------
+    //
+    // Phase 1 GIF export relies on three connected pieces: the `GifPreset`
+    // constants, the `build_gif_vf` palettegen filter-graph builder, and the
+    // "route GIF to the audio-less single-input path" shortcut baked into
+    // `append_format_args_with_vf` / `is_gif()`. These tests pin each piece so
+    // regressions (preset drift, missing `-an`, wrong codec, un-escaped commas in
+    // the scale expression) fail loudly at `cargo test`.
+
+    #[test]
+    fn gif_formats_all_use_gif_extension() {
+        for f in [
+            WebExportFormat::GifSharp,
+            WebExportFormat::GifGood,
+            WebExportFormat::GifShare,
+            WebExportFormat::GifTiny,
+        ] {
+            assert_eq!(f.file_extension(), "gif", "wrong ext for {f:?}");
+            assert!(f.is_gif(), "is_gif should be true for {f:?}");
+            assert!(f.gif_preset().is_some(), "gif_preset missing for {f:?}");
+        }
+    }
+
+    #[test]
+    fn non_gif_formats_report_no_gif_preset() {
+        // Every non-GIF preset must return `None` — otherwise the early-return
+        // in `append_format_args_with_vf` would hijack the normal audio path.
+        for f in [
+            WebExportFormat::Mp4Remux,
+            WebExportFormat::Mp4H264Aac,
+            WebExportFormat::Mp4H265Aac,
+            WebExportFormat::WebmVp8Opus,
+            WebExportFormat::WebmVp9Opus,
+            WebExportFormat::WebmAv1Opus,
+            WebExportFormat::MkvRemux,
+            WebExportFormat::MovRemux,
+            WebExportFormat::MovProResHq,
+            WebExportFormat::MkvDnxhrHq,
+        ] {
+            assert!(!f.is_gif(), "{f:?} must not be GIF");
+            assert!(f.gif_preset().is_none(), "{f:?} must have no preset");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn gif_preset_constants_descend_in_size() {
+        // Sharp > Good > Share > Tiny on both resolution and color budget.
+        // Caught a Phase 1 drafting bug where TINY had more colors than SHARE.
+        assert!(GifPreset::SHARP.max_width >= GifPreset::GOOD.max_width);
+        assert!(GifPreset::GOOD.max_width >= GifPreset::SHARE.max_width);
+        assert!(GifPreset::SHARE.max_width >= GifPreset::TINY.max_width);
+
+        assert!(GifPreset::SHARP.colors >= GifPreset::GOOD.colors);
+        assert!(GifPreset::GOOD.colors >= GifPreset::SHARE.colors);
+        assert!(GifPreset::SHARE.colors >= GifPreset::TINY.colors);
+
+        assert!(GifPreset::SHARP.fps >= GifPreset::TINY.fps);
+        // Palette budget is honest: no preset exceeds the GIF spec maximum.
+        for p in [
+            GifPreset::SHARP,
+            GifPreset::GOOD,
+            GifPreset::SHARE,
+            GifPreset::TINY,
+        ] {
+            assert!(p.colors <= 256, "GIF palette caps at 256 colors");
+            assert!(p.fps > 0 && p.max_width > 0);
+        }
+    }
+
+    #[test]
+    fn gif_ffmpeg_args_strip_audio_and_select_gif_codec() {
+        let args = ffmpeg_args_for_format(WebExportFormat::GifShare);
+        assert!(args.contains(&"-an"), "GIF export must strip audio: {args:?}");
+        let c_v = args.iter().position(|a| *a == "-c:v").expect("missing -c:v");
+        assert_eq!(args[c_v + 1], "gif");
+        let f = args.iter().position(|a| *a == "-f").expect("missing -f");
+        assert_eq!(args[f + 1], "gif");
+        // No audio codec is emitted — `-an` fully drops the audio stream.
+        assert!(!args.iter().any(|a| *a == "-c:a"));
+    }
+
+    #[test]
+    fn build_gif_vf_emits_palette_graph_with_escaped_scale_comma() {
+        // The scale expression uses `min(W,iw)`. The comma inside the filter
+        // expression must be backslash-escaped, otherwise ffmpeg's top-level
+        // filter parser splits the chain mid-expression and reports
+        // "No such filter: iw)". Regression guard.
+        let chain = build_gif_vf(None, GifPreset::SHARE);
+        assert!(chain.contains("fps=15"), "{chain}");
+        assert!(chain.contains("scale='min(480\\,iw)':-2:flags=lanczos"), "{chain}");
+        assert!(chain.contains("split[s0][s1]"), "{chain}");
+        assert!(chain.contains("palettegen=max_colors=96"), "{chain}");
+        assert!(chain.contains("[s1][p]paletteuse=dither=bayer:bayer_scale=4"), "{chain}");
+    }
+
+    #[test]
+    fn build_gif_vf_prepends_extra_chain_with_comma() {
+        // When the caller has their own vf prefix (e.g. rotate for portrait
+        // autorotation), it must land BEFORE the palette graph and be joined
+        // with a comma — never a semicolon (that would start a new label chain
+        // and orphan the downstream palettegen inputs).
+        let chain = build_gif_vf(Some("transpose=1"), GifPreset::TINY);
+        assert!(chain.starts_with("transpose=1,fps=12,"), "{chain}");
+        assert!(chain.contains("scale='min(320\\,iw)'"), "{chain}");
+    }
+
+    #[test]
+    fn build_gif_vf_empty_extra_is_noop_prefix() {
+        // `Some("")` must behave like `None` — no stray leading comma that
+        // would make ffmpeg interpret an empty filter name.
+        let a = build_gif_vf(None, GifPreset::GOOD);
+        let b = build_gif_vf(Some(""), GifPreset::GOOD);
+        assert_eq!(a, b);
+        assert!(!a.starts_with(','), "no leading comma: {a}");
+    }
+
+    #[test]
+    fn gif_append_format_args_emits_vf_with_palette_graph() {
+        // End-to-end: `append_format_args_with_vf` for any GIF preset must
+        // (1) emit a single `-vf` arg containing the palette graph,
+        // (2) strip audio with `-an`, (3) pick `-c:v gif`, and (4) force
+        // `-f gif` regardless of the output path extension.
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(&mut cmd, WebExportFormat::GifSharp, None);
+        let args = cmd_args_as_strings(&cmd);
+        let vf_idx = args.iter().position(|a| a == "-vf").expect("missing -vf");
+        let vf = &args[vf_idx + 1];
+        assert!(vf.contains("palettegen=max_colors=256"), "{vf}");
+        assert!(vf.contains("fps=24"), "{vf}");
+        assert!(args.iter().any(|a| a == "-an"));
+        let c_v = args.iter().position(|a| a == "-c:v").unwrap();
+        assert_eq!(args[c_v + 1], "gif");
+        let f = args.iter().position(|a| a == "-f").unwrap();
+        assert_eq!(args[f + 1], "gif");
+    }
+
+    #[test]
+    fn gif_append_format_args_preserves_extra_vf_prefix() {
+        let mut cmd = Command::new("ffmpeg");
+        append_format_args_with_vf(
+            &mut cmd,
+            WebExportFormat::GifTiny,
+            Some("transpose=2"),
+        );
+        let args = cmd_args_as_strings(&cmd);
+        let vf_idx = args.iter().position(|a| a == "-vf").expect("missing -vf");
+        let vf = &args[vf_idx + 1];
+        assert!(vf.starts_with("transpose=2,"), "rotation prefix lost: {vf}");
+        assert!(vf.contains("palettegen=max_colors=64"), "{vf}");
     }
 }

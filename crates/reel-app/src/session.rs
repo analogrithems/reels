@@ -696,6 +696,7 @@ impl EditSession {
             orientation: old.orientation,
             scale: old.scale,
             audio_mute: old.audio_mute,
+            audio_stream_index: old.audio_stream_index,
             extensions: Default::default(),
         };
         let right = Clip {
@@ -707,6 +708,7 @@ impl EditSession {
             orientation: old.orientation,
             scale: old.scale,
             audio_mute: old.audio_mute,
+            audio_stream_index: old.audio_stream_index,
             extensions: Default::default(),
         };
 
@@ -1010,6 +1012,78 @@ impl EditSession {
         Ok(())
     }
 
+    /// Set the per-clip audio stream selection (Edit → Audio Track) for the
+    /// primary-track clip at `seq_ms`. `Some(i)` picks container stream `i`;
+    /// `None` resets to "first decodable" (matches legacy player behavior).
+    /// Undoable. No-ops when the value matches today's (keeps undo tidy for
+    /// rapid menu clicks that end on the current selection).
+    pub fn set_audio_stream_index_at_seq_ms(
+        &mut self,
+        seq_ms: f64,
+        stream_index: Option<u32>,
+    ) -> anyhow::Result<()> {
+        let id = {
+            let p = self
+                .project
+                .as_ref()
+                .context("no project — open a file first")?;
+            crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms)
+                .context("no clip at playhead to change audio track on")?
+        };
+        let current = self
+            .project
+            .as_ref()
+            .and_then(|p| p.clips.iter().find(|c| c.id == id))
+            .and_then(|c| c.audio_stream_index);
+        if current == stream_index {
+            return Ok(());
+        }
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked");
+        let clip = proj
+            .clips
+            .iter_mut()
+            .find(|c| c.id == id)
+            .expect("clip existed a moment ago");
+        clip.audio_stream_index = stream_index;
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Currently-selected audio stream index on the primary-track clip at
+    /// `seq_ms`. `None` when the clip uses the default ("first decodable") —
+    /// the menu shows that as "Default (stream 0)" so users aren't surprised
+    /// by a phantom selected row on files with one audio track.
+    pub fn audio_stream_index_at_seq_ms(&self, seq_ms: f64) -> Option<u32> {
+        let p = self.project.as_ref()?;
+        let id = crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms)?;
+        p.clips
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.audio_stream_index)
+    }
+
+    /// Snapshot of the audio streams on the source file backing the primary-
+    /// track clip at `seq_ms`. Returns an empty vec when there's no clip or
+    /// the file pre-dates the multi-stream probe path (`audio_streams` empty).
+    /// The Audio Track menu is gated on `len() >= 2` — for single-stream
+    /// files the picker has nothing to choose between.
+    pub fn audio_streams_at_seq_ms(&self, seq_ms: f64) -> Vec<reel_core::AudioStreamInfo> {
+        let Some(p) = self.project.as_ref() else {
+            return Vec::new();
+        };
+        let Some(id) = crate::timeline::primary_clip_id_at_seq_ms(p, seq_ms) else {
+            return Vec::new();
+        };
+        p.clips
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.metadata.audio_streams.clone())
+            .unwrap_or_default()
+    }
+
     /// True when every clip on the primary video track has `audio_mute = true`.
     /// Used by the export pipeline to decide whether to pass `-an` for the
     /// single-track embedded-audio case.
@@ -1209,6 +1283,7 @@ impl EditSession {
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         };
 
@@ -1253,6 +1328,7 @@ impl EditSession {
                     orientation: old.orientation,
                     scale: old.scale,
                     audio_mute: old.audio_mute,
+                    audio_stream_index: old.audio_stream_index,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -1264,6 +1340,7 @@ impl EditSession {
                     orientation: old.orientation,
                     scale: old.scale,
                     audio_mute: old.audio_mute,
+                    audio_stream_index: old.audio_stream_index,
                     extensions: Default::default(),
                 };
 
@@ -1326,6 +1403,7 @@ impl EditSession {
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         };
 
@@ -1370,6 +1448,7 @@ impl EditSession {
                     orientation: old.orientation,
                     scale: old.scale,
                     audio_mute: old.audio_mute,
+                    audio_stream_index: old.audio_stream_index,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -1381,6 +1460,7 @@ impl EditSession {
                     orientation: old.orientation,
                     scale: old.scale,
                     audio_mute: old.audio_mute,
+                    audio_stream_index: old.audio_stream_index,
                     extensions: Default::default(),
                 };
 
@@ -1459,6 +1539,7 @@ impl EditSession {
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         };
         proj.clips.push(new_clip);
@@ -1599,6 +1680,7 @@ impl EditSession {
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         };
         proj.clips.push(new_clip);
@@ -1667,6 +1749,7 @@ impl EditSession {
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         };
         proj.clips.push(new_clip);
@@ -1729,6 +1812,7 @@ impl EditSession {
             video_stream_count: 0,
             audio_stream_count: 0,
             subtitle_stream_count: 1,
+            audio_streams: Vec::new(),
         };
         let new_id = Uuid::new_v4();
         let new_clip = Clip {
@@ -1740,6 +1824,7 @@ impl EditSession {
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         };
 
@@ -1778,6 +1863,7 @@ impl EditSession {
                     orientation: old.orientation,
                     scale: old.scale,
                     audio_mute: old.audio_mute,
+                    audio_stream_index: old.audio_stream_index,
                     extensions: Default::default(),
                 };
                 let right = Clip {
@@ -1789,6 +1875,7 @@ impl EditSession {
                     orientation: old.orientation,
                     scale: old.scale,
                     audio_mute: old.audio_mute,
+                    audio_stream_index: old.audio_stream_index,
                     extensions: Default::default(),
                 };
                 proj.clips.retain(|c| c.id != old_id);
@@ -1977,6 +2064,10 @@ pub fn path_matches_export_format(path: &Path, fmt: reel_core::WebExportFormat) 
         reel_core::WebExportFormat::MovRemux | reel_core::WebExportFormat::MovProResHq => {
             ext == "mov"
         }
+        reel_core::WebExportFormat::GifSharp
+        | reel_core::WebExportFormat::GifGood
+        | reel_core::WebExportFormat::GifShare
+        | reel_core::WebExportFormat::GifTiny => ext == "gif",
     }
 }
 
@@ -2009,11 +2100,12 @@ pub fn remux_failure_hint(fmt: reel_core::WebExportFormat) -> Option<&'static st
 
 /// Preset row from **Export** dialog.
 ///
-/// Order groups by container then codec (MP4 → WebM → MKV → MOV → intermediates):
+/// Order groups by container then codec (MP4 → WebM → MKV → MOV → intermediates → GIF):
 /// `0` MP4 remux, `1` MP4 H.264+AAC, `2` MP4 H.265+AAC, `3` WebM VP8+Opus,
 /// `4` WebM VP9+Opus, `5` WebM AV1+Opus, `6` MKV remux, `7` MOV remux,
 /// `8` MOV ProRes 422 HQ + PCM (pro intermediate), `9` MKV DNxHR HQ + PCM
-/// (Avid-style intermediate). See `docs/SUPPORTED_FORMATS.md`.
+/// (Avid-style intermediate), `10` GIF Sharp, `11` GIF Good, `12` GIF Share,
+/// `13` GIF Tiny (animated GIF — no audio). See `docs/SUPPORTED_FORMATS.md`.
 pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebExportFormat> {
     match index {
         0 => Some(reel_core::WebExportFormat::Mp4Remux),
@@ -2026,6 +2118,10 @@ pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebE
         7 => Some(reel_core::WebExportFormat::MovRemux),
         8 => Some(reel_core::WebExportFormat::MovProResHq),
         9 => Some(reel_core::WebExportFormat::MkvDnxhrHq),
+        10 => Some(reel_core::WebExportFormat::GifSharp),
+        11 => Some(reel_core::WebExportFormat::GifGood),
+        12 => Some(reel_core::WebExportFormat::GifShare),
+        13 => Some(reel_core::WebExportFormat::GifTiny),
         _ => None,
     }
 }
@@ -2088,6 +2184,7 @@ pub(crate) mod tests_fake_probe {
                 video_stream_count: 1,
                 audio_stream_count: 0,
                 subtitle_stream_count: 0,
+                audio_streams: Vec::new(),
             })
         }
     }
@@ -2291,6 +2388,38 @@ mod tests {
     }
 
     #[test]
+    fn set_audio_stream_index_is_undoable_and_noops_when_unchanged() {
+        let f = tiny_fixture();
+        if !f.is_file() {
+            return;
+        }
+        let mut s = EditSession::default();
+        s.open_media(f.clone()).unwrap();
+        s.mark_saved_to_path(PathBuf::from("/tmp/aud.reel"));
+        assert!(!s.dirty);
+        assert_eq!(s.audio_stream_index_at_seq_ms(0.0), None);
+
+        // First selection: marks dirty, pushes undo.
+        s.set_audio_stream_index_at_seq_ms(0.0, Some(1))
+            .expect("set stream 1");
+        assert_eq!(s.audio_stream_index_at_seq_ms(0.0), Some(1));
+        assert!(s.dirty);
+        assert!(s.undo_enabled());
+
+        // Re-selecting the same value is a no-op: no new undo frame,
+        // dirty state unchanged from before the call.
+        let undo_depth_before = s.undo.len();
+        s.set_audio_stream_index_at_seq_ms(0.0, Some(1)).unwrap();
+        assert_eq!(s.undo.len(), undo_depth_before);
+        assert_eq!(s.audio_stream_index_at_seq_ms(0.0), Some(1));
+
+        // Undo returns to default ("first decodable").
+        assert!(s.undo());
+        assert_eq!(s.audio_stream_index_at_seq_ms(0.0), None);
+        assert!(s.redo_enabled());
+    }
+
+    #[test]
     fn flush_autosave_writes_disk_and_keeps_undo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let reel = dir.path().join("doc.reel");
@@ -2368,6 +2497,15 @@ mod tests {
             Path::new("no_ext"),
             F::Mp4Remux
         ));
+        // Animated GIF presets all accept only `.gif`. Guard against a
+        // future preset getting added and accidentally inheriting some
+        // other container's arm via a missed `|` pattern.
+        for fmt in [F::GifSharp, F::GifGood, F::GifShare, F::GifTiny] {
+            assert!(path_matches_export_format(Path::new("x.gif"), fmt));
+            assert!(path_matches_export_format(Path::new("X.GIF"), fmt));
+            assert!(!path_matches_export_format(Path::new("x.mp4"), fmt));
+            assert!(!path_matches_export_format(Path::new("x.webm"), fmt));
+        }
     }
 
     #[test]
@@ -2412,8 +2550,25 @@ mod tests {
             web_export_format_from_preset_index(9),
             Some(reel_core::WebExportFormat::MkvDnxhrHq),
         );
+        // Animated GIF presets (no audio — see `is_gif()`).
+        assert_eq!(
+            web_export_format_from_preset_index(10),
+            Some(reel_core::WebExportFormat::GifSharp),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(11),
+            Some(reel_core::WebExportFormat::GifGood),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(12),
+            Some(reel_core::WebExportFormat::GifShare),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(13),
+            Some(reel_core::WebExportFormat::GifTiny),
+        );
         assert_eq!(web_export_format_from_preset_index(-1), None);
-        assert_eq!(web_export_format_from_preset_index(10), None);
+        assert_eq!(web_export_format_from_preset_index(14), None);
     }
 
     fn clip_sec(id: Uuid, path: &str, sec: f64) -> Clip {
@@ -2430,12 +2585,14 @@ mod tests {
                 video_stream_count: 0,
                 audio_stream_count: 0,
                 subtitle_stream_count: 0,
+                audio_streams: Vec::new(),
             },
             in_point: 0.0,
             out_point: sec,
             orientation: Default::default(),
             scale: Default::default(),
             audio_mute: false,
+            audio_stream_index: None,
             extensions: Default::default(),
         }
     }

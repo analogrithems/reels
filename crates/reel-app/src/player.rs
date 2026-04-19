@@ -709,8 +709,10 @@ fn try_open_video(path: &Path) -> Result<VideoCtx> {
 }
 
 /// Panic-safe wrapper around [`AudioCtx::open`]. See [`try_open_video`].
-fn try_open_audio(path: &Path) -> Result<AudioCtx> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| AudioCtx::open(path))) {
+fn try_open_audio(path: &Path, stream_index: Option<u32>) -> Result<AudioCtx> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        AudioCtx::open(path, stream_index)
+    })) {
         Ok(r) => r,
         Err(_) => Err(anyhow::anyhow!(
             "panic while opening audio {}",
@@ -1034,7 +1036,7 @@ fn next_mixed_samples(lanes: &mut [AudioLane]) -> Option<Vec<f32>> {
                 .active_index
                 .store(next_idx, Ordering::SeqCst);
             let s = &lane.timeline.segments[next_idx];
-            match try_open_audio(&s.path) {
+            match try_open_audio(&s.path, s.audio_stream_index) {
                 Ok(mut a) => {
                     if let Err(e) = a.seek(s.media_in_ms) {
                         tracing::warn!(error = %e, "audio lane segment seek failed");
@@ -1219,7 +1221,7 @@ fn audio_loop<P, C>(
                         let mut lane = AudioLane::new(load);
                         lane.timeline.active_index.store(0, Ordering::SeqCst);
                         let s0 = &lane.timeline.segments[0];
-                        match try_open_audio(&s0.path) {
+                        match try_open_audio(&s0.path, s0.audio_stream_index) {
                             Ok(mut a) => {
                                 if let Err(e) = a.seek(s0.media_in_ms) {
                                     tracing::warn!(error = %e, "audio initial seek failed");
@@ -1294,7 +1296,7 @@ fn audio_loop<P, C>(
                         lane.exhausted = false;
                         dt.active_index.store(idx, Ordering::SeqCst);
                         let s = &dt.segments[idx];
-                        match try_open_audio(&s.path) {
+                        match try_open_audio(&s.path, s.audio_stream_index) {
                             Ok(mut a) => {
                                 if let Err(e) = a.seek(local_ms) {
                                     tracing::warn!(error = %e, seq_ms, "audio seek failed");
@@ -1426,12 +1428,39 @@ struct AudioCtx {
 }
 
 impl AudioCtx {
-    fn open(path: &Path) -> Result<Self> {
+    /// Open an audio decoder on `path`. When `stream_index` is `Some(i)`, open
+    /// container stream `i` directly — this is how the Edit → Audio Track
+    /// picker targets a specific language / commentary lane. When `None`, fall
+    /// back to ffmpeg's `.best(Audio)` heuristic, which is what every
+    /// single-stream file + every project saved before multi-audio shipped
+    /// gets. If the requested index doesn't exist or isn't audio, we log and
+    /// fall through to `best(Audio)` so a stale selection after a source swap
+    /// plays silence-less instead of erroring the lane out.
+    fn open(path: &Path, stream_index: Option<u32>) -> Result<Self> {
         let input = ffmpeg::format::input(&path)?;
-        let stream = input
-            .streams()
-            .best(ffmpeg::media::Type::Audio)
-            .context("no audio stream")?;
+        let stream = match stream_index {
+            Some(i) => {
+                let by_index = input.streams().find(|s| {
+                    s.index() as u32 == i
+                        && s.parameters().medium() == ffmpeg::media::Type::Audio
+                });
+                if by_index.is_none() {
+                    tracing::warn!(
+                        target: "reel_app::player",
+                        path = %path.display(),
+                        requested_index = i,
+                        "requested audio stream not found; falling back to best(Audio)"
+                    );
+                }
+                by_index
+                    .or_else(|| input.streams().best(ffmpeg::media::Type::Audio))
+                    .context("no audio stream")?
+            }
+            None => input
+                .streams()
+                .best(ffmpeg::media::Type::Audio)
+                .context("no audio stream")?,
+        };
         let stream_idx = stream.index();
         let ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
         let decoder = ctx.decoder().audio()?;

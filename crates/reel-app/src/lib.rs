@@ -283,6 +283,10 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
         reel_core::WebExportFormat::MkvDnxhrHq => {
             d.add_filter("Matroska (DNxHR HQ + PCM)", &["mkv"])
         }
+        reel_core::WebExportFormat::GifSharp
+        | reel_core::WebExportFormat::GifGood
+        | reel_core::WebExportFormat::GifShare
+        | reel_core::WebExportFormat::GifTiny => d.add_filter("Animated GIF", &["gif"]),
     }
 }
 
@@ -1095,6 +1099,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         let mute_state = session.audio_mute_state_at_seq_ms(ph);
         window.set_audio_mute_enabled(window.get_media_ready() && mute_state.is_some());
         window.set_audio_mute_active(mute_state.unwrap_or(false));
+        sync_audio_track_menu(window, session, ph);
     } else {
         window.set_duration_ms(0.0);
         window.set_move_clip_down_enabled(false);
@@ -1105,6 +1110,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_resize_enabled(false);
         window.set_audio_mute_enabled(false);
         window.set_audio_mute_active(false);
+        clear_audio_track_menu(window);
     }
     let ph = window.get_playhead_ms();
     let dur = window.get_duration_ms();
@@ -1178,6 +1184,78 @@ fn sync_menu_and_autosave(
     sync_menu(window, &session_rc.borrow());
     sync_recent_menu(window, &recent.borrow());
     debouncer.nudge(Rc::clone(session_rc));
+}
+
+/// Maximum audio-stream entries shown in **Edit → Audio Track**. The submenu
+/// has this many statically-declared `MenuItem` slots in `app.slint`; extra
+/// streams on an exotic file fall off the end. Kept at six to cover the
+/// overwhelming majority of Blu-ray / broadcast sources (commentary +
+/// language dubs + descriptive audio) without bloating the menu on files
+/// that only have one or two tracks.
+const AUDIO_TRACK_MENU_SLOTS: usize = 6;
+
+/// Push the current primary-clip's audio streams into the `audio-track-*`
+/// Slint properties backing **Edit → Audio Track**. `ph` is the playhead in
+/// sequence ms; we consult the clip under it for both the stream list
+/// (`AudioStreamInfo` vec from probe) and the current selection. Labels are
+/// `"<index>: <display_label>"` so users can tell identical-codec streams
+/// apart by ffmpeg index when neither `title` nor `language` is present.
+///
+/// `audio-track-enabled` flips true only when **≥ 2** streams exist — single-
+/// stream files have nothing to switch between, so showing the submenu would
+/// just frustrate. Slots beyond `streams.len()` are zeroed so a file that
+/// previously showed more entries doesn't leak stale rows.
+fn sync_audio_track_menu(window: &AppWindow, session: &EditSession, ph: f64) {
+    let streams = session.audio_streams_at_seq_ms(ph);
+    let selected = session.audio_stream_index_at_seq_ms(ph);
+    let enable = window.get_media_ready() && streams.len() >= 2;
+    window.set_audio_track_enabled(enable);
+    window.set_audio_track_default_checked(selected.is_none());
+
+    let setters: [(fn(&AppWindow, slint::SharedString), fn(&AppWindow, bool), fn(&AppWindow, i32)); AUDIO_TRACK_MENU_SLOTS] = [
+        (AppWindow::set_audio_track_label_0, AppWindow::set_audio_track_checked_0, AppWindow::set_audio_track_index_0),
+        (AppWindow::set_audio_track_label_1, AppWindow::set_audio_track_checked_1, AppWindow::set_audio_track_index_1),
+        (AppWindow::set_audio_track_label_2, AppWindow::set_audio_track_checked_2, AppWindow::set_audio_track_index_2),
+        (AppWindow::set_audio_track_label_3, AppWindow::set_audio_track_checked_3, AppWindow::set_audio_track_index_3),
+        (AppWindow::set_audio_track_label_4, AppWindow::set_audio_track_checked_4, AppWindow::set_audio_track_index_4),
+        (AppWindow::set_audio_track_label_5, AppWindow::set_audio_track_checked_5, AppWindow::set_audio_track_index_5),
+    ];
+    for (i, (set_label, set_checked, set_index)) in setters.iter().enumerate() {
+        match streams.get(i) {
+            Some(info) => {
+                let label = format!("{}: {}", info.index, info.display_label());
+                set_label(window, label.into());
+                set_checked(window, selected == Some(info.index));
+                set_index(window, info.index as i32);
+            }
+            None => {
+                set_label(window, "".into());
+                set_checked(window, false);
+                set_index(window, -1);
+            }
+        }
+    }
+}
+
+/// Blanks every **Edit → Audio Track** slot — used when no project is loaded
+/// or `sync_menu` hits the "no project" branch. Without this the submenu
+/// would keep showing the last-opened file's streams even after close.
+fn clear_audio_track_menu(window: &AppWindow) {
+    window.set_audio_track_enabled(false);
+    window.set_audio_track_default_checked(true);
+    let setters: [(fn(&AppWindow, slint::SharedString), fn(&AppWindow, bool), fn(&AppWindow, i32)); AUDIO_TRACK_MENU_SLOTS] = [
+        (AppWindow::set_audio_track_label_0, AppWindow::set_audio_track_checked_0, AppWindow::set_audio_track_index_0),
+        (AppWindow::set_audio_track_label_1, AppWindow::set_audio_track_checked_1, AppWindow::set_audio_track_index_1),
+        (AppWindow::set_audio_track_label_2, AppWindow::set_audio_track_checked_2, AppWindow::set_audio_track_index_2),
+        (AppWindow::set_audio_track_label_3, AppWindow::set_audio_track_checked_3, AppWindow::set_audio_track_index_3),
+        (AppWindow::set_audio_track_label_4, AppWindow::set_audio_track_checked_4, AppWindow::set_audio_track_index_4),
+        (AppWindow::set_audio_track_label_5, AppWindow::set_audio_track_checked_5, AppWindow::set_audio_track_index_5),
+    ];
+    for (set_label, set_checked, set_index) in setters.iter() {
+        set_label(window, "".into());
+        set_checked(window, false);
+        set_index(window, -1);
+    }
 }
 
 /// Clears the session and stops the player (empty **File → Close Window** state).
@@ -1297,6 +1375,7 @@ pub fn run() -> Result<()> {
     window.set_resize_sheet_visible(false);
     window.set_audio_mute_enabled(false);
     window.set_audio_mute_active(false);
+    clear_audio_track_menu(&window);
     window.set_marker_in_ms(-1.0);
     window.set_marker_out_ms(-1.0);
     window.set_marker_any_set(false);
@@ -2757,6 +2836,41 @@ pub fn run() -> Result<()> {
     );
 
     {
+        // Edit → Audio Track → <stream>: swap the current primary clip's audio
+        // stream selection. `stream_index < 0` resets to `Clip.audio_stream_index = None`
+        // (first-decodable fallback) so users can get back to "auto" without
+        // having to remember which index that was. Menu click → session mutate →
+        // sync_menu reloads the timeline so the audio thread opens the newly
+        // picked stream the next time it handles a segment.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_edit_set_audio_track(move |stream_index| {
+            let Some(w) = weak.upgrade() else { return };
+            let ph = w.get_playhead_ms() as f64;
+            let pick: Option<u32> = if stream_index < 0 {
+                None
+            } else {
+                Some(stream_index as u32)
+            };
+            match session
+                .borrow_mut()
+                .set_audio_stream_index_at_seq_ms(ph, pick)
+            {
+                Ok(()) => {
+                    sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                    match pick {
+                        None => w.set_status_text("Audio track: default".into()),
+                        Some(i) => w.set_status_text(format!("Audio track: stream {i}").into()),
+                    }
+                }
+                Err(e) => w.set_status_text(format!("{e:#}").into()),
+            }
+        });
+    }
+
+    {
         // Edit → Mute Clip Audio: toggles audio_mute on the clip under the playhead.
         let weak = window.as_weak();
         let session = Rc::clone(&session);
@@ -3911,12 +4025,14 @@ mod export_payload_tests {
                     video_stream_count: 0,
                     audio_stream_count: 0,
                     subtitle_stream_count: 0,
+                    audio_streams: Vec::new(),
                 },
                 in_point: 0.0,
                 out_point: sec,
                 orientation: Default::default(),
                 scale: Default::default(),
                 audio_mute: muted,
+                audio_stream_index: None,
                 extensions: Default::default(),
             }
         }
@@ -4059,12 +4175,14 @@ mod export_payload_tests {
                     video_stream_count: 0,
                     audio_stream_count: 0,
                     subtitle_stream_count: 0,
+                    audio_streams: Vec::new(),
                 },
                 in_point: 0.0,
                 out_point: sec,
                 orientation: Default::default(),
                 scale: Default::default(),
                 audio_mute: false,
+                audio_stream_index: None,
                 extensions: Default::default(),
             }
         }
