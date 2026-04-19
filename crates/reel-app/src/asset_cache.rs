@@ -52,11 +52,30 @@ const WAVE_COLS: usize = WAVE_WIDTH as usize;
 /// (slight desaturation for readability over the base tint).
 const WAVE_RGBA: (u8, u8, u8, u8) = (0xd4, 0xf4, 0xff, 0xff);
 
+/// Video thumbnail strip dimensions. `THUMB_COUNT` evenly-spaced frames
+/// decoded across the clip, each scaled to `THUMB_CELL × THUMB_HEIGHT`
+/// and blitted side-by-side into a `THUMB_WIDTH × THUMB_HEIGHT` RGBA8
+/// buffer. Ten thumbnails over the default 400 px filmstrip width is
+/// 40 px per cell — enough for a scene silhouette at a glance without
+/// burning decode time on long clips.
+const THUMB_COUNT: u32 = 10;
+const THUMB_CELL: u32 = 40;
+const THUMB_HEIGHT: u32 = 28;
+const THUMB_WIDTH: u32 = THUMB_COUNT * THUMB_CELL;
+
 /// Placeholder stripe tile size (square, tiled via `image-fit: fill`).
 const PLACEHOLDER_SIZE: u32 = 64;
 
-/// One waveform generation job handed to the worker thread.
+/// What kind of raster to generate for a job.
+#[derive(Clone, Copy, Debug)]
+enum JobKind {
+    Waveform,
+    Thumbnails,
+}
+
+/// One raster generation job handed to the worker thread.
 struct Job {
+    kind: JobKind,
     clip_id: String,
     path: PathBuf,
     in_ms: u64,
@@ -75,8 +94,21 @@ struct Job {
 pub struct AssetCache {
     tx: Sender<Job>,
     waveforms: Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>>,
+    thumbnails: Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>>,
+    /// Tracks in-flight jobs as `(clip_id, kind_tag)` strings. Kind is
+    /// embedded in the key so a waveform request and a thumbnails
+    /// request for the **same** video-with-audio clip don't collide and
+    /// dedupe each other away (both are legitimate).
     inflight: Arc<Mutex<HashSet<String>>>,
     placeholder: slint::Image,
+}
+
+fn inflight_key(kind: JobKind, clip_id: &str) -> String {
+    let tag = match kind {
+        JobKind::Waveform => "w",
+        JobKind::Thumbnails => "t",
+    };
+    format!("{tag}:{clip_id}")
 }
 
 impl AssetCache {
@@ -90,34 +122,54 @@ impl AssetCache {
         let (tx, rx) = unbounded::<Job>();
         let waveforms: Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let thumbnails: Arc<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let inflight: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let waveforms_w = waveforms.clone();
+        let thumbnails_w = thumbnails.clone();
         let inflight_w = inflight.clone();
         std::thread::Builder::new()
             .name("reel-asset-cache".into())
             .spawn(move || {
                 while let Ok(job) = rx.recv() {
                     let clip_id = job.clip_id.clone();
-                    let buf = match generate_waveform_buffer(&job.path, job.in_ms, job.out_ms) {
+                    let key = inflight_key(job.kind, &clip_id);
+                    let result = match job.kind {
+                        JobKind::Waveform => {
+                            generate_waveform_buffer(&job.path, job.in_ms, job.out_ms)
+                        }
+                        JobKind::Thumbnails => {
+                            generate_thumbnails_buffer(&job.path, job.in_ms, job.out_ms)
+                        }
+                    };
+                    let buf = match result {
                         Ok(buf) => buf,
                         Err(e) => {
                             tracing::warn!(
                                 clip_id = %clip_id,
+                                kind = ?job.kind,
                                 error = %e,
                                 path = %job.path.display(),
-                                "waveform generation failed"
+                                "asset raster generation failed"
                             );
                             // Drop the inflight flag so a later project
                             // reload (which may point at a fixed file) can
                             // re-try. The chip continues to show the stripe
                             // placeholder in the meantime.
-                            inflight_w.lock().remove(&clip_id);
+                            inflight_w.lock().remove(&key);
                             continue;
                         }
                     };
-                    waveforms_w.lock().insert(clip_id.clone(), buf);
-                    inflight_w.lock().remove(&clip_id);
+                    match job.kind {
+                        JobKind::Waveform => {
+                            waveforms_w.lock().insert(clip_id.clone(), buf);
+                        }
+                        JobKind::Thumbnails => {
+                            thumbnails_w.lock().insert(clip_id.clone(), buf);
+                        }
+                    }
+                    inflight_w.lock().remove(&key);
 
                     // `upgrade_in_event_loop` marshals the upgrade onto the
                     // UI thread — `Weak::upgrade()` is UI-thread-only, so a
@@ -135,6 +187,7 @@ impl AssetCache {
         Self {
             tx,
             waveforms,
+            thumbnails,
             inflight,
             placeholder,
         }
@@ -149,8 +202,35 @@ impl AssetCache {
     /// Returns the cached waveform raster for `clip_id` if available, or
     /// enqueues a generation job and returns `None`. Dedupe-safe: repeated
     /// requests for the same clip while a job is in flight are no-ops.
-    pub fn get_or_request(
+    pub fn get_or_request_waveform(
         &self,
+        clip_id: &str,
+        path: &Path,
+        in_ms: u64,
+        out_ms: u64,
+    ) -> Option<slint::Image> {
+        self.get_or_request(JobKind::Waveform, clip_id, path, in_ms, out_ms)
+    }
+
+    /// Returns the cached thumbnail strip raster for `clip_id` if
+    /// available, or enqueues a generation job and returns `None`. Same
+    /// dedupe semantics as [`get_or_request_waveform`]; a video clip
+    /// with embedded audio can have both rasters in flight at once —
+    /// the inflight set is keyed by `(kind, clip_id)` so they don't
+    /// collide.
+    pub fn get_or_request_thumbnails(
+        &self,
+        clip_id: &str,
+        path: &Path,
+        in_ms: u64,
+        out_ms: u64,
+    ) -> Option<slint::Image> {
+        self.get_or_request(JobKind::Thumbnails, clip_id, path, in_ms, out_ms)
+    }
+
+    fn get_or_request(
+        &self,
+        kind: JobKind,
         clip_id: &str,
         path: &Path,
         in_ms: u64,
@@ -159,13 +239,18 @@ impl AssetCache {
         if clip_id.is_empty() {
             return None;
         }
-        if let Some(buf) = self.waveforms.lock().get(clip_id).cloned() {
+        let cache = match kind {
+            JobKind::Waveform => &self.waveforms,
+            JobKind::Thumbnails => &self.thumbnails,
+        };
+        if let Some(buf) = cache.lock().get(clip_id).cloned() {
             return Some(slint::Image::from_rgba8(buf));
         }
         // Enqueue only if not already in flight.
         let mut inflight = self.inflight.lock();
-        if inflight.insert(clip_id.to_string()) {
+        if inflight.insert(inflight_key(kind, clip_id)) {
             let _ = self.tx.send(Job {
+                kind,
                 clip_id: clip_id.to_string(),
                 path: path.to_path_buf(),
                 in_ms,
@@ -334,6 +419,130 @@ fn raster_peaks(peaks: &[(f32, f32)]) -> SharedPixelBuffer<Rgba8Pixel> {
     buf
 }
 
+/// Decode `THUMB_COUNT` evenly-spaced frames from the video at `path`
+/// between `in_ms..out_ms`, scale each to `THUMB_CELL × THUMB_HEIGHT`,
+/// and blit them left-to-right into a `THUMB_WIDTH × THUMB_HEIGHT`
+/// RGBA8 strip. This is the video-chip analogue of `raster_peaks` —
+/// one row per clip, decoded once, swapped in on completion.
+///
+/// Decode strategy: for each target timestamp we `seek` the input to
+/// the nearest keyframe and decode packets until we get a frame. This
+/// is the same pattern as the playback path in `player.rs` but
+/// single-shot (no streaming) and with a tiny RGBA8 scaler tailored to
+/// the thumbnail cell size. Soft-fail on individual frames (skip to
+/// next timestamp) so one bad seek doesn't sink the whole strip.
+fn generate_thumbnails_buffer(
+    path: &Path,
+    in_ms: u64,
+    out_ms: u64,
+) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
+    ffmpeg::init().ok();
+
+    let mut input = ffmpeg::format::input(&path)?;
+    let stream = input
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .context("no video stream")?;
+    let stream_idx = stream.index();
+    let ctx = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?;
+    let mut decoder = ctx.decoder().video()?;
+    let src_w = decoder.width();
+    let src_h = decoder.height();
+    if src_w == 0 || src_h == 0 {
+        anyhow::bail!("video stream reports 0×0 dimensions");
+    }
+
+    // Scale directly to the thumbnail cell size — ffmpeg handles aspect
+    // by stretching, which is acceptable at 40×28 (the chip body is so
+    // small that letterboxing would just add black bars most users
+    // wouldn't read as intentional). FAST_BILINEAR is good enough for
+    // icon-scale output.
+    let mut scaler = ffmpeg::software::scaling::Context::get(
+        decoder.format(),
+        src_w,
+        src_h,
+        ffmpeg::format::Pixel::RGBA,
+        THUMB_CELL,
+        THUMB_HEIGHT,
+        ffmpeg::software::scaling::Flags::FAST_BILINEAR,
+    )?;
+
+    let span_ms = out_ms.saturating_sub(in_ms).max(1);
+    let mut strip = vec![
+        Rgba8Pixel {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255
+        };
+        (THUMB_WIDTH * THUMB_HEIGHT) as usize
+    ];
+
+    for i in 0..THUMB_COUNT {
+        // Sample at the midpoint of each cell (`i + 0.5` / `N`) so the
+        // first thumb is shortly after `in_ms` rather than exactly at
+        // it (clips often open on a black/logo frame at t=0).
+        let t_ms =
+            in_ms + ((i as u64 * 2 + 1) * span_ms) / (THUMB_COUNT as u64 * 2);
+        let ts = (t_ms as i64) * i64::from(ffmpeg::ffi::AV_TIME_BASE) / 1000;
+        let _ = input.seek(ts, ..ts);
+        decoder.flush();
+
+        let mut decoded = ffmpeg::frame::Video::empty();
+        let mut got = false;
+        'decode: for (stream, packet) in input.packets() {
+            if stream.index() != stream_idx {
+                continue;
+            }
+            if decoder.send_packet(&packet).is_err() {
+                continue;
+            }
+            if decoder.receive_frame(&mut decoded).is_ok() {
+                got = true;
+                break 'decode;
+            }
+        }
+        if !got {
+            // Hit EOF before a frame came back — leave the cell as the
+            // default black fill so the strip still has a consistent
+            // shape; the other cells will still render meaningfully.
+            continue;
+        }
+
+        let mut rgba = ffmpeg::frame::Video::empty();
+        if scaler.run(&decoded, &mut rgba).is_err() {
+            continue;
+        }
+        let stride = rgba.stride(0);
+        let data = rgba.data(0);
+        // Blit this cell into the strip. Each source row is `stride`
+        // bytes wide but only `THUMB_CELL * 4` of those are pixels —
+        // ffmpeg pads rows for SIMD alignment. Copy row-by-row to
+        // honour the stride.
+        let dst_x = (i * THUMB_CELL) as usize;
+        for row in 0..THUMB_HEIGHT as usize {
+            let src_off = row * stride;
+            for col in 0..THUMB_CELL as usize {
+                let s = src_off + col * 4;
+                if s + 3 >= data.len() {
+                    break;
+                }
+                let idx = row * THUMB_WIDTH as usize + dst_x + col;
+                strip[idx] = Rgba8Pixel {
+                    r: data[s],
+                    g: data[s + 1],
+                    b: data[s + 2],
+                    a: data[s + 3],
+                };
+            }
+        }
+    }
+
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(THUMB_WIDTH, THUMB_HEIGHT);
+    buf.make_mut_slice().copy_from_slice(&strip);
+    Ok(buf)
+}
+
 /// Build a small diagonal-stripe tile for the pending-asset placeholder.
 /// Soft white stripes at low alpha so they read as "loading hatch" over
 /// the base chip color rather than dominating it.
@@ -393,22 +602,67 @@ mod tests {
         assert_eq!(img.size().height, WAVE_HEIGHT);
     }
 
-    #[test]
-    fn empty_clip_id_does_not_enqueue() {
+    fn test_cache() -> (AssetCache, crossbeam_channel::Receiver<Job>) {
         // Spawn requires a live Slint event loop, so we construct the
         // internals by hand and call the dedupe logic directly.
         let (tx, rx) = unbounded::<Job>();
         let cache = AssetCache {
             tx,
             waveforms: Arc::new(Mutex::new(HashMap::new())),
+            thumbnails: Arc::new(Mutex::new(HashMap::new())),
             inflight: Arc::new(Mutex::new(HashSet::new())),
             placeholder: build_placeholder_stripe(),
         };
-        let got = cache.get_or_request("", std::path::Path::new("/nope"), 0, 1000);
+        (cache, rx)
+    }
+
+    #[test]
+    fn empty_clip_id_does_not_enqueue() {
+        let (cache, rx) = test_cache();
+        let got = cache.get_or_request_waveform("", std::path::Path::new("/nope"), 0, 1000);
         assert!(got.is_none());
         assert!(
             rx.try_recv().is_err(),
             "empty clip-id must not enqueue a job"
+        );
+        let got = cache.get_or_request_thumbnails("", std::path::Path::new("/nope"), 0, 1000);
+        assert!(got.is_none());
+        assert!(
+            rx.try_recv().is_err(),
+            "empty clip-id must not enqueue a thumbnail job either"
+        );
+    }
+
+    #[test]
+    fn waveform_and_thumbnail_requests_do_not_dedupe_each_other() {
+        // A video clip with embedded audio legitimately wants both a
+        // waveform and a thumbnail strip — inflight keys embed the
+        // kind so neither request cancels the other.
+        let (cache, rx) = test_cache();
+        let clip_id = "abc";
+        let path = std::path::Path::new("/nope.mov");
+        assert!(cache
+            .get_or_request_waveform(clip_id, path, 0, 1000)
+            .is_none());
+        assert!(cache
+            .get_or_request_thumbnails(clip_id, path, 0, 1000)
+            .is_none());
+        let j1 = rx.try_recv().expect("waveform job should have enqueued");
+        let j2 = rx.try_recv().expect("thumbnail job should have enqueued");
+        assert!(matches!(j1.kind, JobKind::Waveform));
+        assert!(matches!(j2.kind, JobKind::Thumbnails));
+    }
+
+    #[test]
+    fn repeated_same_kind_request_dedupes() {
+        let (cache, rx) = test_cache();
+        let _ = cache.get_or_request_waveform("xyz", std::path::Path::new("/nope"), 0, 1000);
+        let _ = cache.get_or_request_waveform("xyz", std::path::Path::new("/nope"), 0, 1000);
+        let _ = cache.get_or_request_waveform("xyz", std::path::Path::new("/nope"), 0, 1000);
+        assert!(rx.try_recv().is_ok(), "first request must enqueue");
+        assert!(
+            rx.try_recv().is_err(),
+            "subsequent same-kind requests must dedupe"
         );
     }
 }

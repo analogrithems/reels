@@ -29,13 +29,17 @@ export struct TlChip {
     begin-ms: int,
     end-ms: int,
     source-duration-ms: int,
-    // Waveform / thumbnail raster supplied by the Rust-side AssetCache.
-    // `waveform-ready` gates swap-in: while false the chip body shows a
-    // diagonal-stripe placeholder so the timeline renders instantly on
-    // media load and the real image fades in as the background worker
-    // finishes decoding peaks.
+    // Preview rasters supplied by the Rust-side AssetCache. `waveform`
+    // is populated on audio chips (per-column min/max peaks) and
+    // `thumbnails` on video chips (evenly-spaced frame strip). The
+    // `*-ready` flags gate swap-in: while false the chip body shows a
+    // diagonal-stripe placeholder so the timeline renders **instantly**
+    // on media load and the real image fades in as the background
+    // worker finishes decoding. Subtitle chips use neither (flat fill).
     waveform: image,
     waveform-ready: bool,
+    thumbnails: image,
+    thumbnails-ready: bool,
 }
 
 /// Single timeline lane: label column + chip strip (or empty state).
@@ -205,16 +209,15 @@ component FilmstripLane inherits VerticalBox {
                                 ? (item.chip-idx == 1 ? #5e9ee0 : Theme.clip-video)
                                 : (item.chip-idx == 1 ? #6dd5ff : Theme.clip-audio));
                         clip: true;
-                        // Waveform / thumbnail layer (audio + video chips
-                        // with a backing clip). When the AssetCache has
-                        // produced a raster, it lives on `item.waveform`
-                        // and `waveform-ready` flips to true — the Image
-                        // fills the chip body. Until then we draw the
-                        // shared diagonal-stripe placeholder so chips
-                        // render **immediately** on media load instead
-                        // of waiting for a decode pass. Synthetic (no
-                        // clip-id) chips skip both layers and stay flat.
-                        if item.clip-id != "" && !item.is-subtitle && item.waveform-ready: Image {
+                        // Preview layer: audio chips show a waveform
+                        // raster, video chips show a thumbnail strip,
+                        // both produced off-thread by AssetCache. Until
+                        // the worker finishes we draw the shared
+                        // diagonal-stripe placeholder so chips render
+                        // **immediately** on media load instead of
+                        // waiting for a decode pass. Synthetic (no
+                        // clip-id) and subtitle chips stay flat.
+                        if item.clip-id != "" && !item.is-subtitle && !item.is-video && item.waveform-ready: Image {
                             x: 0;
                             y: 0;
                             width: 100%;
@@ -222,7 +225,24 @@ component FilmstripLane inherits VerticalBox {
                             source: item.waveform;
                             image-fit: fill;
                         }
-                        if item.clip-id != "" && !item.is-subtitle && !item.waveform-ready: Image {
+                        if item.clip-id != "" && !item.is-subtitle && item.is-video && item.thumbnails-ready: Image {
+                            x: 0;
+                            y: 0;
+                            width: 100%;
+                            height: 100%;
+                            source: item.thumbnails;
+                            image-fit: fill;
+                        }
+                        if item.clip-id != "" && !item.is-subtitle && !item.is-video && !item.waveform-ready: Image {
+                            x: 0;
+                            y: 0;
+                            width: 100%;
+                            height: 100%;
+                            source: root.placeholder-stripe;
+                            image-fit: fill;
+                            opacity: 0.35;
+                        }
+                        if item.clip-id != "" && !item.is-subtitle && item.is-video && !item.thumbnails-ready: Image {
                             x: 0;
                             y: 0;
                             width: 100%;

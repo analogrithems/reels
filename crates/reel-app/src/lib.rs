@@ -911,11 +911,50 @@ fn attach_audio_waveforms(rows: &mut [TlChip], p: &reel_core::project::Project) 
             };
             let in_ms = chip.begin_ms.max(0) as u64;
             let out_ms = chip.end_ms.max(chip.begin_ms) as u64;
-            if let Some(img) =
-                cache.get_or_request(chip.clip_id.as_str(), &clip.source_path, in_ms, out_ms)
-            {
+            if let Some(img) = cache.get_or_request_waveform(
+                chip.clip_id.as_str(),
+                &clip.source_path,
+                in_ms,
+                out_ms,
+            ) {
                 chip.waveform = img;
                 chip.waveform_ready = true;
+            }
+        }
+    });
+}
+
+/// Enrich each video chip in `rows` with its cached thumbnail strip (if
+/// any) or enqueue a generation job. Mirrors [`attach_audio_waveforms`]
+/// but for `is_video` chips and delegating to the thumbnails half of
+/// the AssetCache. The placeholder stripe stays visible on
+/// `thumbnails_ready == false`, so the chip shows up instantly and the
+/// strip swaps in on worker completion via `refresh-timeline-chips`.
+fn attach_video_thumbnails(rows: &mut [TlChip], p: &reel_core::project::Project) {
+    ASSET_CACHE.with(|slot| {
+        let Some(cache) = slot.borrow().clone() else {
+            return;
+        };
+        for chip in rows.iter_mut() {
+            if !chip.is_video || chip.is_subtitle || chip.clip_id.is_empty() {
+                continue;
+            }
+            let Ok(uuid) = Uuid::parse_str(chip.clip_id.as_str()) else {
+                continue;
+            };
+            let Some(clip) = p.clips.iter().find(|c| c.id == uuid) else {
+                continue;
+            };
+            let in_ms = chip.begin_ms.max(0) as u64;
+            let out_ms = chip.end_ms.max(chip.begin_ms) as u64;
+            if let Some(img) = cache.get_or_request_thumbnails(
+                chip.clip_id.as_str(),
+                &clip.source_path,
+                in_ms,
+                out_ms,
+            ) {
+                chip.thumbnails = img;
+                chip.thumbnails_ready = true;
             }
         }
     });
@@ -927,12 +966,16 @@ fn sync_timeline_chips(window: &AppWindow, session: &EditSession) {
         return;
     };
     let mut sync = timeline_chips::timeline_chip_sync(p, session.opened_from_project_document());
-    // Enrich audio chips with cached waveforms before pushing the model
-    // (synchronous cache hit → `waveform_ready: true`; miss → placeholder
-    // stripe shows while the worker generates it, then `refresh-timeline-chips`
-    // fires and this function re-runs with the freshly-cached image).
+    // Enrich audio chips with cached waveforms and video chips with
+    // cached thumbnail strips before pushing the model. Synchronous
+    // cache hit → `*_ready: true`; miss → placeholder stripe shows
+    // while the worker generates it, then `refresh-timeline-chips`
+    // fires and this function re-runs with the freshly-cached image.
     for row in sync.audio.iter_mut() {
         attach_audio_waveforms(row, p);
+    }
+    for row in sync.video.iter_mut() {
+        attach_video_thumbnails(row, p);
     }
     window.set_tl_video_track_count(sync.video_display_n);
     window.set_tl_audio_track_count(sync.audio_display_n);
