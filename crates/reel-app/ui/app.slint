@@ -131,6 +131,8 @@ component FilmstripLane inherits VerticalBox {
                     height: 20px;
                     x: parent.width - self.width - 4px;
                     y: (parent.height - self.height) / 2;
+                    accessible-role: button;
+                    accessible-label: "Delete track";
                     clicked => {
                         root.track-delete();
                     }
@@ -294,6 +296,8 @@ component FilmstripLane inherits VerticalBox {
                             width: 6px;
                             height: parent.height;
                             mouse-cursor: ew-resize;
+                            accessible-role: button;
+                            accessible-label: "Trim clip start — drag";
                             pointer-event(ev) => {
                                 if (ev.kind == PointerEventKind.up
                                         && ev.button == PointerEventButton.left
@@ -323,6 +327,8 @@ component FilmstripLane inherits VerticalBox {
                             width: 6px;
                             height: parent.height;
                             mouse-cursor: ew-resize;
+                            accessible-role: button;
+                            accessible-label: "Trim clip end — drag";
                             pointer-event(ev) => {
                                 if (ev.kind == PointerEventKind.up
                                         && ev.button == PointerEventButton.left
@@ -1588,6 +1594,8 @@ export component AppWindow inherits Window {
                                 width: 28px;
                                 height: 28px;
                                 enabled: root.media-ready;
+                                accessible-role: button;
+                                accessible-label: "Skip to start";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.seek-timeline(0.0);
@@ -1613,6 +1621,8 @@ export component AppWindow inherits Window {
                                 width: 28px;
                                 height: 40px;
                                 enabled: root.media-ready;
+                                accessible-role: button;
+                                accessible-label: "Rewind";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.transport-rewind();
@@ -1633,6 +1643,8 @@ export component AppWindow inherits Window {
                                 width: 40px;
                                 height: 40px;
                                 enabled: root.media-ready;
+                                accessible-role: button;
+                                accessible-label: root.is-playing ? "Pause" : "Play";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.play-pause();
@@ -1664,6 +1676,8 @@ export component AppWindow inherits Window {
                                 width: 28px;
                                 height: 40px;
                                 enabled: root.media-ready;
+                                accessible-role: button;
+                                accessible-label: "Fast forward";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.transport-forward();
@@ -1687,6 +1701,8 @@ export component AppWindow inherits Window {
                                 width: 28px;
                                 height: 28px;
                                 enabled: root.media-ready;
+                                accessible-role: button;
+                                accessible-label: "Skip to end";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.seek-timeline(root.duration-ms);
@@ -1707,6 +1723,8 @@ export component AppWindow inherits Window {
                                 background: #ffffff33;
                             }
                             speed-hit := TouchArea {
+                                accessible-role: button;
+                                accessible-label: "Playback speed";
                                 clicked => {
                                     main-view-focus.focus();
                                     wake-transport-chrome();
@@ -1735,6 +1753,8 @@ export component AppWindow inherits Window {
                             loop-ta := TouchArea {
                                 width: 28px;
                                 height: 24px;
+                                accessible-role: button;
+                                accessible-label: root.loop-playback ? "Disable loop playback" : "Enable loop playback";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.view-toggle-loop();
@@ -1768,6 +1788,8 @@ export component AppWindow inherits Window {
                             mute-ta := TouchArea {
                                 width: 20px;
                                 height: 20px;
+                                accessible-role: button;
+                                accessible-label: root.volume-percent < 0.5 ? "Unmute" : "Mute";
                                 clicked => {
                                     main-view-focus.focus();
                                     if (root.volume-percent < 0.5) {
@@ -1801,6 +1823,7 @@ export component AppWindow inherits Window {
                                 minimum: 0;
                                 maximum: 100;
                                 value: root.volume-percent;
+                                accessible-label: "Volume";
                                 changed(v) => {
                                     main-view-focus.focus();
                                     root.volume-percent = v;
@@ -1811,6 +1834,8 @@ export component AppWindow inherits Window {
                             fs-ta := TouchArea {
                                 width: 20px;
                                 height: 20px;
+                                accessible-role: button;
+                                accessible-label: root.window-fullscreen ? "Exit fullscreen" : "Enter fullscreen";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.view-toggle-fullscreen();
@@ -1841,6 +1866,8 @@ export component AppWindow inherits Window {
                             tools-ta := TouchArea {
                                 width: 28px;
                                 height: 24px;
+                                accessible-role: button;
+                                accessible-label: root.tools-popup-open ? "Close tools menu" : "Open tools menu";
                                 clicked => {
                                     main-view-focus.focus();
                                     root.tools-popup-open = !root.tools-popup-open;
@@ -1903,6 +1930,7 @@ export component AppWindow inherits Window {
                                     maximum: max(root.duration-ms, 1);
                                     step: 0;
                                     value <=> root.playhead-ms;
+                                    accessible-label: "Timeline scrub bar";
                                     changed(v) => {
                                         main-view-focus.focus();
                                         root.seek-timeline(v);
@@ -1947,6 +1975,8 @@ export component AppWindow inherits Window {
                                     }
                                     in-handle-touch := TouchArea {
                                         mouse-cursor: ew-resize;
+                                        accessible-role: button;
+                                        accessible-label: "In marker — drag to set trim start";
                                         moved => {
                                             if (self.pressed && root.duration-ms > 0) {
                                                 // `self.mouse-x` is pointer x within this TouchArea
@@ -1988,6 +2018,8 @@ export component AppWindow inherits Window {
                                     }
                                     out-handle-touch := TouchArea {
                                         mouse-cursor: ew-resize;
+                                        accessible-role: button;
+                                        accessible-label: "Out marker — drag to set trim end";
                                         moved => {
                                             if (self.pressed && root.duration-ms > 0) {
                                                 root.edit-drag-out-marker-ms(
@@ -2448,6 +2480,8 @@ export component AppWindow inherits Window {
                         track-add-video := TouchArea {
                             width: 28px;
                             height: 28px;
+                            accessible-role: button;
+                            accessible-label: "Add video track";
                             clicked => {
                                 main-view-focus.focus();
                                 root.file-new-video-track();
@@ -2570,6 +2604,8 @@ export component AppWindow inherits Window {
                         track-add-audio := TouchArea {
                             width: 28px;
                             height: 28px;
+                            accessible-role: button;
+                            accessible-label: "Add audio track";
                             clicked => {
                                 main-view-focus.focus();
                                 root.file-new-audio-track();
@@ -2689,6 +2725,8 @@ export component AppWindow inherits Window {
                         track-add-subtitle := TouchArea {
                             width: 28px;
                             height: 28px;
+                            accessible-role: button;
+                            accessible-label: "Add subtitle track";
                             clicked => {
                                 main-view-focus.focus();
                                 root.file-new-subtitle-track();
@@ -2921,6 +2959,8 @@ export component AppWindow inherits Window {
                             VerticalBox {
                                 spacing: 6px;
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: MP4 remux";
                                     clicked => {
                                         root.export-preset-index = 0;
                                     }
@@ -2948,6 +2988,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: MP4 H.264 AAC";
                                     clicked => {
                                         root.export-preset-index = 1;
                                     }
@@ -2975,6 +3017,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: MP4 HEVC AAC";
                                     clicked => {
                                         root.export-preset-index = 2;
                                     }
@@ -3002,6 +3046,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: WebM VP8 Opus";
                                     clicked => {
                                         root.export-preset-index = 3;
                                     }
@@ -3029,6 +3075,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: WebM VP9 Opus";
                                     clicked => {
                                         root.export-preset-index = 4;
                                     }
@@ -3056,6 +3104,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: WebM AV1 Opus";
                                     clicked => {
                                         root.export-preset-index = 5;
                                     }
@@ -3083,6 +3133,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: MKV remux";
                                     clicked => {
                                         root.export-preset-index = 6;
                                     }
@@ -3110,6 +3162,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 TouchArea {
+                                    accessible-role: button;
+                                    accessible-label: "Export preset: MOV remux";
                                     clicked => {
                                         root.export-preset-index = 7;
                                     }
