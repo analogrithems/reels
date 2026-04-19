@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-04-19
+
+### Added
+
+- **Subtitles** — TTML (`.ttml` / `.dfxp`) subtitle import. The loader now dispatches on extension between SRT, WebVTT, and TTML; cues are normalized to the same internal representation so live preview, trim, and burn-in on export all work identically.
+- **Preview** — **pan when zoomed**. When the scaled image overflows the preview rect (zoom-in past fit, or **Actual Size** on a ≥ viewport-sized source), left-button drag on the preview shifts the frame via ephemeral `preview-pan-x` / `preview-pan-y` offsets. Cursor switches to `grab` / `grabbing` while pannable; offsets clamp to the image edge so the frame can't be dragged off-screen. Pan resets on **View → Zoom to Fit**, **Actual Size**, and all **Window → Fit / Fill / Center** entries.
+- **Accessibility (U4)** — sheet **Confirm / Cancel** buttons on **Trim Clip…**, **Audio Lane Gain…**, and **Resize Video…** now carry explicit `accessible-label`s that name the action being confirmed (not just the bare button text). The six **Resize** preset percent buttons (25 / 50 / 75 / 100 / 150 / 200 %) also get contextual labels so screen-reader users hear what each `%` button does.
+
+### Fixed
+
+- **Playhead ↔ filmstrip alignment** — the preview frame and timeline playhead now track the same time cursor precisely during scrub and playback.
+
+### Docs
+
+- **macOS Gatekeeper dialog** — added a **First launch on macOS (unsigned build)** subsection to `README.md` explaining the *"Reel.app is damaged"* dialog that testers see after downloading a release zip in a browser. Documents the single-line `xattr -d com.apple.quarantine` fix and a `find | xargs` fallback for older macOS where `xattr` lacks `-r`.
+
 ## [0.1.2] - 2026-04-18
 
 ### Added
