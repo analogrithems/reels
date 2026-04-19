@@ -1767,14 +1767,19 @@ impl EditSession {
         Ok(())
     }
 
-    /// Insert a **subtitle clip** (`.srt`) at the playhead on the first
+    /// Insert a **subtitle clip** (SubRip `.srt`, WebVTT `.vtt`, or TTML
+    /// `.ttml` / `.dfxp` / `.xml`) at the playhead on the first
     /// [`TrackKind::Subtitle`] lane. The lane must exist first
     /// (**File → New Subtitle Track**).
     ///
-    /// Duration comes from [`reel_core::probe_srt_file`] — the max cue end
-    /// time. Burn-in on export is handled by
-    /// [`crate::session::subtitle_burn_in_path`], which delegates to ffmpeg's
-    /// `subtitles=` filter.
+    /// Duration comes from [`reel_core::probe_subtitle_file`] — the max cue
+    /// end time across whichever parser the extension routes to. Burn-in on
+    /// export is handled by [`crate::session::subtitle_burn_in_path`], which
+    /// delegates to ffmpeg's `subtitles=` filter. SRT and WebVTT burn-in via
+    /// libass; TTML burn-in depends on the local ffmpeg build recognising
+    /// TTML through the same filter (libass ≥ 0.14 handles basic TTML via
+    /// an internal converter — files with heavy styling may fall back to an
+    /// error at export time, in which case the preview overlay still works).
     pub fn insert_subtitle_clip_at_playhead(
         &mut self,
         path: PathBuf,
@@ -1784,7 +1789,7 @@ impl EditSession {
             anyhow::bail!("no project — open a file first");
         }
 
-        let probe = reel_core::probe_srt_file(&path)
+        let probe = reel_core::probe_subtitle_file(&path)
             .with_context(|| format!("read subtitle file {}", path.display()))?;
         if probe.cue_count == 0 {
             anyhow::bail!("subtitle file has no cues: {}", path.display());

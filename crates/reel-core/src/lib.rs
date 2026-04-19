@@ -19,7 +19,8 @@ pub use media::{
     export_concat_with_audio_lanes_oriented_with_gains, export_concat_with_audio_oriented,
     export_with_ffmpeg, ffmpeg_args_for_format,
     find_srt_cue_at_seconds, generate_silence_wav, grab_frame, parse_srt_file, parse_srt_str,
-    probe_srt_file,
+    parse_subtitle_file, parse_ttml_file, parse_ttml_str, probe_srt_file, probe_subtitle_file,
+    probe_ttml_file,
     AudioStreamInfo, ExportProgressFn, FfmpegProbe, GifPreset, MediaMetadata, MediaProbe, SrtCue,
     SrtProbe, VideoStreamInfo, WebExportFormat,
 };

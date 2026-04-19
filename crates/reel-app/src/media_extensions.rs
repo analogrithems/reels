@@ -15,9 +15,12 @@ pub const AUDIO_FILE_EXTENSIONS: &[&str] = &[
 ];
 
 /// Subtitle sidecar extensions for **Insert Subtitle…**. SubRip (`.srt`) and
-/// WebVTT (`.vtt`) share a parser (see `reel_core::media::srt`); both are also
-/// accepted by ffmpeg's `subtitles=` filter at export time.
-pub const SUBTITLE_FILE_EXTENSIONS: &[&str] = &["srt", "vtt"];
+/// WebVTT (`.vtt`) share a parser (see `reel_core::media::srt`); TTML
+/// variants (`.ttml`, `.dfxp`, `.xml`) route through
+/// `reel_core::media::ttml`. All are accepted by ffmpeg's `subtitles=` filter
+/// at export time (TTML support depends on the local ffmpeg / libass build —
+/// see [`crate::session::EditSession::insert_subtitle_clip_at_playhead`]).
+pub const SUBTITLE_FILE_EXTENSIONS: &[&str] = &["srt", "vtt", "ttml", "dfxp", "xml"];
 
 /// **File → Open…**: combined video/mux + audio extensions (includes MPEG program stream and MPEG-TS).
 pub const OPEN_MEDIA_EXTENSIONS: &[&str] = &[

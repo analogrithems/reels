@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use reel_core::{find_srt_cue_at_seconds, parse_srt_file, Project, SrtCue, TrackKind};
+use reel_core::{find_srt_cue_at_seconds, parse_subtitle_file, Project, SrtCue, TrackKind};
 
 /// Epsilon for sequence-ms boundaries — mirrors `timeline::SEQ_MS_EPS` and
 /// `session::SEQ_MS_EPS` so subtitle span math lines up with clip span math
@@ -53,7 +53,11 @@ impl SubtitleCueCache {
         if let Some(existing) = self.map.borrow().get(path) {
             return Arc::clone(existing);
         }
-        let cues = parse_srt_file(path).unwrap_or_default();
+        // Extension-dispatched: `.ttml` / `.dfxp` / `.xml` routes to the
+        // TTML parser; everything else through the SRT/WebVTT parser (both
+        // of which tolerate malformed bodies). See
+        // `reel_core::media::parse_subtitle_file`.
+        let cues = parse_subtitle_file(path).unwrap_or_default();
         let arc = Arc::new(cues);
         self.map
             .borrow_mut()
