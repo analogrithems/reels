@@ -80,6 +80,12 @@ component FilmstripLane inherits VerticalBox {
     /// `trim_clip`, so out-of-range deltas just surface as a "trim failed"
     /// status message with no mutation.
     callback clip-trim-commit(string /* clip-id */, int /* edge */, float /* delta-ratio */);
+    /// Click-to-seek. Emitted when the user clicks anywhere on the lane
+    /// body outside a trim handle. `ratio` is the click's x-position as a
+    /// fraction of the lane body width (0..=1). Caller converts to ms by
+    /// multiplying by `duration-ms` and routes to `seek-timeline`. Gated
+    /// at the call-site on `media-ready` so empty-lane clicks are no-ops.
+    callback seek-ratio(float);
     spacing: 0;
     lane-hover := TouchArea {
         width: 100%;
@@ -153,7 +159,7 @@ component FilmstripLane inherits VerticalBox {
                 }
             }
             // Lane body — holds the clip chips (or empty-state text).
-            Rectangle {
+            lane-body := Rectangle {
                 horizontal-stretch: 1;
                 height: 48px;
                 background: Theme.surface-timeline;
@@ -161,6 +167,20 @@ component FilmstripLane inherits VerticalBox {
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 clip: true;
+                // Click-to-seek: covers the entire lane body. Declared first
+                // so trim-handle TouchAreas (nested inside chip-rect) and any
+                // other inner TouchAreas take priority on overlap. `mouse-x`
+                // divided by the lane-body width gives a 0..=1 fraction that
+                // the call site multiplies by `duration-ms`.
+                seek-ta := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => {
+                        if (lane-body.width > 0) {
+                            root.seek-ratio(max(0.0, min(1.0, self.mouse-x / lane-body.width)));
+                        }
+                    }
+                }
                 if root.chips.length == 0: Text {
                     text: "Empty lane";
                     color: Theme.text-tertiary;
@@ -2540,6 +2560,11 @@ export component AppWindow inherits Window {
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
                             }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
+                            }
                         }
                         if root.tl_video_track_count >= 2: FilmstripLane {
                             lane-label: "V2";
@@ -2553,6 +2578,11 @@ export component AppWindow inherits Window {
                             }
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
+                            }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
                             }
                         }
                         if root.tl_video_track_count >= 3: FilmstripLane {
@@ -2568,6 +2598,11 @@ export component AppWindow inherits Window {
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
                             }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
+                            }
                         }
                         if root.tl_video_track_count >= 4: FilmstripLane {
                             lane-label: "V4";
@@ -2581,6 +2616,11 @@ export component AppWindow inherits Window {
                             }
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
+                            }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
                             }
                         }
                     }
@@ -2662,6 +2702,11 @@ export component AppWindow inherits Window {
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
                             }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
+                            }
                         }
                         if root.tl_audio_track_count >= 2: FilmstripLane {
                             lane-label: "A2";
@@ -2675,6 +2720,11 @@ export component AppWindow inherits Window {
                             }
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
+                            }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
                             }
                         }
                         if root.tl_audio_track_count >= 3: FilmstripLane {
@@ -2690,6 +2740,11 @@ export component AppWindow inherits Window {
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
                             }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
+                            }
                         }
                         if root.tl_audio_track_count >= 4: FilmstripLane {
                             lane-label: "A4";
@@ -2703,6 +2758,11 @@ export component AppWindow inherits Window {
                             }
                             clip-trim-commit(id, edge, r) => {
                                 root.clip-trim-commit(id, edge, r);
+                            }
+                            seek-ratio(r) => {
+                                if (root.media-ready && root.duration-ms > 0) {
+                                    root.seek-timeline(r * root.duration-ms);
+                                }
                             }
                         }
                     }
@@ -2782,6 +2842,11 @@ export component AppWindow inherits Window {
                         clip-trim-commit(id, edge, r) => {
                             root.clip-trim-commit(id, edge, r);
                         }
+                        seek-ratio(r) => {
+                            if (root.media-ready && root.duration-ms > 0) {
+                                root.seek-timeline(r * root.duration-ms);
+                            }
+                        }
                     }
                     if root.tl_subtitle_track_count >= 2: FilmstripLane {
                         lane-label: "S2";
@@ -2795,6 +2860,11 @@ export component AppWindow inherits Window {
                         }
                         clip-trim-commit(id, edge, r) => {
                             root.clip-trim-commit(id, edge, r);
+                        }
+                        seek-ratio(r) => {
+                            if (root.media-ready && root.duration-ms > 0) {
+                                root.seek-timeline(r * root.duration-ms);
+                            }
                         }
                     }
                     if root.tl_subtitle_track_count >= 3: FilmstripLane {
@@ -2810,6 +2880,11 @@ export component AppWindow inherits Window {
                         clip-trim-commit(id, edge, r) => {
                             root.clip-trim-commit(id, edge, r);
                         }
+                        seek-ratio(r) => {
+                            if (root.media-ready && root.duration-ms > 0) {
+                                root.seek-timeline(r * root.duration-ms);
+                            }
+                        }
                     }
                     if root.tl_subtitle_track_count >= 4: FilmstripLane {
                         lane-label: "S4";
@@ -2823,6 +2898,11 @@ export component AppWindow inherits Window {
                         }
                         clip-trim-commit(id, edge, r) => {
                             root.clip-trim-commit(id, edge, r);
+                        }
+                        seek-ratio(r) => {
+                            if (root.media-ready && root.duration-ms > 0) {
+                                root.seek-timeline(r * root.duration-ms);
+                            }
                         }
                     }
                     }

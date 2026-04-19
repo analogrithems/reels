@@ -1,4 +1,4 @@
-# Reel documentation
+# <img src="../assets/icons/knotreels.png" alt="Reels logo" width="48" /> Reels documentation
 
 | Document | Purpose |
 |----------|---------|
