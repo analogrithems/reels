@@ -3819,6 +3819,7 @@ export component AppWindow inherits Window {
                                 alignment: end;
                                 Button {
                                     text: "Cancel";
+                                    accessible-label: "Cancel trim and close sheet";
                                     clicked => {
                                         root.trim-cancel();
                                     }
@@ -3826,6 +3827,7 @@ export component AppWindow inherits Window {
                                 Button {
                                     text: "Trim";
                                     primary: true;
+                                    accessible-label: "Apply trim with entered begin and end seconds";
                                     clicked => {
                                         root.trim-confirm(
                                             trim-begin-input.text.to-float(),
@@ -3925,6 +3927,7 @@ export component AppWindow inherits Window {
                                 alignment: end;
                                 Button {
                                     text: "Cancel";
+                                    accessible-label: "Cancel audio lane gain change and close sheet";
                                     clicked => {
                                         root.gain-cancel();
                                     }
@@ -3932,6 +3935,7 @@ export component AppWindow inherits Window {
                                 Button {
                                     text: "Set Gain";
                                     primary: true;
+                                    accessible-label: "Apply gain to selected audio lane";
                                     clicked => {
                                         root.gain-confirm(
                                             gain-lane-input.text.to-float(),
@@ -3995,26 +3999,32 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 Button {
                                     text: "25%";
+                                    accessible-label: "Set resize scale to 25 percent";
                                     clicked => { resize-input.text = "25"; }
                                 }
                                 Button {
                                     text: "50%";
+                                    accessible-label: "Set resize scale to 50 percent";
                                     clicked => { resize-input.text = "50"; }
                                 }
                                 Button {
                                     text: "75%";
+                                    accessible-label: "Set resize scale to 75 percent";
                                     clicked => { resize-input.text = "75"; }
                                 }
                                 Button {
                                     text: "100%";
+                                    accessible-label: "Set resize scale to 100 percent (identity)";
                                     clicked => { resize-input.text = "100"; }
                                 }
                                 Button {
                                     text: "150%";
+                                    accessible-label: "Set resize scale to 150 percent";
                                     clicked => { resize-input.text = "150"; }
                                 }
                                 Button {
                                     text: "200%";
+                                    accessible-label: "Set resize scale to 200 percent";
                                     clicked => { resize-input.text = "200"; }
                                 }
                             }
@@ -4041,6 +4051,7 @@ export component AppWindow inherits Window {
                                 alignment: end;
                                 Button {
                                     text: "Cancel";
+                                    accessible-label: "Cancel resize and close sheet";
                                     clicked => {
                                         root.resize-cancel();
                                     }
@@ -4048,6 +4059,7 @@ export component AppWindow inherits Window {
                                 Button {
                                     text: "Resize";
                                     primary: true;
+                                    accessible-label: "Apply resize with entered scale percent";
                                     clicked => {
                                         root.resize-confirm(round(resize-input.text.to-float()));
                                     }
