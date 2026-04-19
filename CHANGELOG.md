@@ -36,4 +36,4 @@ First public release of **Reel**, an open-source Rust + Slint + FFmpeg desktop v
 
 - **Platform:** CI and release artifacts target **macOS (Apple Silicon)**. Other platforms are not built in GitHub Actions yet.
 - **FFmpeg:** The app expects **FFmpeg 7.x** on `PATH` or via `pkg-config` (e.g. `brew install ffmpeg@7`). It is not bundled inside the `.app`.
-- **Code signing / notarization:** Release zips are **unsigned**; gatekeeper may require right-click → Open on first launch.
+- **Code signing / notarization:** Release zips are **unsigned** and **not notarized**. On modern macOS, Gatekeeper will refuse first launch with *"Reel.app is damaged and can't be opened"* — this is a Gatekeeper refusal, not actual damage. See **[README → First launch on macOS](README.md#first-launch-on-macos-unsigned-build)** for the one-line `xattr` workaround.

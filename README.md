@@ -17,7 +17,27 @@ Engineering phases (0–4) and UI roadmap (U1–U5) are tracked in **[docs/phase
 
 ## Releases
 
-Tagged versions are published on **GitHub Releases** with a **macOS `.app` zip** (see **[CHANGELOG.md](CHANGELOG.md)** and **[docs/RELEASING.md](docs/RELEASING.md)** for maintainers). FFmpeg is not bundled; install **ffmpeg@7** separately.
+Tagged versions are published on **GitHub Releases** with a **macOS `.app` zip** (see **[CHANGELOG.md](CHANGELOG.md)**). FFmpeg is not bundled; install **ffmpeg@7** separately.
+
+### First launch on macOS (unsigned build)
+
+Release builds are **not yet code-signed or notarized** by an Apple Developer account, so on first launch macOS will show:
+
+> **"Reel.app" is damaged and can't be opened. You should move it to the Trash.**
+
+The app is **not damaged** — the dialog is macOS Gatekeeper refusing to run an unsigned binary that your browser tagged with a `com.apple.quarantine` extended attribute. Strip the attribute once and the app opens normally from then on:
+
+```sh
+# wherever you unzipped it — typically ~/Downloads or /Applications:
+xattr -d com.apple.quarantine /path/to/Reel.app
+
+# if that isn't enough (rare), strip xattrs from every file in the bundle:
+find /path/to/Reel.app -print0 | xargs -0 xattr -d com.apple.quarantine 2>/dev/null
+```
+
+(On older macOS the `xattr` tool lacks `-r`, so use the `find` form rather than `xattr -dr`.)
+
+Signed + notarized releases are tracked under **Phase 4** in [docs/phase-status.md](docs/phase-status.md).
 
 ## Prerequisites (macOS)
 
