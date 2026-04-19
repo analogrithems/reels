@@ -37,7 +37,9 @@ There is **no** Linux or Windows binary in CI yet. **`reel-cli`** is not publish
 
 ## Signing / notarization
 
-Release zips are **unsigned**. For a distribution that passes Gatekeeper without user overrides, you would add Apple Developer ID signing and notarization outside this document.
+Release zips are **unsigned**. First-launch users will hit a Gatekeeper refusal; the `xattr` workaround is documented in the main [README → First launch on macOS](../README.md#first-launch-on-macos-unsigned-build).
+
+Adding Apple Developer ID signing + notarization is tracked under **Phase 4** in [docs/phase-status.md](phase-status.md).
 
 ## If the workflow fails
 
