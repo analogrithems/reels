@@ -20,6 +20,17 @@ ffmpeg -y -v error \
     -shortest \
     "$out/tiny_h264_aac.mp4"
 
+# 1b) same as (1) but 256x144 — meets the DNxHR encoder's 256x120 minimum,
+#     so the MKV DNxHR HQ export test has an input the `dnxhd` encoder will
+#     accept. All other presets still run against the 64x64 fixture above.
+ffmpeg -y -v error \
+    -f lavfi -i "testsrc=size=256x144:rate=15:duration=1" \
+    -f lavfi -i "sine=frequency=440:duration=1" \
+    -c:v libx264 -preset ultrafast -tune zerolatency -g 15 -pix_fmt yuv420p \
+    -c:a aac -b:a 32k \
+    -shortest \
+    "$out/tiny_h264_aac_256x144.mp4"
+
 # 2) video-only
 ffmpeg -y -v error \
     -f lavfi -i "testsrc=size=64x64:rate=15:duration=1" \
@@ -40,4 +51,4 @@ ffmpeg -y -v error \
     "$out/weird_audio.mkv"
 
 echo "fixtures written to $out"
-ls -lh "$out"/tiny_h264_aac.mp4 "$out"/no_audio.mp4 "$out"/weird_audio.mkv
+ls -lh "$out"/tiny_h264_aac.mp4 "$out"/tiny_h264_aac_256x144.mp4 "$out"/no_audio.mp4 "$out"/weird_audio.mkv
