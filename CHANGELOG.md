@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-04-18
+
+### Added
+
+- **Timeline** — video scene thumbnails on primary-track chips; **track previews** for video lanes; **click-to-seek** on the filmstrip strip.
+- **Playback** — A/V sync calibration, microsecond-accurate audio clock improvements, and an **audio waveform** scaffold on the timeline.
+
+### Changed
+
+- **Export** — extended export format options and related UI.
+- **Controls** — broader keyboard shortcuts and A/V offset handling; timeline and floating control polish.
+
+### Fixed
+
+- Timeline UI cleanup and layout tweaks.
+
 ## [0.1.0] - 2026-04-18
 
 First public release of **Reel**, an open-source Rust + Slint + FFmpeg desktop video editor (macOS-first).
