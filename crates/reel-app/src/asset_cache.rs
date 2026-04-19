@@ -22,10 +22,11 @@
 //!                                                         sync_timeline_chips re-runs with real image
 //! ```
 //!
-//! The cache is **in-memory only** for v1 (no disk sidecar files). Short
-//! clips regenerate in tens of milliseconds; long clips are cheap enough
-//! once decoded. A proper on-disk sidecar (`<hash>.peaks`) is on deck for
-//! v2 when longer audio stems come into play.
+//! Waveforms are additionally backed by an on-disk sidecar at
+//! `<cache_dir>/reel/waveforms/<blake3>.peaks` so that long projects
+//! don't re-decode every clip on app restart. Thumbnails stay
+//! in-memory only (video decodes dominate startup less than audio
+//! peaks did, and thumb strips are cheap at their current resolution).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -65,6 +66,15 @@ const THUMB_WIDTH: u32 = THUMB_COUNT * THUMB_CELL;
 
 /// Placeholder stripe tile size (square, tiled via `image-fit: fill`).
 const PLACEHOLDER_SIZE: u32 = 64;
+
+/// Magic/version byte for the on-disk waveform sidecar. Bump to invalidate
+/// every previously-written `.peaks` file (e.g. if the header layout or
+/// peak serialization changes).
+const SIDECAR_VERSION: u8 = 1;
+
+/// Header byte count: version(1) + width(4) + height(4) + in_ms(8) +
+/// out_ms(8) + cols(4). Peak pairs follow as `cols * 2` little-endian f32s.
+const SIDECAR_HEADER_LEN: usize = 1 + 4 + 4 + 8 + 8 + 4;
 
 /// What kind of raster to generate for a job.
 #[derive(Clone, Copy, Debug)]
@@ -289,8 +299,123 @@ fn generate_waveform_buffer(
     in_ms: u64,
     out_ms: u64,
 ) -> Result<SharedPixelBuffer<Rgba8Pixel>> {
+    let sidecar = sidecar_path_for(path, in_ms, out_ms);
+    if let Some(ref sc) = sidecar {
+        if let Some(peaks) = read_sidecar(sc, in_ms, out_ms) {
+            return Ok(raster_peaks(&peaks));
+        }
+    }
     let peaks = decode_peaks(path, in_ms, out_ms, WAVE_COLS)?;
+    if let Some(ref sc) = sidecar {
+        if let Err(e) = write_sidecar(sc, in_ms, out_ms, &peaks) {
+            tracing::debug!(
+                path = %sc.display(),
+                error = %e,
+                "failed to write waveform sidecar"
+            );
+        }
+    }
     Ok(raster_peaks(&peaks))
+}
+
+/// Directory where waveform sidecars live. Returns `None` when the
+/// platform cache dir is unavailable (very rare — e.g. sandboxed tests
+/// without `$HOME`). A missing dir disables the on-disk layer silently;
+/// the in-memory cache still works.
+fn waveform_cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|p| p.join("reel").join("waveforms"))
+}
+
+/// Build the sidecar path for a given clip range. The key is
+/// `blake3(source_path_bytes || source_mtime_nanos || in_ms || out_ms)`
+/// so that edits to the source file (mtime bumps) or changes to the
+/// in/out trim window produce a fresh sidecar rather than a stale read.
+fn sidecar_path_for(path: &Path, in_ms: u64, out_ms: u64) -> Option<PathBuf> {
+    let mtime_nanos = std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(path.as_os_str().as_encoded_bytes());
+    hasher.update(&mtime_nanos.to_le_bytes());
+    hasher.update(&in_ms.to_le_bytes());
+    hasher.update(&out_ms.to_le_bytes());
+    let key = hasher.finalize().to_hex();
+    Some(waveform_cache_dir()?.join(format!("{key}.peaks")))
+}
+
+/// Read a sidecar and return the peaks if the header matches the current
+/// configuration. Any mismatch — version bump, raster size change, clip
+/// trim change, truncated file — returns `None` so the caller falls
+/// through to a fresh decode.
+fn read_sidecar(
+    path: &Path,
+    expected_in_ms: u64,
+    expected_out_ms: u64,
+) -> Option<Vec<(f32, f32)>> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < SIDECAR_HEADER_LEN {
+        return None;
+    }
+    if bytes[0] != SIDECAR_VERSION {
+        return None;
+    }
+    let width = u32::from_le_bytes(bytes[1..5].try_into().ok()?);
+    let height = u32::from_le_bytes(bytes[5..9].try_into().ok()?);
+    let in_ms = u64::from_le_bytes(bytes[9..17].try_into().ok()?);
+    let out_ms = u64::from_le_bytes(bytes[17..25].try_into().ok()?);
+    let cols = u32::from_le_bytes(bytes[25..29].try_into().ok()?) as usize;
+    if width != WAVE_WIDTH
+        || height != WAVE_HEIGHT
+        || in_ms != expected_in_ms
+        || out_ms != expected_out_ms
+        || cols != WAVE_COLS
+    {
+        return None;
+    }
+    let expected_len = SIDECAR_HEADER_LEN + cols * 8;
+    if bytes.len() != expected_len {
+        return None;
+    }
+    let mut peaks = Vec::with_capacity(cols);
+    let mut off = SIDECAR_HEADER_LEN;
+    for _ in 0..cols {
+        let mn = f32::from_le_bytes(bytes[off..off + 4].try_into().ok()?);
+        let mx = f32::from_le_bytes(bytes[off + 4..off + 8].try_into().ok()?);
+        peaks.push((mn, mx));
+        off += 8;
+    }
+    Some(peaks)
+}
+
+/// Write the header and raw peak pairs. Creates the parent directory on
+/// first use. Peak f32s are stored as-is (little-endian) rather than
+/// quantized — the file is a few KB per clip and keeps the door open
+/// for re-rastering at different heights without re-decoding.
+fn write_sidecar(
+    path: &Path,
+    in_ms: u64,
+    out_ms: u64,
+    peaks: &[(f32, f32)],
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut buf = Vec::with_capacity(SIDECAR_HEADER_LEN + peaks.len() * 8);
+    buf.push(SIDECAR_VERSION);
+    buf.extend_from_slice(&WAVE_WIDTH.to_le_bytes());
+    buf.extend_from_slice(&WAVE_HEIGHT.to_le_bytes());
+    buf.extend_from_slice(&in_ms.to_le_bytes());
+    buf.extend_from_slice(&out_ms.to_le_bytes());
+    buf.extend_from_slice(&(peaks.len() as u32).to_le_bytes());
+    for (mn, mx) in peaks {
+        buf.extend_from_slice(&mn.to_le_bytes());
+        buf.extend_from_slice(&mx.to_le_bytes());
+    }
+    std::fs::write(path, buf)
 }
 
 /// Decode audio via ffmpeg and produce `cols` (min, max) pairs spanning
@@ -754,6 +879,33 @@ mod tests {
             assert_eq!(w % 2, 0, "fit_w must be even for {}x{}", sw, sh);
             assert_eq!(h % 2, 0, "fit_h must be even for {}x{}", sw, sh);
         }
+    }
+
+    #[test]
+    fn sidecar_roundtrip_preserves_peaks() {
+        // Write a synthetic peak set out to a temp sidecar and read it
+        // back; the returned peaks must match byte-for-byte and the
+        // raster produced from them must be identical to rastering the
+        // originals. This is the on-disk fast-path's happy case.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roundtrip.peaks");
+        let mut peaks: Vec<(f32, f32)> = Vec::with_capacity(WAVE_COLS);
+        for i in 0..WAVE_COLS {
+            let t = i as f32 / WAVE_COLS as f32;
+            peaks.push((-0.25 - 0.5 * t, 0.25 + 0.5 * t));
+        }
+        write_sidecar(&path, 1000, 2500, &peaks).expect("write sidecar");
+        let got = read_sidecar(&path, 1000, 2500).expect("read sidecar");
+        assert_eq!(got, peaks);
+
+        // Header mismatches fall through to None so the worker re-decodes.
+        assert!(read_sidecar(&path, 0, 2500).is_none());
+        assert!(read_sidecar(&path, 1000, 9999).is_none());
+
+        // Truncated file → None rather than panic on try_into.
+        let truncated = dir.path().join("truncated.peaks");
+        std::fs::write(&truncated, [SIDECAR_VERSION, 0, 0]).unwrap();
+        assert!(read_sidecar(&truncated, 1000, 2500).is_none());
     }
 
     #[test]

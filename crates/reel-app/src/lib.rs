@@ -899,24 +899,17 @@ fn attach_audio_waveforms(rows: &mut [TlChip], p: &reel_core::project::Project) 
             return;
         };
         for chip in rows.iter_mut() {
-            if chip.is_video || chip.is_subtitle || chip.clip_id.is_empty() {
+            if chip.is_video || chip.is_subtitle {
                 continue;
             }
-            // Resolve clip UUID -> source path for the worker.
-            let Ok(uuid) = Uuid::parse_str(chip.clip_id.as_str()) else {
-                continue;
-            };
-            let Some(clip) = p.clips.iter().find(|c| c.id == uuid) else {
+            let Some((cache_key, source_path)) = resolve_chip_source(chip, p) else {
                 continue;
             };
             let in_ms = chip.begin_ms.max(0) as u64;
             let out_ms = chip.end_ms.max(chip.begin_ms) as u64;
-            if let Some(img) = cache.get_or_request_waveform(
-                chip.clip_id.as_str(),
-                &clip.source_path,
-                in_ms,
-                out_ms,
-            ) {
+            if let Some(img) =
+                cache.get_or_request_waveform(&cache_key, &source_path, in_ms, out_ms)
+            {
                 chip.waveform = img;
                 chip.waveform_ready = true;
             }
@@ -936,28 +929,46 @@ fn attach_video_thumbnails(rows: &mut [TlChip], p: &reel_core::project::Project)
             return;
         };
         for chip in rows.iter_mut() {
-            if !chip.is_video || chip.is_subtitle || chip.clip_id.is_empty() {
+            if !chip.is_video || chip.is_subtitle {
                 continue;
             }
-            let Ok(uuid) = Uuid::parse_str(chip.clip_id.as_str()) else {
-                continue;
-            };
-            let Some(clip) = p.clips.iter().find(|c| c.id == uuid) else {
+            let Some((cache_key, source_path)) = resolve_chip_source(chip, p) else {
                 continue;
             };
             let in_ms = chip.begin_ms.max(0) as u64;
             let out_ms = chip.end_ms.max(chip.begin_ms) as u64;
-            if let Some(img) = cache.get_or_request_thumbnails(
-                chip.clip_id.as_str(),
-                &clip.source_path,
-                in_ms,
-                out_ms,
-            ) {
+            if let Some(img) =
+                cache.get_or_request_thumbnails(&cache_key, &source_path, in_ms, out_ms)
+            {
                 chip.thumbnails = img;
                 chip.thumbnails_ready = true;
             }
         }
     });
+}
+
+/// Resolve a chip to `(cache_key, source_path)` for the AssetCache.
+///
+/// Real project chips key on their clip UUID and look the source path up
+/// on the backing `Clip`. Synthetic single-media chips (empty `clip_id`)
+/// key on and decode directly from `chip.source_path`, which
+/// `timeline_chips::synthetic_full_width_chip` populates with the primary
+/// clip's path. Returns `None` for chips that have neither — nothing to
+/// decode.
+fn resolve_chip_source(
+    chip: &TlChip,
+    p: &reel_core::project::Project,
+) -> Option<(String, std::path::PathBuf)> {
+    if !chip.clip_id.is_empty() {
+        let uuid = Uuid::parse_str(chip.clip_id.as_str()).ok()?;
+        let clip = p.clips.iter().find(|c| c.id == uuid)?;
+        return Some((chip.clip_id.to_string(), clip.source_path.clone()));
+    }
+    if chip.source_path.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(chip.source_path.as_str());
+    Some((chip.source_path.to_string(), path))
 }
 
 fn sync_timeline_chips(window: &AppWindow, session: &EditSession) {

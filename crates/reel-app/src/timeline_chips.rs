@@ -29,8 +29,8 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
     };
     let is_video = kind == TrackKind::Video;
     let is_subtitle = kind == TrackKind::Subtitle;
-    // (d_ms, label, clip_id, begin_ms, end_ms, source_duration_ms)
-    let mut spans: Vec<(f64, String, String, i32, i32, i32)> = Vec::new();
+    // (d_ms, label, clip_id, source_path, begin_ms, end_ms, source_duration_ms)
+    let mut spans: Vec<(f64, String, String, String, i32, i32, i32)> = Vec::new();
     for id in &track.clip_ids {
         if let Some(c) = p.clips.iter().find(|c| c.id == *id) {
             let d_ms = (c.out_point - c.in_point) * 1000.0;
@@ -38,7 +38,16 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
                 let begin_ms = (c.in_point * 1000.0).round() as i32;
                 let end_ms = (c.out_point * 1000.0).round() as i32;
                 let src_ms = (c.metadata.duration_seconds * 1000.0).round() as i32;
-                spans.push((d_ms, clip_label(c), c.id.to_string(), begin_ms, end_ms, src_ms));
+                let source_path = c.source_path.to_string_lossy().into_owned();
+                spans.push((
+                    d_ms,
+                    clip_label(c),
+                    c.id.to_string(),
+                    source_path,
+                    begin_ms,
+                    end_ms,
+                    src_ms,
+                ));
             }
         }
     }
@@ -51,13 +60,14 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
         .into_iter()
         .enumerate()
         .map(
-            |(i, (d_ms, label, clip_id, begin_ms, end_ms, src_ms))| TlChip {
+            |(i, (d_ms, label, clip_id, source_path, begin_ms, end_ms, src_ms))| TlChip {
                 label: label.into(),
                 width_weight: (d_ms / total) as f32,
                 chip_idx: i as i32,
                 is_video,
                 is_subtitle,
                 clip_id: clip_id.into(),
+                source_path: source_path.into(),
                 begin_ms,
                 end_ms,
                 source_duration_ms: src_ms,
@@ -89,13 +99,20 @@ fn primary_video_clip(p: &Project) -> Option<&reel_core::project::Clip> {
     p.clips.iter().find(|c| c.id == *tid)
 }
 
-fn synthetic_full_width_chip(label: String, is_video: bool) -> Vec<TlChip> {
+fn synthetic_full_width_chip(
+    label: String,
+    is_video: bool,
+    source_path: String,
+    source_duration_ms: i32,
+) -> Vec<TlChip> {
     // Synthetic chips cover single-media-mode container-stream lanes, which
     // are **never** subtitle lanes today (subtitles always come from project
     // `TrackKind::Subtitle` rows), so `is_subtitle: false` is correct here.
     // Empty `clip_id` signals "no backing clip" — the trim-drag handles in
     // Slint gate on this, since synthetic chips don't correspond to an
-    // editable `reel_core::project::Clip`.
+    // editable `reel_core::project::Clip`. Preview gates key on
+    // `source_path` instead, so waveform/thumbnail rasters still populate
+    // for the whole-stream case.
     vec![TlChip {
         label: label.into(),
         width_weight: 1.0,
@@ -103,14 +120,10 @@ fn synthetic_full_width_chip(label: String, is_video: bool) -> Vec<TlChip> {
         is_video,
         is_subtitle: false,
         clip_id: "".into(),
+        source_path: source_path.into(),
         begin_ms: 0,
-        end_ms: 0,
-        source_duration_ms: 0,
-        // Synthetic single-media chips have no backing clip, so they can't
-        // be keyed in the AssetCache. Leave `*_ready: false`; the
-        // FilmstripLane renders them as flat color (no placeholder shown
-        // for synthetic chips — they represent a whole stream, not a
-        // decodeable segment).
+        end_ms: source_duration_ms.max(0),
+        source_duration_ms,
         waveform: slint::Image::default(),
         waveform_ready: false,
         thumbnails: slint::Image::default(),
@@ -208,12 +221,19 @@ pub(crate) fn timeline_chip_sync(
 
     let base = clip_label(pc);
     let base_label = base.clone();
+    let base_path = pc.source_path.to_string_lossy().into_owned();
+    let base_duration_ms = (pc.metadata.duration_seconds * 1000.0).round() as i32;
 
     let mut video = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     for (i, row) in video.iter_mut().enumerate().take(vn_disp) {
         if i < vn_proj {
             *row = if vs <= 1 && i == 0 {
-                synthetic_full_width_chip(base_label.clone(), true)
+                synthetic_full_width_chip(
+                    base_label.clone(),
+                    true,
+                    base_path.clone(),
+                    base_duration_ms,
+                )
             } else {
                 chips_for_track(p, i, TrackKind::Video)
             };
@@ -223,7 +243,12 @@ pub(crate) fn timeline_chip_sync(
     for (i, row) in audio.iter_mut().enumerate().take(an_disp) {
         if i < an_proj {
             *row = if aus <= 1 && i == 0 {
-                synthetic_full_width_chip(format!("{base} (audio)"), false)
+                synthetic_full_width_chip(
+                    format!("{base} (audio)"),
+                    false,
+                    base_path.clone(),
+                    base_duration_ms,
+                )
             } else {
                 chips_for_track(p, i, TrackKind::Audio)
             };
@@ -233,7 +258,7 @@ pub(crate) fn timeline_chip_sync(
             } else {
                 format!("{base} (audio {})", i + 1)
             };
-            *row = synthetic_full_width_chip(label, false);
+            *row = synthetic_full_width_chip(label, false, base_path.clone(), base_duration_ms);
         }
     }
 
@@ -241,7 +266,12 @@ pub(crate) fn timeline_chip_sync(
     for (i, row) in subtitle.iter_mut().enumerate().take(sn_disp) {
         if i < sn_proj {
             *row = if subs <= 1 && i == 0 {
-                synthetic_full_width_chip(format!("{base} (subtitles)"), false)
+                synthetic_full_width_chip(
+                    format!("{base} (subtitles)"),
+                    false,
+                    base_path.clone(),
+                    base_duration_ms,
+                )
             } else {
                 chips_for_track(p, i, TrackKind::Subtitle)
             };
@@ -251,7 +281,7 @@ pub(crate) fn timeline_chip_sync(
             } else {
                 format!("{base} (subtitles {})", i + 1)
             };
-            *row = synthetic_full_width_chip(label, false);
+            *row = synthetic_full_width_chip(label, false, base_path.clone(), base_duration_ms);
         }
     }
 
@@ -409,6 +439,14 @@ mod tests {
         // And the audio lane too — synthetic "(audio)" chip has no backing clip.
         let achip = s.audio[0].first().expect("synthetic audio chip");
         assert!(achip.clip_id.is_empty());
+        // But both must carry `source_path` + a non-zero range so the
+        // Slint preview gates can fire and `attach_*` can key the
+        // AssetCache. Without these, single-media timelines render as
+        // flat color with no waveform, thumbnails, or loading stripe.
+        assert_eq!(vchip.source_path.as_str(), path.to_string_lossy());
+        assert_eq!(achip.source_path.as_str(), path.to_string_lossy());
+        assert!(vchip.end_ms > 0);
+        assert!(achip.end_ms > 0);
     }
 
     /// **Single-media** mode: project subtitle lanes count toward display `max(project, container streams)`.

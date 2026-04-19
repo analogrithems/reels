@@ -32,6 +32,7 @@ dirs.workspace            = true
 uuid.workspace              = true
 image.workspace             = true
 tempfile.workspace          = true
+blake3                      = "1"
 
 [build-dependencies]
 slint-build.workspace = true

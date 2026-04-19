@@ -26,6 +26,12 @@ export struct TlChip {
     is-video: bool,
     is-subtitle: bool,
     clip-id: string,
+    // Absolute source-media path. Populated for both real project
+    // clips and synthetic single-media chips — the latter have an
+    // empty `clip-id` (no backing editable Clip) but still have a
+    // decodeable source, and preview gates key on this field so they
+    // render in either mode.
+    source-path: string,
     begin-ms: int,
     end-ms: int,
     source-duration-ms: int,
@@ -217,7 +223,7 @@ component FilmstripLane inherits VerticalBox {
                         // **immediately** on media load instead of
                         // waiting for a decode pass. Synthetic (no
                         // clip-id) and subtitle chips stay flat.
-                        if item.clip-id != "" && !item.is-subtitle && !item.is-video && item.waveform-ready: Image {
+                        if item.source-path != "" && !item.is-subtitle && !item.is-video && item.waveform-ready: Image {
                             x: 0;
                             y: 0;
                             width: 100%;
@@ -225,7 +231,7 @@ component FilmstripLane inherits VerticalBox {
                             source: item.waveform;
                             image-fit: fill;
                         }
-                        if item.clip-id != "" && !item.is-subtitle && item.is-video && item.thumbnails-ready: Image {
+                        if item.source-path != "" && !item.is-subtitle && item.is-video && item.thumbnails-ready: Image {
                             x: 0;
                             y: 0;
                             width: 100%;
@@ -233,7 +239,7 @@ component FilmstripLane inherits VerticalBox {
                             source: item.thumbnails;
                             image-fit: fill;
                         }
-                        if item.clip-id != "" && !item.is-subtitle && !item.is-video && !item.waveform-ready: Image {
+                        if item.source-path != "" && !item.is-subtitle && !item.is-video && !item.waveform-ready: Image {
                             x: 0;
                             y: 0;
                             width: 100%;
@@ -242,7 +248,7 @@ component FilmstripLane inherits VerticalBox {
                             image-fit: fill;
                             opacity: 0.35;
                         }
-                        if item.clip-id != "" && !item.is-subtitle && item.is-video && !item.thumbnails-ready: Image {
+                        if item.source-path != "" && !item.is-subtitle && item.is-video && !item.thumbnails-ready: Image {
                             x: 0;
                             y: 0;
                             width: 100%;
