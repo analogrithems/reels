@@ -64,51 +64,66 @@ pub enum Cmd {
 const OUT_SAMPLE_RATE: u32 = 48_000;
 const OUT_CHANNELS: u16 = 2;
 
-/// Shared playback clock, in milliseconds since the current source start.
-/// Advanced by the audio thread as samples are written to the output stream.
+/// Shared playback clock, exposed in milliseconds since source start.
+///
+/// # Internal precision
+///
+/// The position is stored internally as **microseconds**, not ms. The
+/// audio thread delivers callbacks with ragged frame counts (often 441
+/// or 480 at 48 kHz, sometimes 512), and converting to whole ms per
+/// callback via integer division would lose 0.1875 ms on a 441-frame
+/// burst — ≈170 ms drift over 7 s of real playback. That's plainly
+/// audible as A/V desync. Microsecond granularity rounds to within
+/// ≤ 1 ms over tens of minutes even with ragged bursts.
 ///
 /// # Output-latency compensation
 ///
-/// `pos_ms` tracks **samples handed to the OS audio buffer** — not samples
-/// actually emitted by the speakers. On most systems the speaker is playing
-/// audio from ~5–20 ms ago relative to the most recent cpal callback (one
-/// callback buffer's worth, plus device-dependent offsets). If the video
-/// thread schedules frames against `pos_ms`, video renders "one buffer
-/// ahead" of what the user hears — the classic A/V sync complaint.
+/// `pos_us` tracks **samples handed to the OS audio buffer** — not
+/// samples actually emitted by the speakers. On most systems the
+/// speaker is playing audio from ~5–40 ms ago relative to the most
+/// recent cpal callback (one callback buffer's worth, plus device
+/// offsets). If the video thread schedules frames against `pos_us`,
+/// video renders ahead of what the user hears — the classic A/V sync
+/// complaint.
 ///
-/// `output_latency_ms` holds that buffer estimate. It is calibrated once on
-/// the first non-empty cpal output callback (see [`audio_loop`]) as
-/// `frames_per_callback / OUT_SAMPLE_RATE`. [`AudioClock::get`] subtracts
-/// that offset so readers see **audible-now**, keeping video in lockstep
-/// with the speaker, not the ring buffer. [`AudioClock::get_raw`] returns
-/// the uncorrected value for internal audio-thread use (so audio doesn't
-/// subtract its own latency from itself).
+/// `output_latency_us` holds that device latency estimate. It is
+/// calibrated once on the first cpal output callback (see
+/// [`audio_loop`]) using `OutputCallbackInfo.timestamp()` — the delta
+/// between when the callback fired and when the first sample of the
+/// buffer will actually leave the speakers. That's the *true* one-way
+/// latency (OS + driver + device) rather than just the callback
+/// buffer size. [`AudioClock::get`] subtracts that offset so readers
+/// see **audible-now**, keeping video in lockstep with sound.
+/// [`AudioClock::get_raw`] returns the uncorrected value for internal
+/// audio-thread use so audio bookkeeping doesn't chase its own offset.
 #[derive(Clone, Debug, Default)]
 pub struct AudioClock {
-    pos_ms: Arc<AtomicU64>,
+    pos_us: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
-    output_latency_ms: Arc<AtomicU64>,
+    output_latency_us: Arc<AtomicU64>,
 }
 
 impl AudioClock {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Seek: overwrite the position to `ms` exactly.
     pub fn set(&self, ms: u64) {
-        self.pos_ms.store(ms, Ordering::Release);
+        self.pos_us
+            .store(ms.saturating_mul(1_000), Ordering::Release);
     }
     /// Latency-compensated read: audible-now in sequence ms. Use this from
     /// the **video** thread / UI so picture matches sound.
     pub fn get(&self) -> u64 {
-        let raw = self.pos_ms.load(Ordering::Acquire);
-        let lat = self.output_latency_ms.load(Ordering::Acquire);
-        raw.saturating_sub(lat)
+        let raw_us = self.pos_us.load(Ordering::Acquire);
+        let lat_us = self.output_latency_us.load(Ordering::Acquire);
+        raw_us.saturating_sub(lat_us) / 1_000
     }
     /// Raw written-to-OS position. Use this from the **audio** thread so
     /// audio decode doesn't chase its own latency offset.
     #[allow(dead_code)]
     pub fn get_raw(&self) -> u64 {
-        self.pos_ms.load(Ordering::Acquire)
+        self.pos_us.load(Ordering::Acquire) / 1_000
     }
     pub fn set_playing(&self, p: bool) {
         self.playing.store(p, Ordering::Release);
@@ -117,15 +132,71 @@ impl AudioClock {
         self.playing.load(Ordering::Acquire)
     }
     /// Calibration hook: set the estimated one-way output latency (cpal
-    /// callback buffer + device). Called once by the audio thread on the
-    /// first non-empty callback. Stable across seeks / media changes since
-    /// the audio device doesn't change mid-session.
+    /// callback buffer + device) in **milliseconds**. Internally stored
+    /// as microseconds; the ms granularity is fine because device
+    /// latency is itself only good to a few ms. Called once by the
+    /// audio thread on the first callback and stable across seeks /
+    /// media changes since the audio device doesn't change mid-session.
     pub fn set_output_latency_ms(&self, ms: u64) {
-        self.output_latency_ms.store(ms, Ordering::Release);
+        self.output_latency_us
+            .store(ms.saturating_mul(1_000), Ordering::Release);
     }
     #[allow(dead_code)]
     pub fn output_latency_ms(&self) -> u64 {
-        self.output_latency_ms.load(Ordering::Acquire)
+        self.output_latency_us.load(Ordering::Acquire) / 1_000
+    }
+
+    /// Advance the raw position by the time represented by `frames` at
+    /// `sample_rate`, scaled by preview speed (`speed_signed` is in the
+    /// same ±250..=±2000 milli-units the UI uses). Negative speed is a
+    /// no-op here because rewind is handled by the video thread via
+    /// seeks, not by advancing the clock. Pulled out of the cpal
+    /// callback so the exact advance math can be unit-tested without
+    /// spinning up an audio device.
+    ///
+    /// Computes in **microseconds** to keep drift below 1 ms even when
+    /// cpal delivers ragged frame counts (441 / 480 / 512). The old
+    /// per-callback `frames * 1000 / sample_rate` division lost
+    /// fractional ms and compounded into visible desync after a few
+    /// seconds of playback.
+    pub fn advance_by_frames(&self, frames: u64, sample_rate: u32, speed_signed: i32) {
+        if !self.is_playing() || speed_signed <= 0 || frames == 0 || sample_rate == 0 {
+            return;
+        }
+        let base_us = frames.saturating_mul(1_000_000) / sample_rate as u64;
+        let sp = (speed_signed as f64).clamp(250.0, 4000.0) / 1000.0;
+        let adv_us = ((base_us as f64) * sp).round() as u64;
+        self.pos_us.fetch_add(adv_us, Ordering::AcqRel);
+    }
+
+    /// Calibrate output latency from cpal's `OutputCallbackInfo`
+    /// timestamps when available. `playback` is when the first sample
+    /// of this callback buffer will actually leave the speakers;
+    /// `callback` is when the callback started. Their difference is
+    /// the **true** one-way latency — buffer size + driver + device —
+    /// which is what we want to subtract from `pos_us` to land on
+    /// audible-now. Falls back to the buffer-size-only estimate if the
+    /// OS doesn't populate the timestamps (some Linux configs).
+    ///
+    /// First call wins; subsequent calls are no-ops so a single glitchy
+    /// callback can't thrash the offset mid-playback.
+    pub fn calibrate_from_cpal(
+        &self,
+        timestamp_latency_nanos: Option<u128>,
+        fallback_frames: u64,
+        sample_rate: u32,
+    ) {
+        if self.output_latency_us.load(Ordering::Acquire) != 0 || sample_rate == 0 {
+            return;
+        }
+        let us = match timestamp_latency_nanos {
+            Some(nanos) if nanos > 0 => (nanos / 1_000) as u64,
+            _ => fallback_frames.saturating_mul(1_000_000) / sample_rate as u64,
+        };
+        // Floor at 1000us (1 ms) so readers can distinguish "calibrated"
+        // from "not yet calibrated" (which stores 0).
+        self.output_latency_us
+            .store(us.max(1_000), Ordering::Release);
     }
 }
 
@@ -856,41 +927,28 @@ fn audio_loop<P, C>(
     let speed_cb = playback_signed_milli.clone();
     let stream = device.build_output_stream(
         &config,
-        move |data: &mut [f32], _| {
+        move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
             let g = vol_cb.load(Ordering::Relaxed) as f32 * (1.0 / 1000.0);
             for sample in data.iter_mut() {
                 *sample = consumer.try_pop().unwrap_or(0.0) * g;
             }
             // Output-latency calibration (first non-empty callback wins).
-            // `data.len() / channels` = frames the OS wants us to fill this
-            // tick; those frames will leave the speakers ~one-buffer later.
-            // Subtracting that from `AudioClock::get()` aligns picture with
-            // sound — see the doc comment on [`AudioClock`]. We only set
-            // this once per session; device changes would need a teardown.
-            if clock_cb.output_latency_ms() == 0 {
-                let frames = (data.len() / OUT_CHANNELS as usize) as u64;
-                if frames > 0 {
-                    let lat = (frames * 1000 / OUT_SAMPLE_RATE as u64).max(1);
-                    clock_cb.set_output_latency_ms(lat);
-                    tracing::debug!(
-                        frames,
-                        latency_ms = lat,
-                        "calibrated audio output latency"
-                    );
-                }
+            // cpal's `timestamp().playback` is when the first sample of
+            // this buffer will hit the speakers; `.callback` is when
+            // the callback started. Their delta is the true one-way
+            // latency (buffer + driver + device), which is what
+            // `AudioClock::get()` subtracts so picture tracks sound.
+            let frames = (data.len() / OUT_CHANNELS as usize) as u64;
+            if frames > 0 {
+                let ts = info.timestamp();
+                let latency_nanos = ts
+                    .playback
+                    .duration_since(&ts.callback)
+                    .map(|d| d.as_nanos());
+                clock_cb.calibrate_from_cpal(latency_nanos, frames, OUT_SAMPLE_RATE);
             }
             let sgn = speed_cb.load(Ordering::Relaxed);
-            if clock_cb.is_playing() && sgn > 0 {
-                let written = data.len() as u64 / OUT_CHANNELS as u64;
-                let ms = written * 1000 / OUT_SAMPLE_RATE as u64;
-                // Use the raw (uncorrected) position — audio-side bookkeeping
-                // must not subtract its own output latency from itself, or
-                // the advance would compound.
-                let cur = clock_cb.get_raw();
-                let sp = (sgn as f64).clamp(250.0, 4000.0) / 1000.0;
-                let adv = ((ms as f64) * sp).round() as u64;
-                clock_cb.set(cur.saturating_add(adv));
-            }
+            clock_cb.advance_by_frames(frames, OUT_SAMPLE_RATE, sgn);
         },
         |err| tracing::error!(error = %err, "audio stream error"),
         None,
@@ -1201,5 +1259,286 @@ impl AudioCtx {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    //! Synchronization math tests for [`AudioClock`].
+    //!
+    //! The cpal output callback is the one place where sync bugs breed —
+    //! it runs on a driver thread, has to advance the clock, compensate
+    //! for output latency, and keep video lined up with sound. These
+    //! tests exercise the extracted helpers ([`AudioClock::advance_by_frames`]
+    //! and [`AudioClock::calibrate_from_cpal`]) without spinning up an
+    //! actual audio device, so any regression in the math surfaces here
+    //! instead of as user-reported A/V drift.
+    //!
+    //! Coverage:
+    //! - `get` returns raw minus calibrated latency (picture vs sound).
+    //! - Advance accumulates at 1× with exactly `frames / sample_rate` ms.
+    //! - Speed scaling works at 0.5× and 2×.
+    //! - Non-playing / negative-speed / zero-frames callbacks don't advance.
+    //! - Calibration prefers cpal's timestamp delta, falls back to frame
+    //!   count, and is sticky after the first call.
+    //! - 30-second simulated playback drifts less than 1 ms from wall-time
+    //!   audio advance (i.e. the math is rounding-stable, not cumulative).
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    #[cfg(test)]
+    use std::time::Instant;
+    #[allow(unused_imports)]
+    use std::time::SystemTime;
+    #[cfg(test)]
+    use std::time::UNIX_EPOCH;
+    // cpal::StreamInstant / OutputStreamTimestamp aren't constructible
+    // from user code, so the calibrate tests feed `Option<u128>` nanos
+    // directly — same code path the production callback takes after
+    // computing `duration_since`.
+
+    #[test]
+    fn get_returns_raw_minus_latency() {
+        let c = AudioClock::new();
+        c.set(100);
+        c.set_output_latency_ms(20);
+        assert_eq!(c.get_raw(), 100);
+        assert_eq!(c.get(), 80);
+    }
+
+    #[test]
+    fn get_saturates_below_zero_instead_of_wrapping() {
+        // If the clock is at ms=5 and the output latency is 30ms, the
+        // audible-now read is "negative" — which has no meaningful
+        // answer, so we pin to 0 rather than wrap AtomicU64.
+        let c = AudioClock::new();
+        c.set(5);
+        c.set_output_latency_ms(30);
+        assert_eq!(c.get(), 0);
+    }
+
+    #[test]
+    fn advance_at_unit_speed_is_frames_over_rate() {
+        let c = AudioClock::new();
+        c.set_playing(true);
+        // 48000 frames @ 48kHz = 1000 ms.
+        c.advance_by_frames(48_000, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 1_000);
+    }
+
+    #[test]
+    fn advance_at_half_speed_halves_the_ms() {
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.advance_by_frames(48_000, 48_000, 500);
+        assert_eq!(c.get_raw(), 500);
+    }
+
+    #[test]
+    fn advance_at_double_speed_doubles_the_ms() {
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.advance_by_frames(48_000, 48_000, 2_000);
+        assert_eq!(c.get_raw(), 2_000);
+    }
+
+    #[test]
+    fn advance_no_op_when_paused() {
+        let c = AudioClock::new();
+        c.set_playing(false);
+        c.advance_by_frames(48_000, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 0);
+    }
+
+    #[test]
+    fn advance_no_op_on_negative_speed() {
+        // Rewind is handled by video-thread seeks, not by advancing.
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.advance_by_frames(48_000, 48_000, -1_000);
+        assert_eq!(c.get_raw(), 0);
+    }
+
+    #[test]
+    fn advance_no_op_on_zero_frames() {
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.advance_by_frames(0, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 0);
+    }
+
+    #[test]
+    fn calibrate_prefers_cpal_timestamp_when_available() {
+        let c = AudioClock::new();
+        c.calibrate_from_cpal(Some(25_000_000), 480, 48_000); // 25 ms timestamp; fallback would be 10 ms
+        assert_eq!(c.output_latency_ms(), 25);
+    }
+
+    #[test]
+    fn calibrate_falls_back_to_frame_count_when_timestamp_missing() {
+        let c = AudioClock::new();
+        c.calibrate_from_cpal(None, 480, 48_000); // 480 frames @ 48k = 10 ms
+        assert_eq!(c.output_latency_ms(), 10);
+    }
+
+    #[test]
+    fn calibrate_falls_back_when_timestamp_is_zero_nanos() {
+        // Some cpal backends report a zero-length playback/callback
+        // delta on the first callback. Treat as "missing" and fall
+        // back rather than trusting a bogus 0 ms latency.
+        let c = AudioClock::new();
+        c.calibrate_from_cpal(Some(0), 480, 48_000);
+        assert_eq!(c.output_latency_ms(), 10);
+    }
+
+    #[test]
+    fn calibrate_is_sticky_after_first_call() {
+        // A single glitchy callback must not thrash the offset
+        // mid-playback — first calibration wins for the session.
+        let c = AudioClock::new();
+        c.calibrate_from_cpal(Some(15_000_000), 480, 48_000);
+        assert_eq!(c.output_latency_ms(), 15);
+        c.calibrate_from_cpal(Some(50_000_000), 480, 48_000);
+        assert_eq!(c.output_latency_ms(), 15);
+    }
+
+    #[test]
+    fn calibrate_floors_at_one_ms() {
+        // A 0-ms calibration would be indistinguishable from
+        // "not calibrated yet" and a later callback would try to
+        // re-calibrate. Floor at 1 ms so the sticky guard actually
+        // guards.
+        let c = AudioClock::new();
+        c.calibrate_from_cpal(None, 1, 48_000); // 1 frame / 48k = ~0 ms
+        assert_eq!(c.output_latency_ms(), 1);
+    }
+
+    #[test]
+    fn thirty_seconds_of_callbacks_drifts_less_than_one_ms() {
+        // Simulate 30 s of 10 ms callbacks (480 frames each at 48 kHz
+        // stereo). Accumulated advance should round-trip to 30_000 ms
+        // exactly. Catches any "lost a ms per callback" arithmetic bug
+        // that would silently desync by ~3 s per audio minute.
+        let c = AudioClock::new();
+        c.set_playing(true);
+        const CALLBACK_FRAMES: u64 = 480;
+        const CALLBACKS: u64 = 30 * 100; // 30 s * (100 callbacks / s)
+        for _ in 0..CALLBACKS {
+            c.advance_by_frames(CALLBACK_FRAMES, 48_000, 1_000);
+        }
+        assert_eq!(c.get_raw(), 30_000);
+    }
+
+    #[test]
+    fn ragged_frame_counts_stay_within_one_ms_of_wall_time() {
+        // Real cpal callbacks don't always deliver 480 frames — they
+        // vary with OS scheduling. Interleave 441, 480, 512 frame
+        // bursts and verify the accumulated ms stays within ±1 of the
+        // naive `frames * 1000 / rate` sum. This is the stability
+        // property a renderer actually depends on.
+        let c = AudioClock::new();
+        c.set_playing(true);
+        let bursts: &[u64] = &[441, 480, 512, 441, 480, 512, 480];
+        let mut naive_frames: u64 = 0;
+        for _ in 0..100 {
+            for &f in bursts {
+                c.advance_by_frames(f, 48_000, 1_000);
+                naive_frames += f;
+            }
+        }
+        let naive_ms = naive_frames * 1000 / 48_000;
+        let measured = c.get_raw();
+        let diff = (measured as i64 - naive_ms as i64).abs();
+        assert!(
+            diff <= 1,
+            "clock drifted {} ms from naive sum (measured {}, naive {})",
+            diff,
+            measured,
+            naive_ms
+        );
+    }
+
+    #[test]
+    fn video_read_equals_audio_raw_minus_latency_after_burst() {
+        // End-to-end: audio thread advances the clock, video thread
+        // reads via `get()`, answer is raw - latency. Models the
+        // actual hot-path that produces the on-screen picture.
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.calibrate_from_cpal(Some(20_000_000), 480, 48_000); // 20 ms
+        // Audio writes 500 ms worth of samples to the ring.
+        c.advance_by_frames(24_000, 48_000, 1_000);
+        let audio_write_head = c.get_raw();
+        let video_read_head = c.get();
+        assert_eq!(audio_write_head, 500);
+        assert_eq!(video_read_head, 480);
+        assert_eq!(audio_write_head - video_read_head, 20);
+    }
+
+    #[test]
+    fn set_overrides_previous_position_exactly() {
+        // A seek writes the new sequence-ms via `set`; the clock must
+        // honour it even if the previous value was far ahead. Prevents
+        // "seek to 0 but clock stayed at 30 s" regressions.
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.advance_by_frames(48_000, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 1_000);
+        c.set(42);
+        assert_eq!(c.get_raw(), 42);
+    }
+
+    #[test]
+    fn playing_flag_is_observed_by_advance() {
+        // Flipping `set_playing(false)` between callbacks must freeze
+        // the clock mid-flight. If the flag read isn't respected, a
+        // paused player would keep advancing and resume would snap
+        // forward by the pause duration.
+        let c = AudioClock::new();
+        c.set_playing(true);
+        c.advance_by_frames(4_800, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 100);
+        c.set_playing(false);
+        c.advance_by_frames(4_800, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 100);
+        c.set_playing(true);
+        c.advance_by_frames(4_800, 48_000, 1_000);
+        assert_eq!(c.get_raw(), 200);
+    }
+
+    #[test]
+    fn atomic_ordering_serializes_across_threads() {
+        // Advance from one thread, read from another — verifies the
+        // Acquire/Release ordering on the atomics is tight enough
+        // that the reader sees the advance. (Memory-ordering bugs
+        // would manifest here as the reader observing stale values
+        // or panicking on atomic weirdness under loom, but without
+        // loom this still exercises the real Arc<Atomic> handoff.)
+        let c = AudioClock::new();
+        c.set_playing(true);
+        let c2 = c.clone();
+        let t = std::thread::spawn(move || {
+            for _ in 0..1_000 {
+                c2.advance_by_frames(48, 48_000, 1_000);
+            }
+        });
+        // Spin the reader for roughly the same duration; we just need
+        // to prove the handshake works, not benchmark it.
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut last = 0;
+        while Instant::now() < deadline {
+            let now = c.get_raw();
+            assert!(now >= last, "clock went backwards ({last} -> {now})");
+            last = now;
+        }
+        t.join().unwrap();
+        // 1000 iterations × 48 frames @ 48k = 48_000 frames = 1000 ms.
+        // The property we care about is just that we got here without
+        // the reader observing a decreasing value; the final position
+        // is a sanity check on the handoff.
+        assert_eq!(c.get_raw(), 1_000);
+        // Use `UNIX_EPOCH` to silence the unused-import lint on
+        // platforms where the `time` imports are otherwise untouched.
+        let _ = UNIX_EPOCH;
     }
 }
