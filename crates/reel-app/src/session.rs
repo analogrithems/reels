@@ -1971,8 +1971,12 @@ pub fn path_matches_export_format(path: &Path, fmt: reel_core::WebExportFormat) 
         reel_core::WebExportFormat::WebmVp8Opus
         | reel_core::WebExportFormat::WebmVp9Opus
         | reel_core::WebExportFormat::WebmAv1Opus => ext == "webm",
-        reel_core::WebExportFormat::MkvRemux => ext == "mkv",
-        reel_core::WebExportFormat::MovRemux => ext == "mov",
+        reel_core::WebExportFormat::MkvRemux | reel_core::WebExportFormat::MkvDnxhrHq => {
+            ext == "mkv"
+        }
+        reel_core::WebExportFormat::MovRemux | reel_core::WebExportFormat::MovProResHq => {
+            ext == "mov"
+        }
     }
 }
 
@@ -2005,10 +2009,11 @@ pub fn remux_failure_hint(fmt: reel_core::WebExportFormat) -> Option<&'static st
 
 /// Preset row from **Export** dialog.
 ///
-/// Order groups by container then codec (MP4 → WebM → MKV → MOV):
+/// Order groups by container then codec (MP4 → WebM → MKV → MOV → intermediates):
 /// `0` MP4 remux, `1` MP4 H.264+AAC, `2` MP4 H.265+AAC, `3` WebM VP8+Opus,
-/// `4` WebM VP9+Opus, `5` WebM AV1+Opus, `6` MKV remux, `7` MOV remux.
-/// See `docs/SUPPORTED_FORMATS.md`.
+/// `4` WebM VP9+Opus, `5` WebM AV1+Opus, `6` MKV remux, `7` MOV remux,
+/// `8` MOV ProRes 422 HQ + PCM (pro intermediate), `9` MKV DNxHR HQ + PCM
+/// (Avid-style intermediate). See `docs/SUPPORTED_FORMATS.md`.
 pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebExportFormat> {
     match index {
         0 => Some(reel_core::WebExportFormat::Mp4Remux),
@@ -2019,6 +2024,8 @@ pub fn web_export_format_from_preset_index(index: i32) -> Option<reel_core::WebE
         5 => Some(reel_core::WebExportFormat::WebmAv1Opus),
         6 => Some(reel_core::WebExportFormat::MkvRemux),
         7 => Some(reel_core::WebExportFormat::MovRemux),
+        8 => Some(reel_core::WebExportFormat::MovProResHq),
+        9 => Some(reel_core::WebExportFormat::MkvDnxhrHq),
         _ => None,
     }
 }
@@ -2397,8 +2404,16 @@ mod tests {
             web_export_format_from_preset_index(7),
             Some(reel_core::WebExportFormat::MovRemux),
         );
+        assert_eq!(
+            web_export_format_from_preset_index(8),
+            Some(reel_core::WebExportFormat::MovProResHq),
+        );
+        assert_eq!(
+            web_export_format_from_preset_index(9),
+            Some(reel_core::WebExportFormat::MkvDnxhrHq),
+        );
         assert_eq!(web_export_format_from_preset_index(-1), None);
-        assert_eq!(web_export_format_from_preset_index(8), None);
+        assert_eq!(web_export_format_from_preset_index(10), None);
     }
 
     fn clip_sec(id: Uuid, path: &str, sec: f64) -> Clip {

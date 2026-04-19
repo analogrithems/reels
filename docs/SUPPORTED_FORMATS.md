@@ -52,7 +52,7 @@ Hardware decoders on phones/tablets favor a **small set** of codecs; Reel on des
 
 | Kind | Typical formats | Reel playback | Reel export |
 | :-- | :-- | :-- | :-- |
-| **Video** | **HEVC (H.265)** (common on modern iPhones), **H.264**, **ProRes** (editing / pro) | **H.264 / HEVC:** yes (FFmpeg). **ProRes:** usually yes decode. | **Remux** when copy + mux allow; **no** `.mov`-only preset; **no** ProRes-specific export path. |
+| **Video** | **HEVC (H.265)** (common on modern iPhones), **H.264**, **ProRes** (editing / pro) | **H.264 / HEVC:** yes (FFmpeg). **ProRes:** usually yes decode. | **Remux** to MP4/MKV/MOV when copy + mux allow; **MOV — ProRes 422 HQ + PCM** intermediate preset for pro handoff (`prores_ks -profile:v 3` + `pcm_s16le`). |
 | **Audio** | **AAC**, **Apple Lossless (ALAC)**, **MP3** | **AAC / MP3:** yes. **ALAC:** typically yes (FFmpeg). | **Remux**; **WebM** → Opus. |
 | **Subtitles** | **iTT** (iTunes Timed Text), **CEA-608 / 708** | **No (subs)** in UI. | **Not** exposed. |
 
@@ -98,7 +98,7 @@ A practical **delivery default** for wide compatibility:
 1. **VP9 and/or AV1** as **WebM** (or MP4) **export options** — Align **export** with **web platform** rows (today: **VP8 + Opus** only for `.webm`).
 2. **HEVC + AAC MP4** preset — **Mobile-tier** delivery (iPhone-style), complementing the **MP4 — H.264 + AAC** preset that now ships (**shipped:** libx264 CRF 20 + AAC 160 kbps + `+faststart`).
 3. **Clear remux errors** — When MP4 rejects HEVC/AC‑3/etc., surface a path to **transcode presets** (licensing / mux constraints). The **MP4 — H.264 + AAC** preset is the existing MP4-side fallback; update error copy to point users at it when remux stream-copy fails.
-4. **MOV export** and/or **ProRes / DNx** handoff — **iOS / pro** workflows.
+4. ~~**MOV export** and/or **ProRes / DNx** handoff — **iOS / pro** workflows.~~ **Shipped:** **MOV** remux preset, **MOV — ProRes 422 HQ + PCM** and **MKV — DNxHR HQ + PCM** intermediate presets (`prores_ks -profile:v 3` / `dnxhd -profile:v dnxhr_hq`, both with `pcm_s16le`).
 5. **Subtitles — WebVTT, SRT, TTML** (preview, edit, mux or burn-in); **ASS/SSA** as a follow-on for styled captions.
 6. **Multi-audio** stream selection — **First audio only** today.
 

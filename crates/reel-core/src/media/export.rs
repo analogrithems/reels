@@ -86,10 +86,24 @@ pub enum WebExportFormat {
     /// delivery uploads can start without a post-mux index rewrite, same as
     /// the MP4 remux path.
     MovRemux,
+    /// QuickTime `.mov`; **Apple ProRes 422 HQ + PCM** intermediate — pro
+    /// handoff to Final Cut / DaVinci / Premiere. Always transcodes (there's
+    /// no ProRes stream-copy path) via `prores_ks -profile:v 3` at
+    /// `yuv422p10le`, paired with `pcm_s16le` audio. Output is visually
+    /// lossless at far smaller sizes than uncompressed, but considerably
+    /// larger than any web preset — this is a mastering / finishing format,
+    /// not a delivery target.
+    MovProResHq,
+    /// Matroska `.mkv`; **DNxHR HQ + PCM** intermediate — Avid-style pro
+    /// handoff. Always transcodes via `dnxhd -profile:v dnxhr_hq` at
+    /// `yuv422p`, paired with `pcm_s16le` audio. DNxHR HQ targets 4:2:2
+    /// 8-bit mastering; pick ProRes 422 HQ if the downstream tool prefers
+    /// Apple codecs.
+    MkvDnxhrHq,
 }
 
 impl WebExportFormat {
-    pub const ALL: [WebExportFormat; 8] = [
+    pub const ALL: [WebExportFormat; 10] = [
         WebExportFormat::Mp4Remux,
         WebExportFormat::Mp4H264Aac,
         WebExportFormat::Mp4H265Aac,
@@ -98,6 +112,8 @@ impl WebExportFormat {
         WebExportFormat::WebmAv1Opus,
         WebExportFormat::MkvRemux,
         WebExportFormat::MovRemux,
+        WebExportFormat::MovProResHq,
+        WebExportFormat::MkvDnxhrHq,
     ];
 
     pub fn file_extension(self) -> &'static str {
@@ -108,8 +124,8 @@ impl WebExportFormat {
             WebExportFormat::WebmVp8Opus
             | WebExportFormat::WebmVp9Opus
             | WebExportFormat::WebmAv1Opus => "webm",
-            WebExportFormat::MkvRemux => "mkv",
-            WebExportFormat::MovRemux => "mov",
+            WebExportFormat::MkvRemux | WebExportFormat::MkvDnxhrHq => "mkv",
+            WebExportFormat::MovRemux | WebExportFormat::MovProResHq => "mov",
         }
     }
 }
@@ -1085,6 +1101,34 @@ fn append_mixed_audio_format_args(
                 "+faststart",
             ]);
         }
+        // ProRes and DNxHR are intermediate masters — no stream-copy path
+        // (amix emits filter-graph PCM anyway) — and amix output is PCM
+        // already so we just pipe it into pcm_s16le. The same arms apply
+        // whether or not a video `-vf` chain is present.
+        (WebExportFormat::MovProResHq, _) => {
+            cmd.args([
+                "-c:v",
+                "prores_ks",
+                "-profile:v",
+                "3",
+                "-pix_fmt",
+                "yuv422p10le",
+                "-c:a",
+                "pcm_s16le",
+            ]);
+        }
+        (WebExportFormat::MkvDnxhrHq, _) => {
+            cmd.args([
+                "-c:v",
+                "dnxhd",
+                "-profile:v",
+                "dnxhr_hq",
+                "-pix_fmt",
+                "yuv422p",
+                "-c:a",
+                "pcm_s16le",
+            ]);
+        }
     }
 }
 
@@ -1225,6 +1269,34 @@ fn append_dual_mux_format_args_with_vf(
                 "copy",
                 "-movflags",
                 "+faststart",
+            ]);
+        }
+        // ProRes / DNxHR intermediates: always transcode video, always
+        // transcode audio to PCM (intermediates don't gain anything from
+        // stream-copying the dedicated audio lane, and PCM is the standard
+        // pairing for Avid / Apple finishing workflows).
+        (WebExportFormat::MovProResHq, _) => {
+            cmd.args([
+                "-c:v",
+                "prores_ks",
+                "-profile:v",
+                "3",
+                "-pix_fmt",
+                "yuv422p10le",
+                "-c:a",
+                "pcm_s16le",
+            ]);
+        }
+        (WebExportFormat::MkvDnxhrHq, _) => {
+            cmd.args([
+                "-c:v",
+                "dnxhd",
+                "-profile:v",
+                "dnxhr_hq",
+                "-pix_fmt",
+                "yuv422p",
+                "-c:a",
+                "pcm_s16le",
             ]);
         }
     }
@@ -1387,6 +1459,32 @@ fn append_format_args_with_vf(cmd: &mut Command, format: WebExportFormat, vf_cha
                 "aac",
                 "-movflags",
                 "+faststart",
+            ]);
+        }
+        // ProRes / DNxHR intermediates: single-input path (embedded audio
+        // or no audio). Always transcode video; audio goes to PCM.
+        (WebExportFormat::MovProResHq, _) => {
+            cmd.args([
+                "-c:v",
+                "prores_ks",
+                "-profile:v",
+                "3",
+                "-pix_fmt",
+                "yuv422p10le",
+                "-c:a",
+                "pcm_s16le",
+            ]);
+        }
+        (WebExportFormat::MkvDnxhrHq, _) => {
+            cmd.args([
+                "-c:v",
+                "dnxhd",
+                "-profile:v",
+                "dnxhr_hq",
+                "-pix_fmt",
+                "yuv422p",
+                "-c:a",
+                "pcm_s16le",
             ]);
         }
     }
@@ -1556,6 +1654,26 @@ pub fn ffmpeg_args_for_format(format: WebExportFormat) -> Vec<&'static str> {
         ],
         WebExportFormat::MkvRemux => vec!["-c", "copy"],
         WebExportFormat::MovRemux => vec!["-c", "copy", "-movflags", "+faststart"],
+        WebExportFormat::MovProResHq => vec![
+            "-c:v",
+            "prores_ks",
+            "-profile:v",
+            "3",
+            "-pix_fmt",
+            "yuv422p10le",
+            "-c:a",
+            "pcm_s16le",
+        ],
+        WebExportFormat::MkvDnxhrHq => vec![
+            "-c:v",
+            "dnxhd",
+            "-profile:v",
+            "dnxhr_hq",
+            "-pix_fmt",
+            "yuv422p",
+            "-c:a",
+            "pcm_s16le",
+        ],
     }
 }
 

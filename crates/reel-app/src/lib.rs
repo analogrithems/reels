@@ -277,6 +277,12 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
         reel_core::WebExportFormat::WebmAv1Opus => d.add_filter("WebM (AV1 + Opus)", &["webm"]),
         reel_core::WebExportFormat::MkvRemux => d.add_filter("Matroska", &["mkv"]),
         reel_core::WebExportFormat::MovRemux => d.add_filter("QuickTime", &["mov"]),
+        reel_core::WebExportFormat::MovProResHq => {
+            d.add_filter("QuickTime (ProRes 422 HQ + PCM)", &["mov"])
+        }
+        reel_core::WebExportFormat::MkvDnxhrHq => {
+            d.add_filter("Matroska (DNxHR HQ + PCM)", &["mkv"])
+        }
     }
 }
 
@@ -3261,13 +3267,13 @@ mod ui_smoke_tests {
         window.set_media_ready(false);
         assert!(!window.get_media_ready());
 
-        // Round-trip: export preset indices must accept the full 0..=7 range
+        // Round-trip: export preset indices must accept the full 0..=9 range
         // so the Slint picker stays in sync with
         // `web_export_format_from_preset_index` (session.rs):
         // 0=Mp4Remux, 1=Mp4H264Aac, 2=Mp4H265Aac,
         // 3=WebmVp8Opus, 4=WebmVp9Opus, 5=WebmAv1Opus,
-        // 6=MkvRemux, 7=MovRemux.
-        for idx in 0..=7 {
+        // 6=MkvRemux, 7=MovRemux, 8=MovProResHq, 9=MkvDnxhrHq.
+        for idx in 0..=9 {
             window.set_export_preset_index(idx);
             assert_eq!(window.get_export_preset_index(), idx);
         }
@@ -3984,6 +3990,8 @@ mod export_payload_tests {
             (5, reel_core::WebExportFormat::WebmAv1Opus, "webm"),
             (6, reel_core::WebExportFormat::MkvRemux, "mkv"),
             (7, reel_core::WebExportFormat::MovRemux, "mov"),
+            (8, reel_core::WebExportFormat::MovProResHq, "mov"),
+            (9, reel_core::WebExportFormat::MkvDnxhrHq, "mkv"),
         ] {
             let dest = PathBuf::from(format!("/tmp/preset-{idx}.{ext}"));
             let stub = StubSaveDialog::always(Some(dest));
