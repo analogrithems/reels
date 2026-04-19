@@ -1711,6 +1711,11 @@ pub fn run() -> Result<()> {
             w.set_video_fit_mode(0);
             w.set_preview_zoom_actual(false);
             w.set_preview_zoom_percent(100.0);
+            // Re-center — fit-to-viewport doesn't overflow, so any carried
+            // pan would just look like a stuck offset next time the user
+            // zooms back in.
+            w.set_preview_pan_x(0.0);
+            w.set_preview_pan_y(0.0);
             save_preview_zoom_prefs(&app_prefs, &w);
         });
     }
@@ -1723,6 +1728,10 @@ pub fn run() -> Result<()> {
                 return;
             };
             w.set_preview_zoom_actual(true);
+            // Actual-size on a > viewport-sized frame starts centred — the
+            // user can then pan from there.
+            w.set_preview_pan_x(0.0);
+            w.set_preview_pan_y(0.0);
             save_preview_zoom_prefs(&app_prefs, &w);
         });
     }
@@ -3065,6 +3074,8 @@ pub fn run() -> Result<()> {
                 w.set_video_fit_mode(0);
                 w.set_preview_zoom_actual(false);
                 w.set_preview_zoom_percent(100.0);
+                w.set_preview_pan_x(0.0);
+                w.set_preview_pan_y(0.0);
                 save_preview_zoom_prefs(&app_prefs, &w);
             }
         });
@@ -3078,6 +3089,8 @@ pub fn run() -> Result<()> {
                 w.set_video_fit_mode(1);
                 w.set_preview_zoom_actual(false);
                 w.set_preview_zoom_percent(100.0);
+                w.set_preview_pan_x(0.0);
+                w.set_preview_pan_y(0.0);
                 save_preview_zoom_prefs(&app_prefs, &w);
             }
         });
@@ -3091,6 +3104,8 @@ pub fn run() -> Result<()> {
                 w.set_video_fit_mode(0);
                 w.set_preview_zoom_actual(false);
                 w.set_preview_zoom_percent(100.0);
+                w.set_preview_pan_x(0.0);
+                w.set_preview_pan_y(0.0);
                 save_preview_zoom_prefs(&app_prefs, &w);
             }
         });

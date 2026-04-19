@@ -18,7 +18,7 @@
 - **View → Video Tracks** / **Audio Tracks** / **Subtitle Tracks** — each toggles whether the corresponding **timeline row group** (header + lanes) is shown. All three default to **on**; state is saved in **`prefs.json`**. If all three are off, the **timeline strip** under the preview is hidden until you turn at least one back on (**View** menu).
 - **View → Show Status** — toggles the **codec / path / save** line in the bottom strip (saved in **`prefs.json`**). Off by default; export progress and transient status messages still use the same strip when needed.
 - **View → Always Show Controls** — keeps the floating transport from auto-hiding (saved in **`prefs.json`**).
-- **View → Zoom In** / **Zoom Out** (25% steps, **25%–400%** of the **fit** size for the current **Window → Fit** or **Fill** mode), **Zoom to Fit** (contain + 100% scale — same reset as **Window → Fit**), and **Actual Size** (decoded frame drawn at **1:1** logical pixels). Zoom prefs are saved in **`prefs.json`**. Shortcuts **Ctrl+=** / **Ctrl+-** / **Ctrl+0** (**⌘** on macOS for the same keys); zoom shortcuts work without media. When zoomed in, overflow is **clipped** (no pan yet).
+- **View → Zoom In** / **Zoom Out** (25% steps, **25%–400%** of the **fit** size for the current **Window → Fit** or **Fill** mode), **Zoom to Fit** (contain + 100% scale — same reset as **Window → Fit**), and **Actual Size** (decoded frame drawn at **1:1** logical pixels). Zoom prefs are saved in **`prefs.json`**. Shortcuts **Ctrl+=** / **Ctrl+-** / **Ctrl+0** (**⌘** on macOS for the same keys); zoom shortcuts work without media. **Pan when zoomed** — when the scaled image overflows the preview rect (zooming past fit, or **Actual Size** on a ≥ viewport-sized source), left-button drag on the preview shifts the frame via `preview-pan-x` / `preview-pan-y` so clipped regions become inspectable. Cursor switches to `grab` / `grabbing` over the draggable area. Offsets are clamped so the image edge never leaves the preview rect; the drag is ephemeral (not saved) and auto-resets to centred on **Zoom to Fit**, **Actual Size**, and **Window → Fit / Fill / Center**.
 - **View → Enter Fullscreen** / **Exit Fullscreen** — toggles platform fullscreen; **Esc** exits fullscreen (and when not fullscreen dismisses the **Trim Clip…** sheet, export preset sheet, or in-progress export — see **Keyboard shortcuts**).
 - **Window → Fit / Fill / Center** (Slint `image-fit`: contain vs cover) — each action also resets preview zoom to **100%** and turns off **Actual Size**, matching **View → Zoom to Fit** semantics for scale.
 - **Always on Top**.
@@ -99,8 +99,8 @@ Priorities shift; this list is indicative. For **phased planning** (U2 sub-miles
 
 ### View & playback
 
-- **Zoom to Video** (optional semantic — e.g. match **Fill**); **pan** when zoomed past the viewport (today: clip only).
-- **Fullscreen** — optional duplicate control on the **playback** toolbar (menu **View → Enter Fullscreen** exists).
+- ~~**Zoom to Video**; **pan** when zoomed past the viewport~~ — **shipped**: pan lives on the preview's wake-chrome TouchArea (drag when the scaled image overflows), and **Zoom to Video** is exposed as **Window → Fill** (`video-fit-mode = cover`). See **View & playback** above.
+- ~~**Fullscreen** on **playback** toolbar~~ — **shipped**: icon button on the floating transport chrome beside Volume (toggles `window-fullscreen`).
 
 ### UX / platform
 

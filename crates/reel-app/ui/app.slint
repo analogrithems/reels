@@ -785,6 +785,13 @@ export component AppWindow inherits Window {
     in-out property <float> preview-zoom-percent: 100.0;
     /// **True** = 1:1 logical pixels for the preview frame.
     in-out property <bool> preview-zoom-actual: false;
+    /// **Pan offsets** (logical pixels) applied when the scaled image exceeds
+    /// the preview rect on an axis. Positive x shifts the image right
+    /// (reveals left content); positive y shifts down. Ephemeral — not
+    /// persisted to prefs. Auto-clamped in `preview-clip` so the image edge
+    /// can't be dragged past the preview edge.
+    in-out property <float> preview-pan-x: 0.0;
+    in-out property <float> preview-pan-y: 0.0;
     /// Mirrors OS fullscreen when toggled from the app (Esc exits).
     in-out property <bool> window-fullscreen: false;
 
@@ -1611,9 +1618,21 @@ export component AppWindow inherits Window {
                 property <float> s-base: root.video-fit-mode == 1 ? s-cover : s-contain;
                 property <float> img-w: root.preview-zoom-actual ? fw : fw * s-base * (root.preview-zoom-percent / 100.0);
                 property <float> img-h: root.preview-zoom-actual ? fh : fh * s-base * (root.preview-zoom-percent / 100.0);
+                // Pan envelope — how far the centered image can shift on each
+                // axis before its edge leaves the preview rect. `0` on an
+                // axis where the image fits inside the viewport, so pan is
+                // effectively disabled there even when the other axis is
+                // panning. Raw `preview-pan-*` is held verbatim at root so
+                // zooming out and back in doesn't snap to 0; the clamp below
+                // just caps what's rendered.
+                property <float> max-pan-x: max(0.0, (img-w - vw) / 2.0);
+                property <float> max-pan-y: max(0.0, (img-h - vh) / 2.0);
+                property <float> pan-x-clamped: max(-max-pan-x, min(max-pan-x, root.preview-pan-x));
+                property <float> pan-y-clamped: max(-max-pan-y, min(max-pan-y, root.preview-pan-y));
+                property <bool> pannable: max-pan-x > 0.0 || max-pan-y > 0.0;
                 Image {
-                    x: (parent.width - img-w * 1px) / 2;
-                    y: (parent.height - img-h * 1px) / 2;
+                    x: (parent.width - img-w * 1px) / 2 + pan-x-clamped * 1px;
+                    y: (parent.height - img-h * 1px) / 2 + pan-y-clamped * 1px;
                     width: img-w * 1px;
                     height: img-h * 1px;
                     source: root.current-frame;
@@ -1648,13 +1667,33 @@ export component AppWindow inherits Window {
 
             // Full-viewport hit target for waking the transport chrome. Keep keyboard focus on `main-view-focus`
             // so Space / shortcuts work (TouchArea can take focus on click otherwise).
+            // Also handles **pan when zoomed**: when `preview-clip.pannable`
+            // (image overflows the preview rect on at least one axis),
+            // left-button drag updates `root.preview-pan-*` so the user can
+            // inspect clipped edges. The clamp lives in `preview-clip`, so
+            // the raw values held here can drift past the current envelope
+            // without breaking anything — the rendered offset stays bounded.
             TouchArea {
                 width: 100%;
                 height: 100%;
+                mouse-cursor: preview-clip.pannable ? (self.pressed ? grabbing : grab) : default;
+                property <float> press-pan-x: 0.0;
+                property <float> press-pan-y: 0.0;
                 pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        self.press-pan-x = root.preview-pan-x;
+                        self.press-pan-y = root.preview-pan-y;
+                    }
                     if (event.kind == PointerEventKind.move || event.kind == PointerEventKind.down) {
                         wake-transport-chrome();
                     }
+                }
+                moved => {
+                    if (preview-clip.pannable) {
+                        root.preview-pan-x = self.press-pan-x + (self.mouse-x - self.pressed-x) / 1px;
+                        root.preview-pan-y = self.press-pan-y + (self.mouse-y - self.pressed-y) / 1px;
+                    }
+                    wake-transport-chrome();
                 }
                 scroll-event(event) => {
                     wake-transport-chrome();
