@@ -49,6 +49,7 @@ fn sample_project() -> Project {
             id: track_id,
             kind: TrackKind::Video,
             clip_ids: vec![clip_id],
+            gain_db: 0.0,
             extensions: Default::default(),
         }],
         created_at: "2026-04-16T12:00:00Z".into(),

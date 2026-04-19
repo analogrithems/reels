@@ -16,7 +16,8 @@ pub use media::decoder::{DecodeCmd, DecodedFrame};
 pub use media::{
     build_mute_substitution_lane, export_concat_timeline, export_concat_timeline_oriented,
     export_concat_with_audio, export_concat_with_audio_lanes_oriented,
-    export_concat_with_audio_oriented, export_with_ffmpeg, ffmpeg_args_for_format,
+    export_concat_with_audio_lanes_oriented_with_gains, export_concat_with_audio_oriented,
+    export_with_ffmpeg, ffmpeg_args_for_format,
     generate_silence_wav, grab_frame, parse_srt_file, parse_srt_str, probe_srt_file,
     AudioStreamInfo, ExportProgressFn, FfmpegProbe, MediaMetadata, MediaProbe, SrtCue, SrtProbe,
     VideoStreamInfo, WebExportFormat,

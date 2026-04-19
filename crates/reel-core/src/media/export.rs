@@ -454,6 +454,72 @@ pub fn export_concat_with_audio_lanes_oriented(
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
+    // Gain-less convenience: delegate to the gain-aware entry point with
+    // `None`. Keeps every existing call site byte-stable.
+    export_concat_with_audio_lanes_oriented_with_gains(
+        video_segments,
+        audio_lanes,
+        None,
+        orientation,
+        scale,
+        subtitles,
+        mute_audio,
+        output,
+        format,
+        cancel,
+        on_ratio,
+    )
+}
+
+/// Gain-aware entry point. `lane_gains_db` — when `Some` — must have the same
+/// length as `audio_lanes`; each element is the per-lane volume adjustment in
+/// decibels (0.0 = unity, unaltered).
+///
+/// ### Routing rules
+///
+/// * **0 lanes / mute**: video-only path (gain irrelevant).
+/// * **1 lane, unity gain**: existing single-audio dual-mux path — keeps
+///   `-c:a copy` stream-copy eligibility on remux presets. This is the fast
+///   case we must preserve for the "no per-lane gain configured" majority.
+/// * **1 lane, non-zero gain**: routes through the amix filter with
+///   `inputs=1` so `volume=XdB` can slot in front — amix-with-1-input is a
+///   passthrough, which means the only thing the filter graph actually does
+///   is apply the user's gain. Audio transcodes as a side effect (filter-
+///   graph output can never stream-copy).
+/// * **2+ lanes** (any gain configuration): amix path, per-lane `volume=XdB`
+///   prepended on each non-unity input.
+///
+/// ### Why route N=1 through amix for gain
+///
+/// The single-audio dual-mux path is a direct `-map 1:a:0` that accepts only
+/// a `-c:a` codec switch. Injecting `volume=XdB` there would require a parallel
+/// branch with `-filter:a` and container-specific codec selection that the
+/// amix path already solves. Routing N=1 through amix pays the cost of one
+/// transcode for a ~10 loc function instead of duplicating the codec dispatch.
+pub fn export_concat_with_audio_lanes_oriented_with_gains(
+    video_segments: &[(PathBuf, f64, f64)],
+    audio_lanes: &[Vec<(PathBuf, f64, f64)>],
+    lane_gains_db: Option<&[f32]>,
+    orientation: Option<ClipOrientation>,
+    scale: Option<ClipScale>,
+    subtitles: Option<&Path>,
+    mute_audio: bool,
+    output: &Path,
+    format: WebExportFormat,
+    cancel: Option<&AtomicBool>,
+    on_ratio: Option<ExportProgressFn>,
+) -> Result<(), ExportError> {
+    if let Some(g) = lane_gains_db {
+        if g.len() != audio_lanes.len() {
+            return Err(ExportError {
+                message: format!(
+                    "timeline export: lane_gains_db length {} != audio_lanes length {}",
+                    g.len(),
+                    audio_lanes.len()
+                ),
+            });
+        }
+    }
     if mute_audio || audio_lanes.is_empty() {
         return export_concat_timeline_oriented(
             video_segments,
@@ -467,7 +533,13 @@ pub fn export_concat_with_audio_lanes_oriented(
             on_ratio,
         );
     }
-    if audio_lanes.len() == 1 {
+    // Compute the "any non-unity gain?" flag once — this is what moves a
+    // single-lane export off the fast dual-mux path onto the amix path.
+    let any_gain = lane_gains_db
+        .map(|g| g.iter().any(|db| *db != 0.0))
+        .unwrap_or(false);
+
+    if audio_lanes.len() == 1 && !any_gain {
         return export_concat_with_audio_oriented(
             video_segments,
             Some(audio_lanes[0].as_slice()),
@@ -484,6 +556,7 @@ pub fn export_concat_with_audio_lanes_oriented(
     export_concat_with_audio_mix_oriented(
         video_segments,
         audio_lanes,
+        lane_gains_db,
         orientation,
         scale,
         subtitles,
@@ -646,6 +719,7 @@ pub fn export_concat_with_audio_oriented(
 fn export_concat_with_audio_mix_oriented(
     video_segments: &[(PathBuf, f64, f64)],
     audio_lanes: &[Vec<(PathBuf, f64, f64)>],
+    lane_gains_db: Option<&[f32]>,
     orientation: Option<ClipOrientation>,
     scale: Option<ClipScale>,
     subtitles: Option<&Path>,
@@ -654,10 +728,25 @@ fn export_concat_with_audio_mix_oriented(
     cancel: Option<&AtomicBool>,
     on_ratio: Option<ExportProgressFn>,
 ) -> Result<(), ExportError> {
-    if audio_lanes.len() < 2 {
+    // Previously this guarded `< 2` but the gain-aware dispatcher now routes
+    // N=1 through here when a non-zero gain is present (amix with `inputs=1`
+    // is a passthrough that lets `volume=XdB` plug in cleanly without a
+    // bespoke single-audio filter path). Empty still has to fail.
+    if audio_lanes.is_empty() {
         return Err(ExportError {
-            message: "timeline export: amix requires at least 2 audio lanes".into(),
+            message: "timeline export: amix requires at least 1 audio lane".into(),
         });
+    }
+    if let Some(g) = lane_gains_db {
+        if g.len() != audio_lanes.len() {
+            return Err(ExportError {
+                message: format!(
+                    "timeline export: lane_gains_db length {} != audio_lanes length {}",
+                    g.len(),
+                    audio_lanes.len()
+                ),
+            });
+        }
     }
     if video_segments.is_empty() {
         return Err(ExportError {
@@ -731,7 +820,8 @@ fn export_concat_with_audio_mix_oriented(
     }
 
     let n = audio_lanes.len();
-    let filter_complex = build_amix_filter_complex(n, vf_chain.as_deref());
+    let filter_complex =
+        build_amix_filter_complex_with_gains(n, vf_chain.as_deref(), lane_gains_db);
 
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-hide_banner")
@@ -775,15 +865,77 @@ fn export_concat_with_audio_mix_oriented(
 /// at ffmpeg input index 1 because the single video concat lives at index 0.
 /// When `vf_chain` is present, the mapped video also routes through filter_complex
 /// as `[0:v:0]VF[vout]` so callers can `-map [vout]`.
+///
+/// Thin wrapper around [`build_amix_filter_complex_with_gains`] for callers
+/// that don't need per-lane volume adjustment. Preserves the historical
+/// signature so older tests keep compiling unchanged.
+#[cfg(test)]
 fn build_amix_filter_complex(n: usize, vf_chain: Option<&str>) -> String {
-    debug_assert!(n >= 2, "amix path requires >= 2 lanes");
+    build_amix_filter_complex_with_gains(n, vf_chain, None)
+}
+
+/// Gain-aware variant of [`build_amix_filter_complex`].
+///
+/// When `gains` is `Some`, each non-zero entry emits a prefix
+/// `[i+1:a:0]volume=XdB[aI];` clause ahead of the amix node, and the
+/// corresponding amix input is relabeled from `[i+1:a:0]` to `[aI]`. Unity
+/// entries (and the whole `None` case) fall through to the plain `[i+1:a:0]`
+/// wire we've always emitted — so byte-for-byte parity with today's output
+/// when nothing has gain set.
+///
+/// We stringify dB with `"{:.2}"` (six-char cap: `-12.50`, `0.50`, etc.) to
+/// keep the filter graph readable in logs while preserving enough precision
+/// for any slider the UI realistically ships (real audio work doesn't want
+/// sub-0.01 dB anyway — tenths or hundredths of a dB are inaudible).
+///
+/// `inputs=1` on amix is a valid ffmpeg passthrough, so a single-lane gain
+/// export routes through the identical filter-graph skeleton as N=2 — no
+/// special-case code for N=1.
+fn build_amix_filter_complex_with_gains(
+    n: usize,
+    vf_chain: Option<&str>,
+    gains: Option<&[f32]>,
+) -> String {
+    debug_assert!(n >= 1, "amix path requires >= 1 lane");
+    if let Some(g) = gains {
+        debug_assert_eq!(
+            g.len(),
+            n,
+            "gain vector length must match lane count (dispatcher already checks this)"
+        );
+    }
     let mut s = String::new();
     if let Some(chain) = vf_chain {
         s.push_str(&format!("[0:v:0]{chain}[vout];"));
     }
+
+    // First pass: emit any per-lane `volume=XdB` prefilters.
+    // `[i+1:a:0]volume=XdB[aI]` — we relabel non-unity lanes so the amix
+    // section below can reference `[aI]` for those and `[i+1:a:0]` for the
+    // pure passthroughs.
+    if let Some(g) = gains {
+        for (i, db) in g.iter().enumerate() {
+            if *db != 0.0 {
+                let input_idx = i + 1;
+                s.push_str(&format!(
+                    "[{input_idx}:a:0]volume={db:.2}dB[a{i}];"
+                ));
+            }
+        }
+    }
+
+    // Second pass: list the amix inputs, picking the relabeled tap for any
+    // lane that got a volume prefilter and the raw `[i+1:a:0]` otherwise.
     for i in 0..n {
-        let input_idx = i + 1;
-        s.push_str(&format!("[{input_idx}:a:0]"));
+        let is_boosted = gains
+            .map(|g| g[i] != 0.0)
+            .unwrap_or(false);
+        if is_boosted {
+            s.push_str(&format!("[a{i}]"));
+        } else {
+            let input_idx = i + 1;
+            s.push_str(&format!("[{input_idx}:a:0]"));
+        }
     }
     s.push_str(&format!(
         "amix=inputs={n}:duration=longest:normalize=0[aout]"
@@ -1557,6 +1709,58 @@ mod tests {
         assert_eq!(video, "[0:v:0]transpose=1,scale=-2:720[vout]");
         assert_eq!(
             audio, "[1:a:0][2:a:0]amix=inputs=2:duration=longest:normalize=0[aout]"
+        );
+    }
+
+    #[test]
+    fn amix_filter_complex_with_unity_gains_matches_no_gains() {
+        // Passing `Some(&[0.0, 0.0])` must emit the exact same graph as `None`
+        // — that's the whole reason the "skip non-unity only" optimization
+        // exists. Otherwise every vanilla multi-lane export would gratuitously
+        // transcode through volume filters that do nothing.
+        let without = build_amix_filter_complex_with_gains(2, None, None);
+        let with_unity = build_amix_filter_complex_with_gains(2, None, Some(&[0.0, 0.0]));
+        assert_eq!(without, with_unity);
+    }
+
+    #[test]
+    fn amix_filter_complex_injects_volume_filter_for_non_unity_gain() {
+        // Lane 0 boosted +6 dB, lane 1 left alone: only lane 0 gets a
+        // volume prefilter, lane 1's amix input stays on the raw
+        // `[2:a:0]` tap.
+        let fc = build_amix_filter_complex_with_gains(2, None, Some(&[6.0, 0.0]));
+        assert_eq!(
+            fc,
+            "[1:a:0]volume=6.00dB[a0];[a0][2:a:0]amix=inputs=2:duration=longest:normalize=0[aout]"
+        );
+    }
+
+    #[test]
+    fn amix_filter_complex_single_lane_gain_uses_amix_passthrough() {
+        // N=1 with gain must route through amix (the dispatcher relies on
+        // this). `amix=inputs=1` is a ffmpeg passthrough; the actual audio
+        // change comes from the `volume=XdB` prefilter ahead of it.
+        let fc = build_amix_filter_complex_with_gains(1, None, Some(&[-3.25]));
+        assert_eq!(
+            fc,
+            "[1:a:0]volume=-3.25dB[a0];[a0]amix=inputs=1:duration=longest:normalize=0[aout]"
+        );
+    }
+
+    #[test]
+    fn amix_filter_complex_negative_gain_formats_with_sign_and_two_decimals() {
+        // Attenuation (negative dB) is the common case for replace/overlay
+        // mixing. Verify the string formatting — `-12.00dB`, not `-12dB` —
+        // so ffmpeg's `volume` filter parses unambiguously and logs look
+        // consistent across lanes.
+        let fc = build_amix_filter_complex_with_gains(3, None, Some(&[0.0, -12.0, 3.5]));
+        assert!(fc.contains("[2:a:0]volume=-12.00dB[a1];"), "got {fc}");
+        assert!(fc.contains("[3:a:0]volume=3.50dB[a2];"), "got {fc}");
+        // Lane 0 has unity gain ⇒ no volume clause for it, amix reads raw tap.
+        assert!(!fc.contains("[1:a:0]volume"), "unity lane must not get a volume filter: {fc}");
+        assert!(
+            fc.contains("[1:a:0][a1][a2]amix=inputs=3"),
+            "amix input list must mix raw taps and relabeled taps per-lane: {fc}"
         );
     }
 

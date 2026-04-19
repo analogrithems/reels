@@ -65,6 +65,7 @@ pub fn project_from_media_path_with_probe(
         id: track_id,
         kind: TrackKind::Video,
         clip_ids: vec![clip_id],
+        gain_db: 0.0,
         extensions: Default::default(),
     });
     Ok(p)

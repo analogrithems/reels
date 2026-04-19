@@ -180,8 +180,18 @@ fn audio_track_row_lines(p: &Project) -> Vec<String> {
                 .map(|c| (c.out_point - c.in_point) * 1000.0)
                 .sum();
             let clip_word = if n == 1 { "clip" } else { "clips" };
+            // Unity gain is the overwhelming default — we keep the label stable
+            // for that case so existing tests / UI snapshots don't drift, and only
+            // append a dB suffix when the lane has actually been boosted/cut. The
+            // sign is preserved explicitly so users can tell "+3 dB" from "3 dB"
+            // at a glance.
+            let gain_suffix = if t.gain_db != 0.0 {
+                format!(" · {:+.1} dB", t.gain_db)
+            } else {
+                String::new()
+            };
             format!(
-                "A{} · audio · {n} {clip_word} · {}",
+                "A{} · audio · {n} {clip_word} · {}{gain_suffix}",
                 idx + 1,
                 timecode::format_ms_alone(dur_ms as f32)
             )
@@ -344,6 +354,7 @@ impl EditSession {
             id: Uuid::new_v4(),
             kind: TrackKind::Video,
             clip_ids: Vec::new(),
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         proj.touch();
@@ -363,12 +374,104 @@ impl EditSession {
             id: Uuid::new_v4(),
             kind: TrackKind::Audio,
             clip_ids: Vec::new(),
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         proj.touch();
         self.redo.clear();
         self.recompute_dirty();
         Ok(())
+    }
+
+    /// Sensible slider range for **U2-e** per-lane gain. Anything outside this
+    /// window is clamped on entry in [`EditSession::set_audio_track_gain_db`].
+    /// Picked by ear / industry standard — a ±40 dB range is wider than any
+    /// realistic mixing move (you'd mute before attenuating past -40 dB, and
+    /// boosting past +40 dB pins any source to clipping), so clamping here
+    /// turns off-by-magnitude-of-10 bugs into silent no-ops instead of ear-
+    /// rupturing surprises.
+    pub const AUDIO_GAIN_DB_MIN: f32 = -40.0;
+    /// See [`EditSession::AUDIO_GAIN_DB_MIN`].
+    pub const AUDIO_GAIN_DB_MAX: f32 = 40.0;
+
+    /// Set the per-lane `gain_db` on the **`lane`-th** [`TrackKind::Audio`]
+    /// track (0-based index among audio tracks only, matching the order used
+    /// by [`EditSession::audio_track_row_labels`] and the lane-label UI).
+    ///
+    /// `db` is clamped into `[AUDIO_GAIN_DB_MIN, AUDIO_GAIN_DB_MAX]` before
+    /// write, and NaN falls back to `0.0` (unity). Sub-`0.01` dB deltas are
+    /// inaudible and still write — the caller can dedupe if they care about
+    /// undo noise from slider jitter.
+    ///
+    /// Fails without mutation (and without pushing undo) when no project is
+    /// loaded or the audio-lane index is out of range. **Undoable**: one
+    /// snapshot per successful change.
+    pub fn set_audio_track_gain_db(&mut self, lane: usize, db: f32) -> anyhow::Result<()> {
+        let p = self
+            .project
+            .as_ref()
+            .context("no project — open a file first")?;
+        // Resolve the audio-lane index into the full track list so we can
+        // borrow-check cleanly when we grab `&mut` below.
+        let track_vec_idx = p
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.kind == TrackKind::Audio)
+            .nth(lane)
+            .map(|(i, _)| i)
+            .with_context(|| format!("no audio lane at index {lane}"))?;
+
+        let new_gain = if db.is_finite() {
+            db.clamp(Self::AUDIO_GAIN_DB_MIN, Self::AUDIO_GAIN_DB_MAX)
+        } else {
+            0.0
+        };
+
+        // Don't push undo when the write is a no-op — avoids polluting the
+        // undo stack when a slider emits a redundant value on release.
+        let current = p.tracks[track_vec_idx].gain_db;
+        if current == new_gain {
+            return Ok(());
+        }
+
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("checked above");
+        proj.tracks[track_vec_idx].gain_db = new_gain;
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// Read the current per-lane gain in dB for the `lane`-th audio track, or
+    /// `None` when no project is loaded or the index is out of range. Used by
+    /// the UI to seed the slider / badge when the project loads.
+    pub fn audio_track_gain_db(&self, lane: usize) -> Option<f32> {
+        let p = self.project.as_ref()?;
+        p.tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .nth(lane)
+            .map(|t| t.gain_db)
+    }
+
+    /// Collect `gain_db` from every [`TrackKind::Audio`] track, in project
+    /// order. Mirrors the lane order produced by
+    /// [`crate::timeline::clips_from_all_audio_tracks`], so the returned vec
+    /// is the correct argument for
+    /// [`reel_core::media::export::export_concat_with_audio_lanes_oriented_with_gains`].
+    /// Returns an empty vec when no project is loaded — the export dispatcher
+    /// treats empty gains as "all unity", which is the right default.
+    pub fn audio_track_gains_db(&self) -> Vec<f32> {
+        let Some(p) = self.project.as_ref() else {
+            return Vec::new();
+        };
+        p.tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .map(|t| t.gain_db)
+            .collect()
     }
 
     /// Append an empty **subtitle** track (timed-text lane). Undoable.
@@ -382,6 +485,7 @@ impl EditSession {
             id: Uuid::new_v4(),
             kind: TrackKind::Subtitle,
             clip_ids: Vec::new(),
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         proj.touch();
@@ -1362,6 +1466,117 @@ impl EditSession {
             id: new_track_id,
             kind: TrackKind::Audio,
             clip_ids: vec![new_clip_id],
+            gain_db: 0.0,
+            extensions: Default::default(),
+        });
+
+        proj.touch();
+        self.redo.clear();
+        self.recompute_dirty();
+        Ok(())
+    }
+
+    /// **Edit → Replace Audio…**: atomically mute every primary-track clip
+    /// **and** append a fresh [`TrackKind::Audio`] lane containing `path`.
+    ///
+    /// This is the "voice-over" companion to **Overlay Audio…**: overlay
+    /// *adds* a new source alongside the existing video's own audio; replace
+    /// *silences* the primary track and substitutes the new clip. Conceptually
+    /// equivalent to running **Mute Clip Audio** on every primary clip in
+    /// sequence and then **Overlay Audio…**, but collapsed into a single undo
+    /// step so **Edit → Undo** unwinds the entire substitution in one click.
+    ///
+    /// ### Why one big snapshot instead of chaining the helpers
+    ///
+    /// A naïve `self.toggle_audio_mute_at_seq_ms(..)` loop followed by
+    /// `self.insert_overlay_audio_clip_at_playhead_with_probe(..)` would push
+    /// **N + 1** undo snapshots — the user would have to tap Undo N+1 times to
+    /// get back to the pre-replace state, which violates the "one atomic edit"
+    /// contract this helper promises. We also probe *before* pushing undo so a
+    /// bad audio file fails cleanly (no half-applied mute state, no wasted
+    /// undo slot).
+    ///
+    /// ### Semantics
+    ///
+    /// * All clips on the **primary video track** have `audio_mute` set to
+    ///   `true`. Clips that were already muted stay muted (idempotent).
+    /// * A **new** `TrackKind::Audio` lane is appended with a single clip
+    ///   spanning the probed duration — same shape as
+    ///   [`EditSession::insert_overlay_audio_clip_at_playhead_with_probe`].
+    /// * Secondary audio lanes are untouched — the user can manually remove
+    ///   them first if they want a clean single-track replacement. (Future
+    ///   work: a "Replace & Clear Other Audio" variant.)
+    /// * Preview-side mix is still first-lane-only; until the audio-thread
+    ///   rewrite lands, a fresh replacement is audible only after export when
+    ///   another audio lane already exists. Menu copy flags the caveat.
+    pub fn replace_audio_clip_at_playhead(
+        &mut self,
+        path: PathBuf,
+        playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        let probe = FfmpegProbe::new();
+        self.replace_audio_clip_at_playhead_with_probe(&probe, path, playhead_ms)
+    }
+
+    /// Probe-injected variant of
+    /// [`EditSession::replace_audio_clip_at_playhead`]. See the non-probe
+    /// version's doc comment for semantics; this one exists so tests can inject
+    /// a [`crate::MockMediaProbe`] without hitting ffmpeg.
+    pub fn replace_audio_clip_at_playhead_with_probe(
+        &mut self,
+        probe: &dyn MediaProbe,
+        path: PathBuf,
+        _playhead_ms: f64,
+    ) -> anyhow::Result<()> {
+        if self.project.is_none() {
+            anyhow::bail!("no project — open a file first");
+        }
+
+        // Probe first so a bad file fails *before* we mutate the project or
+        // push an undo snapshot — matches the other insert helpers.
+        let md = probe.probe(&path).context("probe replace audio")?;
+        let dur = md.duration_seconds;
+
+        // Single snapshot covers BOTH the mute pass and the lane append, so
+        // one Undo unwinds the whole replace atomically.
+        self.push_undo_snapshot();
+        let proj = self.project.as_mut().expect("project checked above");
+
+        // Mute every clip on the primary video track. We collect IDs first
+        // because the borrow on `proj.tracks` would otherwise conflict with
+        // the mutable iteration through `proj.clips`.
+        let primary_clip_ids: Vec<Uuid> = proj
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .map(|t| t.clip_ids.clone())
+            .unwrap_or_default();
+        for clip in proj.clips.iter_mut() {
+            if primary_clip_ids.contains(&clip.id) {
+                clip.audio_mute = true;
+            }
+        }
+
+        // Append the replacement lane — same shape as Overlay Audio….
+        let new_track_id = Uuid::new_v4();
+        let new_clip_id = Uuid::new_v4();
+        let new_clip = Clip {
+            id: new_clip_id,
+            source_path: path,
+            metadata: md,
+            in_point: 0.0,
+            out_point: dur,
+            orientation: Default::default(),
+            scale: Default::default(),
+            audio_mute: false,
+            extensions: Default::default(),
+        };
+        proj.clips.push(new_clip);
+        proj.tracks.push(Track {
+            id: new_track_id,
+            kind: TrackKind::Audio,
+            clip_ids: vec![new_clip_id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
 
@@ -2123,6 +2338,7 @@ mod tests {
             id: tid,
             kind: TrackKind::Video,
             clip_ids: vec![a, b],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         p
@@ -2194,6 +2410,7 @@ mod tests {
             id: Uuid::new_v4(),
             kind: TrackKind::Video,
             clip_ids: vec![],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let mut s = EditSession::from_project_for_tests(p);
@@ -2217,6 +2434,7 @@ mod tests {
             id: Uuid::new_v4(),
             kind: TrackKind::Video,
             clip_ids: vec![],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let mut s = EditSession::from_project_for_tests(p);
@@ -2352,6 +2570,200 @@ mod tests {
     }
 
     #[test]
+    fn replace_audio_mutes_every_primary_clip_and_appends_new_lane() {
+        // Single replace should (a) set `audio_mute = true` on every clip of
+        // the primary video track and (b) append exactly one new audio lane
+        // whose sole clip is the picked file. Guards the core contract of
+        // Edit → Replace Audio….
+        let probe = FakeProbe::with_duration(4.0);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-rep.mp4"))
+            .unwrap();
+        // Grow the primary track to two clips so "every primary clip" is a
+        // non-trivial assertion (single-clip would be indistinguishable from
+        // a one-shot toggle).
+        let tail_ms =
+            timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
+        s.insert_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/fake-video-rep-b.mp4"),
+            tail_ms,
+        )
+        .unwrap();
+
+        // Sanity: baseline has no muted clips and no audio lane.
+        assert!(!s.any_primary_clip_audio_muted());
+        assert_eq!(
+            s.project()
+                .unwrap()
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0
+        );
+
+        let replace_path = PathBuf::from("/tmp/fake-replace.wav");
+        s.replace_audio_clip_at_playhead_with_probe(&probe, replace_path.clone(), 500.0)
+            .expect("replace audio ok");
+
+        let p = s.project().unwrap();
+
+        // All primary clips muted.
+        let vt = p
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .expect("video track");
+        for cid in &vt.clip_ids {
+            let c = p.clips.iter().find(|c| c.id == *cid).expect("clip");
+            assert!(
+                c.audio_mute,
+                "primary clip {} should be muted after replace",
+                c.source_path.display()
+            );
+        }
+        assert!(s.all_primary_clips_audio_muted());
+
+        // Exactly one new audio lane, carrying the replacement clip.
+        let a: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(a.len(), 1, "replace appends one fresh audio lane");
+        assert_eq!(a[0].clip_ids.len(), 1);
+        let clip_id = a[0].clip_ids[0];
+        let clip = p.clips.iter().find(|c| c.id == clip_id).expect("replacement clip");
+        assert_eq!(clip.source_path, replace_path);
+        assert!((clip.out_point - 4.0).abs() < 1e-9, "duration from probe");
+        assert!(!clip.audio_mute, "replacement clip itself must not be muted");
+    }
+
+    #[test]
+    fn replace_audio_single_undo_step_unwinds_everything() {
+        // Replace collapses "mute every primary clip + append lane + insert
+        // clip" into ONE undo snapshot — a single Edit → Undo must restore
+        // the original mute states AND drop the new lane. If this regresses
+        // the user would need to press Undo N+1 times, which violates the
+        // "atomic edit" contract.
+        let probe = FakeProbe::with_duration(3.0);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-repu.mp4"))
+            .unwrap();
+        let tail_ms =
+            timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
+        s.insert_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/fake-video-repu-b.mp4"),
+            tail_ms,
+        )
+        .unwrap();
+
+        // Mute the *first* primary clip manually so we can verify replace
+        // preserves the pre-existing mute under undo (not just "unmutes all").
+        s.toggle_audio_mute_at_seq_ms(100.0).unwrap();
+        let pre_replace_mute_states: Vec<(Uuid, bool)> = {
+            let p = s.project().unwrap();
+            let vt = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap();
+            vt.clip_ids
+                .iter()
+                .map(|id| {
+                    let c = p.clips.iter().find(|c| c.id == *id).unwrap();
+                    (*id, c.audio_mute)
+                })
+                .collect()
+        };
+
+        let replace_path = PathBuf::from("/tmp/fake-replace2.wav");
+        s.replace_audio_clip_at_playhead_with_probe(&probe, replace_path.clone(), 0.0)
+            .unwrap();
+
+        // Single undo — not a loop.
+        assert!(s.undo(), "replace is undoable");
+
+        let p = s.project().unwrap();
+        // Lane gone.
+        assert_eq!(
+            p.tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio)
+                .count(),
+            0,
+            "undo removed the replacement lane"
+        );
+        // Replacement clip gone.
+        assert!(
+            !p.clips.iter().any(|c| c.source_path == replace_path),
+            "undo removed the replacement clip"
+        );
+        // Mute states restored exactly — first clip still muted, second not.
+        let vt = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap();
+        let restored: Vec<(Uuid, bool)> = vt
+            .clip_ids
+            .iter()
+            .map(|id| {
+                let c = p.clips.iter().find(|c| c.id == *id).unwrap();
+                (*id, c.audio_mute)
+            })
+            .collect();
+        assert_eq!(
+            restored, pre_replace_mute_states,
+            "undo restored per-clip mute states to pre-replace snapshot"
+        );
+    }
+
+    #[test]
+    fn replace_audio_is_idempotent_on_already_muted_primary() {
+        // Running replace twice shouldn't produce two replacement lanes
+        // stacking inside one snapshot or double-mute anything — each call is
+        // just "ensure everything muted + append another lane". The second
+        // call's mute pass must be a no-op on already-muted clips.
+        let probe = FakeProbe::with_duration(2.0);
+        let mut s = EditSession::default();
+        s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-repi.mp4"))
+            .unwrap();
+
+        s.replace_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/ra-1.wav"),
+            0.0,
+        )
+        .unwrap();
+        s.replace_audio_clip_at_playhead_with_probe(
+            &probe,
+            PathBuf::from("/tmp/ra-2.wav"),
+            0.0,
+        )
+        .unwrap();
+
+        let p = s.project().unwrap();
+        assert!(s.all_primary_clips_audio_muted());
+        // Two replace calls ⇒ two lanes (same stacking behaviour as overlay).
+        let a: Vec<_> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(a.len(), 2, "each replace appends its own lane");
+    }
+
+    #[test]
+    fn replace_audio_without_project_errors_without_mutation() {
+        let probe = FakeProbe::with_duration(1.0);
+        let mut s = EditSession::default();
+        let err = s
+            .replace_audio_clip_at_playhead_with_probe(
+                &probe,
+                PathBuf::from("/tmp/ra.wav"),
+                0.0,
+            )
+            .expect_err("no-project path must error");
+        assert!(err.to_string().contains("no project"));
+        assert!(s.project().is_none());
+    }
+
+    #[test]
     fn add_audio_track_appends_empty_lane() {
         let f = tiny_fixture();
         if !f.is_file() {
@@ -2383,6 +2795,128 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    /// Build a project with one video track and two empty audio tracks so the
+    /// gain-setter/reader tests can target lane 0 and lane 1 without having to
+    /// drive ffmpeg.
+    fn project_with_two_audio_lanes() -> Project {
+        let mut p = two_clip_project();
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Audio,
+            clip_ids: vec![],
+            gain_db: 0.0,
+            extensions: Default::default(),
+        });
+        p.tracks.push(Track {
+            id: Uuid::new_v4(),
+            kind: TrackKind::Audio,
+            clip_ids: vec![],
+            gain_db: 0.0,
+            extensions: Default::default(),
+        });
+        p
+    }
+
+    #[test]
+    fn set_audio_track_gain_db_writes_and_reads_back() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        s.set_audio_track_gain_db(0, 6.0).expect("set lane 0");
+        s.set_audio_track_gain_db(1, -3.5).expect("set lane 1");
+        assert_eq!(s.audio_track_gain_db(0), Some(6.0));
+        assert_eq!(s.audio_track_gain_db(1), Some(-3.5));
+        // Bulk accessor returns lanes in project order.
+        assert_eq!(s.audio_track_gains_db(), vec![6.0, -3.5]);
+    }
+
+    #[test]
+    fn set_audio_track_gain_db_clamps_out_of_range_values() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        s.set_audio_track_gain_db(0, 1_000.0).unwrap();
+        assert_eq!(s.audio_track_gain_db(0), Some(EditSession::AUDIO_GAIN_DB_MAX));
+        s.set_audio_track_gain_db(0, -1_000.0).unwrap();
+        assert_eq!(s.audio_track_gain_db(0), Some(EditSession::AUDIO_GAIN_DB_MIN));
+    }
+
+    #[test]
+    fn set_audio_track_gain_db_falls_back_to_zero_on_nan() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        // Seed a non-zero baseline so the NaN→0 write actually mutates.
+        s.set_audio_track_gain_db(0, 12.0).unwrap();
+        s.set_audio_track_gain_db(0, f32::NAN).unwrap();
+        assert_eq!(s.audio_track_gain_db(0), Some(0.0));
+    }
+
+    #[test]
+    fn set_audio_track_gain_db_errors_on_out_of_range_lane() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        // Two audio lanes exist (indices 0 and 1). Lane 2 must fail without
+        // mutating anything.
+        assert!(s.set_audio_track_gain_db(2, 6.0).is_err());
+        assert_eq!(s.audio_track_gains_db(), vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn set_audio_track_gain_db_is_noop_when_value_unchanged() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        s.set_audio_track_gain_db(0, 4.0).unwrap();
+        // Re-writing the same value must not push undo, so a single `undo()`
+        // rolls straight back past the redundant write to the original state.
+        s.set_audio_track_gain_db(0, 4.0).unwrap();
+        assert!(s.undo());
+        assert_eq!(s.audio_track_gain_db(0), Some(0.0));
+    }
+
+    #[test]
+    fn set_audio_track_gain_db_is_undoable() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        s.set_audio_track_gain_db(1, -12.0).unwrap();
+        assert_eq!(s.audio_track_gain_db(1), Some(-12.0));
+        assert!(s.undo());
+        assert_eq!(s.audio_track_gain_db(1), Some(0.0));
+        assert!(s.redo());
+        assert_eq!(s.audio_track_gain_db(1), Some(-12.0));
+    }
+
+    #[test]
+    fn audio_track_row_label_suffixes_with_non_unity_gain() {
+        let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
+        // Unity by default — labels stay clean.
+        let rows = s.audio_track_row_labels();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            !rows[0].contains("dB") && !rows[1].contains("dB"),
+            "unity gain must not bloat the row label"
+        );
+        // After a boost, lane 0's label gains a `· +6.0 dB` suffix; lane 1 stays clean.
+        s.set_audio_track_gain_db(0, 6.0).unwrap();
+        let rows = s.audio_track_row_labels();
+        assert!(
+            rows[0].ends_with("· +6.0 dB"),
+            "expected '· +6.0 dB' suffix, got: {}",
+            rows[0]
+        );
+        assert!(
+            !rows[1].contains("dB"),
+            "unmodified lane must not gain a suffix: {}",
+            rows[1]
+        );
+        // Negative gains render with an explicit sign too.
+        s.set_audio_track_gain_db(1, -3.5).unwrap();
+        let rows = s.audio_track_row_labels();
+        assert!(
+            rows[1].ends_with("· -3.5 dB"),
+            "expected '· -3.5 dB' suffix, got: {}",
+            rows[1]
+        );
+    }
+
+    #[test]
+    fn audio_track_gains_db_empty_without_project() {
+        let s = EditSession::default();
+        assert!(s.audio_track_gains_db().is_empty());
+        assert_eq!(s.audio_track_gain_db(0), None);
     }
 
     #[test]

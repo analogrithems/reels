@@ -70,8 +70,37 @@ pub struct Track {
     pub id: Uuid,
     pub kind: TrackKind,
     pub clip_ids: Vec<Uuid>,
+    /// Per-lane playback/export **gain in decibels** (0.0 = unity = no change).
+    /// Omitted from JSON when unity so existing projects round-trip byte-stable.
+    ///
+    /// Applied in the export pipeline as an ffmpeg `volume=XdB` filter inserted
+    /// ahead of the lane's contribution to `amix` (see
+    /// [`crate::media::export::build_amix_filter_complex_with_gains`]). Only
+    /// meaningful for [`TrackKind::Audio`] lanes today — video/subtitle tracks
+    /// ignore the value. Clamped on input by session helpers to a sane range
+    /// (±40 dB) so neither silence nor ear-rupture is a single misclick away.
+    ///
+    /// The **preview-side** mixer still drives sound from the first audio lane
+    /// only (audio-thread rewrite pending), so per-lane gain is currently
+    /// audible only in exports when N ≥ 1 lane is non-unity. A single unity
+    /// lane keeps the fast stream-copy path; introducing any non-zero gain
+    /// routes the export through the amix filter (which always transcodes).
+    #[serde(default, skip_serializing_if = "f32_is_zero")]
+    pub gain_db: f32,
     #[serde(flatten)]
     pub extensions: Map<String, serde_json::Value>,
+}
+
+/// Helper for `#[serde(skip_serializing_if)]` on `f32` fields that default to 0.
+///
+/// `f32` has no `Default::default() == 0.0` *comparison* helper that serde can
+/// call directly, and `== 0.0` on a raw float would confuse clippy readers
+/// about NaN intent. This wrapper makes the intent explicit: we only want
+/// to skip when the value is **exactly** unity-gain — any writer that
+/// produced a subnormal, NaN, or signed zero is fine either way.
+#[inline]
+fn f32_is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// The root serializable project object. Persisted as `project.json`.

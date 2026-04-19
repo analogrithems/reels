@@ -328,6 +328,33 @@ export component AppWindow inherits Window {
     /// True when **Edit → Overlay Audio…** is clickable. Gate = `media-ready`
     /// (a project must exist so the new lane has somewhere to live).
     in property <bool> overlay-audio-enabled: false;
+    /// True when **Edit → Replace Audio…** is clickable. Same gate as
+    /// `overlay-audio-enabled` — the replace helper mutes every primary clip
+    /// and appends a fresh audio lane in a single undoable step, so it only
+    /// needs a project to work against.
+    in property <bool> replace-audio-enabled: false;
+    /// True when **Edit → Audio Lane Gain…** is clickable — requires `media-ready`
+    /// AND at least one `TrackKind::Audio` lane (otherwise the sheet has nothing
+    /// to act on). Gate flipped in `sync_menu` via `session::audio_track_count`.
+    in property <bool> audio-gain-enabled: false;
+
+    // --- Audio lane gain sheet (Edit → Audio Lane Gain…) ---
+    /// Visibility flag; flipped by Rust when the menu item fires and off again
+    /// when the user confirms or cancels.
+    in-out property <bool> gain-sheet-visible: false;
+    /// 1-based lane number shown/edited in the sheet. Rust prefills with `1`
+    /// when opening; validation happens on confirm against `gain-sheet-max-lane`.
+    in-out property <int> gain-sheet-lane: 1;
+    /// Current gain in dB for the prefilled lane (display + initial value for
+    /// the input field). Updated by Rust when the sheet opens or when the
+    /// user re-enters a valid lane number (handled in Rust).
+    in-out property <float> gain-sheet-db: 0.0;
+    /// Audio-lane count at the moment the sheet opens. Used by the sheet for
+    /// inline range hints; `0` hides the sheet content (the menu gate should
+    /// prevent this from ever being 0 at open time, but we belt-and-brace).
+    in property <int> gain-sheet-max-lane: 0;
+    /// Inline error text shown under the fields; empty hides the row.
+    in property <string> gain-sheet-error: "";
 
     // --- Resize sheet (Edit → Resize Video…) ---
     in-out property <bool> resize-sheet-visible: false;
@@ -482,6 +509,31 @@ export component AppWindow inherits Window {
     /// alongside the existing audio lanes (U2-b-export); preview remains
     /// first-lane-only until the audio-thread rewrite.
     callback edit-overlay-audio();
+
+    /// **Edit → Replace Audio…**: open an audio-file picker, mute every clip
+    /// on the primary video track, and append the pick on a new dedicated
+    /// audio lane — all in a single undo step. Export mixes via the same
+    /// `amix` path as overlay. Preview remains first-lane-only until the
+    /// audio-thread rewrite, so a fresh replace is audible only after export
+    /// when it becomes the first (or sole) audio lane.
+    callback edit-replace-audio();
+
+    /// **Edit → Audio Lane Gain…**: open a sheet for adjusting the per-lane
+    /// `gain_db` on a `TrackKind::Audio` track (1-based lane number; ±40 dB
+    /// range, clamped in the session helper). Applied at export via amix
+    /// `volume=XdB`; preview remains first-lane-only and does not yet honor
+    /// the gain.
+    callback edit-audio-lane-gain();
+    /// User pressed **Set Gain** in the sheet. Args are the 1-based lane number
+    /// and the dB value from the fields; Rust clamps & validates and sets the
+    /// `gain-sheet-error` string on failure (leaving the sheet open).
+    callback gain-confirm(int, float);
+    /// Dismiss the sheet without mutating the project.
+    callback gain-cancel();
+    /// User edited the lane number in the sheet; Rust refreshes `gain-sheet-db`
+    /// with the current value on that lane so the dB field tracks which lane
+    /// is about to be edited. Arg is the 1-based lane number.
+    callback gain-lane-changed(int);
 
     /// **Edit → Set In Point** (`I`): marks the current playhead as the range start.
     callback edit-set-in-marker();
@@ -848,6 +900,18 @@ export component AppWindow inherits Window {
                 enabled: root.overlay-audio-enabled;
                 activated => { root.edit-overlay-audio(); }
             }
+            MenuItem {
+                title: "Replace Audio…";
+                icon: @image-url("icons/lucide/replace.svg");
+                enabled: root.replace-audio-enabled;
+                activated => { root.edit-replace-audio(); }
+            }
+            MenuItem {
+                title: "Audio Lane Gain…";
+                icon: @image-url("icons/lucide/volume-2.svg");
+                enabled: root.audio-gain-enabled;
+                activated => { root.edit-audio-lane-gain(); }
+            }
             MenuSeparator { }
             MenuItem {
                 title: "Set In Point";
@@ -1083,6 +1147,9 @@ export component AppWindow inherits Window {
                     accept
                 } else if (root.trim-sheet-visible) {
                     root.trim-cancel();
+                    accept
+                } else if (root.gain-sheet-visible) {
+                    root.gain-cancel();
                     accept
                 } else if (root.export-preset-dialog-visible) {
                     root.export-preset-cancel();
@@ -2197,33 +2264,37 @@ export component AppWindow inherits Window {
                 padding-right: 8px;
                 padding-top: 12px;
                 padding-bottom: 12px;
-                spacing: 10px;
-                // VIDEO row (v0 mock: colored type icon + uppercase label + trailing add control).
-                if root.view-show-video-tracks: VerticalBox {
-                    spacing: 10px;
-                    HorizontalBox {
-                        spacing: 8px;
+                spacing: 8px;
+                // VIDEO row — track-type icon sits on the same row as the first
+                // lane (V1), with the `+ add track` button directly beneath it.
+                // Uppercase title dropped; sections are divided by thin
+                // Theme.border-subtle separators (see below).
+                if root.view-show-video-tracks: HorizontalBox {
+                    spacing: 6px;
+                    alignment: start;
+                    padding: 0;
+                    // Left column: icon (aligned with the 48px first-lane row) +
+                    // `+ add track` button stacked below. The icon cell is the
+                    // exact height of a FilmstripLane row (48px) so the icon is
+                    // centered on the first lane; the + button sits on its own
+                    // row right underneath.
+                    VerticalBox {
+                        spacing: 10px;
+                        padding: 0;
                         alignment: start;
-                        Image {
-                            width: 14px;
-                            height: 14px;
-                            source: @image-url("icons/lucide/film.svg");
-                            colorize: Theme.clip-video;
-                        }
-                        Text {
-                            text: "VIDEO";
-                            color: Theme.text-primary;
-                            font-size: 11px;
-                            font-weight: 700;
-                            letter-spacing: 1px;
-                            vertical-alignment: center;
-                        }
                         Rectangle {
-                            horizontal-stretch: 1;
-                            height: 1px;
-                            background: Theme.border-subtle;
+                            width: 28px;
+                            height: 48px;
+                            Image {
+                                width: 16px;
+                                height: 16px;
+                                source: @image-url("icons/lucide/film.svg");
+                                colorize: Theme.clip-video;
+                            }
                         }
                         track-add-video := TouchArea {
+                            width: 28px;
+                            height: 28px;
                             clicked => {
                                 main-view-focus.focus();
                                 root.file-new-video-track();
@@ -2251,85 +2322,97 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.tl_video_track_count >= 1: FilmstripLane {
-                        lane-label: "V1";
-                        lane-accent: Theme.clip-video;
-                        chips: root.tl_vrow0;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
-                        track-delete => {
-                            root.delete-video-track(0);
+                    // Right column: the FilmstripLane rows. Mirrors the prior
+                    // section VerticalBox's 10px spacing so lanes stack the
+                    // same way.
+                    VerticalBox {
+                        spacing: 10px;
+                        padding: 0;
+                        horizontal-stretch: 1;
+                        if root.tl_video_track_count >= 1: FilmstripLane {
+                            lane-label: "V1";
+                            lane-accent: Theme.clip-video;
+                            chips: root.tl_vrow0;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
+                            track-delete => {
+                                root.delete-video-track(0);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
+                        if root.tl_video_track_count >= 2: FilmstripLane {
+                            lane-label: "V2";
+                            lane-accent: Theme.clip-video;
+                            chips: root.tl_vrow1;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
+                            track-delete => {
+                                root.delete-video-track(1);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
-                    }
-                    if root.tl_video_track_count >= 2: FilmstripLane {
-                        lane-label: "V2";
-                        lane-accent: Theme.clip-video;
-                        chips: root.tl_vrow1;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
-                        track-delete => {
-                            root.delete-video-track(1);
+                        if root.tl_video_track_count >= 3: FilmstripLane {
+                            lane-label: "V3";
+                            lane-accent: Theme.clip-video;
+                            chips: root.tl_vrow2;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
+                            track-delete => {
+                                root.delete-video-track(2);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
-                        }
-                    }
-                    if root.tl_video_track_count >= 3: FilmstripLane {
-                        lane-label: "V3";
-                        lane-accent: Theme.clip-video;
-                        chips: root.tl_vrow2;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
-                        track-delete => {
-                            root.delete-video-track(2);
-                        }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
-                        }
-                    }
-                    if root.tl_video_track_count >= 4: FilmstripLane {
-                        lane-label: "V4";
-                        lane-accent: Theme.clip-video;
-                        chips: root.tl_vrow3;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
-                        track-delete => {
-                            root.delete-video-track(3);
-                        }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
+                        if root.tl_video_track_count >= 4: FilmstripLane {
+                            lane-label: "V4";
+                            lane-accent: Theme.clip-video;
+                            chips: root.tl_vrow3;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
+                            track-delete => {
+                                root.delete-video-track(3);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
                     }
                 }
-                // AUDIO row (v0 mock: cyan music icon + label + add).
-                if root.view-show-audio-tracks: VerticalBox {
-                    spacing: 10px;
-                    HorizontalBox {
-                        spacing: 8px;
+                // Separator between VIDEO and whatever section follows. Only
+                // rendered when the video section is visible AND at least one
+                // of the lower sections (audio / subtitle) is visible — this
+                // way a single-visible-section layout stays clean.
+                if root.view-show-video-tracks && (root.view-show-audio-tracks || root.view-show-subtitle-tracks): Rectangle {
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+                // AUDIO row — cyan music icon on the first-lane row, `+` below.
+                if root.view-show-audio-tracks: HorizontalBox {
+                    spacing: 6px;
+                    alignment: start;
+                    padding: 0;
+                    VerticalBox {
+                        spacing: 10px;
+                        padding: 0;
                         alignment: start;
-                        Image {
-                            width: 14px;
-                            height: 14px;
-                            source: @image-url("icons/lucide/music.svg");
-                            colorize: Theme.clip-audio;
-                        }
-                        Text {
-                            text: "AUDIO";
-                            color: Theme.text-primary;
-                            font-size: 11px;
-                            font-weight: 700;
-                            letter-spacing: 1px;
-                            vertical-alignment: center;
-                        }
                         Rectangle {
-                            horizontal-stretch: 1;
-                            height: 1px;
-                            background: Theme.border-subtle;
+                            width: 28px;
+                            height: 48px;
+                            Image {
+                                width: 16px;
+                                height: 16px;
+                                source: @image-url("icons/lucide/music.svg");
+                                colorize: Theme.clip-audio;
+                            }
                         }
                         track-add-audio := TouchArea {
+                            width: 28px;
+                            height: 28px;
                             clicked => {
                                 main-view-focus.focus();
                                 root.file-new-audio-track();
@@ -2357,87 +2440,94 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    // Waveform / peak drawing on audio lanes is intentionally last — after clip chips, footer, and other v0 alignment (see **`docs/phases-ui.md`**).
-                    if root.tl_audio_track_count >= 1: FilmstripLane {
-                        lane-label: "A1";
-                        lane-accent: Theme.clip-audio;
-                        chips: root.tl_arow0;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: 0 < root.tl_audio_project_track_count;
-                        track-delete => {
-                            root.delete-audio-track(0);
+                    VerticalBox {
+                        spacing: 10px;
+                        padding: 0;
+                        horizontal-stretch: 1;
+                        // Waveform / peak drawing on audio lanes is intentionally last — after clip chips, footer, and other v0 alignment (see **`docs/phases-ui.md`**).
+                        if root.tl_audio_track_count >= 1: FilmstripLane {
+                            lane-label: "A1";
+                            lane-accent: Theme.clip-audio;
+                            chips: root.tl_arow0;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: 0 < root.tl_audio_project_track_count;
+                            track-delete => {
+                                root.delete-audio-track(0);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
+                        if root.tl_audio_track_count >= 2: FilmstripLane {
+                            lane-label: "A2";
+                            lane-accent: Theme.clip-audio;
+                            chips: root.tl_arow1;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: 1 < root.tl_audio_project_track_count;
+                            track-delete => {
+                                root.delete-audio-track(1);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
-                    }
-                    if root.tl_audio_track_count >= 2: FilmstripLane {
-                        lane-label: "A2";
-                        lane-accent: Theme.clip-audio;
-                        chips: root.tl_arow1;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: 1 < root.tl_audio_project_track_count;
-                        track-delete => {
-                            root.delete-audio-track(1);
+                        if root.tl_audio_track_count >= 3: FilmstripLane {
+                            lane-label: "A3";
+                            lane-accent: Theme.clip-audio;
+                            chips: root.tl_arow2;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: 2 < root.tl_audio_project_track_count;
+                            track-delete => {
+                                root.delete-audio-track(2);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
-                        }
-                    }
-                    if root.tl_audio_track_count >= 3: FilmstripLane {
-                        lane-label: "A3";
-                        lane-accent: Theme.clip-audio;
-                        chips: root.tl_arow2;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: 2 < root.tl_audio_project_track_count;
-                        track-delete => {
-                            root.delete-audio-track(2);
-                        }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
-                        }
-                    }
-                    if root.tl_audio_track_count >= 4: FilmstripLane {
-                        lane-label: "A4";
-                        lane-accent: Theme.clip-audio;
-                        chips: root.tl_arow3;
-                        playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
-                        delete-enabled: 3 < root.tl_audio_project_track_count;
-                        track-delete => {
-                            root.delete-audio-track(3);
-                        }
-                        clip-trim-commit(id, edge, r) => {
-                            root.clip-trim-commit(id, edge, r);
+                        if root.tl_audio_track_count >= 4: FilmstripLane {
+                            lane-label: "A4";
+                            lane-accent: Theme.clip-audio;
+                            chips: root.tl_arow3;
+                            playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
+                            delete-enabled: 3 < root.tl_audio_project_track_count;
+                            track-delete => {
+                                root.delete-audio-track(3);
+                            }
+                            clip-trim-commit(id, edge, r) => {
+                                root.clip-trim-commit(id, edge, r);
+                            }
                         }
                     }
                 }
-                // SUBTITLES (v0 mock: neutral type icon + label + add) — container
-                // streams (single-media) and/or project [`TrackKind::Subtitle`] lanes.
-                if root.view-show-subtitle-tracks: VerticalBox {
-                    spacing: 10px;
-                    HorizontalBox {
-                        spacing: 8px;
+                // Separator between AUDIO and SUBTITLES.
+                if root.view-show-audio-tracks && root.view-show-subtitle-tracks: Rectangle {
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+                // SUBTITLES — neutral type icon on first-lane row, `+` below —
+                // container streams (single-media) and/or project
+                // [`TrackKind::Subtitle`] lanes.
+                if root.view-show-subtitle-tracks: HorizontalBox {
+                    spacing: 6px;
+                    alignment: start;
+                    padding: 0;
+                    VerticalBox {
+                        spacing: 10px;
+                        padding: 0;
                         alignment: start;
-                        Image {
-                            width: 14px;
-                            height: 14px;
-                            source: @image-url("icons/lucide/type.svg");
-                            colorize: Theme.clip-subtitle;
-                        }
-                        Text {
-                            text: "SUBTITLES";
-                            color: Theme.text-primary;
-                            font-size: 11px;
-                            font-weight: 700;
-                            letter-spacing: 1px;
-                            vertical-alignment: center;
-                        }
                         Rectangle {
-                            horizontal-stretch: 1;
-                            height: 1px;
-                            background: Theme.border-subtle;
+                            width: 28px;
+                            height: 48px;
+                            Image {
+                                width: 16px;
+                                height: 16px;
+                                source: @image-url("icons/lucide/type.svg");
+                                colorize: Theme.clip-subtitle;
+                            }
                         }
                         track-add-subtitle := TouchArea {
+                            width: 28px;
+                            height: 28px;
                             clicked => {
                                 main-view-focus.focus();
                                 root.file-new-subtitle-track();
@@ -2465,7 +2555,11 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.tl_subtitle_track_count >= 1: FilmstripLane {
+                    VerticalBox {
+                        spacing: 10px;
+                        padding: 0;
+                        horizontal-stretch: 1;
+                        if root.tl_subtitle_track_count >= 1: FilmstripLane {
                         lane-label: "S1";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow0;
@@ -2516,6 +2610,7 @@ export component AppWindow inherits Window {
                         clip-trim-commit(id, edge, r) => {
                             root.clip-trim-commit(id, edge, r);
                         }
+                    }
                     }
                 }
             }
@@ -3066,6 +3161,112 @@ export component AppWindow inherits Window {
                                         root.trim-confirm(
                                             trim-begin-input.text.to-float(),
                                             trim-end-input.text.to-float(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.gain-sheet-visible: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: rgba(0, 0, 0, 55%);
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    root.gain-cancel();
+                }
+            }
+            VerticalBox {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                HorizontalBox {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: min(parent.width * 0.92, 440px);
+                        background: #2e2e36;
+                        border-radius: 8px;
+                        TouchArea {
+                            // Swallow clicks inside the card so the backdrop doesn't close the sheet.
+                            width: 100%;
+                            height: 100%;
+                        }
+                        VerticalBox {
+                            padding: 16px;
+                            spacing: 10px;
+                            Text {
+                                text: "Audio Lane Gain";
+                                color: #eee;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.gain-sheet-max-lane > 0
+                                    ? "Lane 1–" + root.gain-sheet-max-lane + " (1-based). Gain in dB, -40 to +40. Unity = 0 dB."
+                                    : "No audio lanes — add one first.";
+                                color: #888;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                spacing: 10px;
+                                VerticalBox {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Lane";
+                                        color: #bbb;
+                                        font-size: 11px;
+                                    }
+                                    gain-lane-input := LineEdit {
+                                        text: root.gain-sheet-lane;
+                                        input-type: number;
+                                        edited(t) => {
+                                            root.gain-lane-changed(t.to-float());
+                                        }
+                                    }
+                                }
+                                VerticalBox {
+                                    spacing: 4px;
+                                    Text {
+                                        text: "Gain (dB)";
+                                        color: #bbb;
+                                        font-size: 11px;
+                                    }
+                                    gain-db-input := LineEdit {
+                                        text: round(root.gain-sheet-db * 10) / 10;
+                                        input-type: decimal;
+                                    }
+                                }
+                            }
+                            if root.gain-sheet-error != "": Text {
+                                text: root.gain-sheet-error;
+                                color: #ff8080;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalBox {
+                                spacing: 10px;
+                                alignment: end;
+                                Button {
+                                    text: "Cancel";
+                                    clicked => {
+                                        root.gain-cancel();
+                                    }
+                                }
+                                Button {
+                                    text: "Set Gain";
+                                    primary: true;
+                                    clicked => {
+                                        root.gain-confirm(
+                                            gain-lane-input.text.to-float(),
+                                            gain-db-input.text.to-float(),
                                         );
                                     }
                                 }

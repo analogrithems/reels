@@ -404,6 +404,7 @@ mod tests {
             id: tid,
             kind: TrackKind::Video,
             clip_ids: vec![p.clips[0].id, p.clips[1].id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         assert_eq!(primary_clip_id_at_seq_ms(&p, 500.0), Some(p.clips[0].id));
@@ -424,12 +425,14 @@ mod tests {
             id: vid,
             kind: TrackKind::Video,
             clip_ids: vec![p.clips[0].id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         p.tracks.push(Track {
             id: aid,
             kind: TrackKind::Audio,
             clip_ids: vec![p.clips[0].id, p.clips[1].id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let c = clips_from_first_audio_track(&p).unwrap();
@@ -450,6 +453,7 @@ mod tests {
             id: tid,
             kind: TrackKind::Video,
             clip_ids: vec![p.clips[0].id, p.clips[1].id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let c = clips_from_project(&p).unwrap();

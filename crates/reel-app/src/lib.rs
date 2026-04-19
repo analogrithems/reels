@@ -30,8 +30,8 @@ use anyhow::Result;
 use reel_core::project::{ClipOrientation, ClipScale};
 use reel_core::TrackKind;
 use reel_core::{
-    build_mute_substitution_lane, export_concat_with_audio_lanes_oriented, generate_silence_wav,
-    ExportProgressFn,
+    build_mute_substitution_lane, export_concat_with_audio_lanes_oriented_with_gains,
+    generate_silence_wav, ExportProgressFn,
 };
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use session::{
@@ -199,6 +199,24 @@ fn export_timeline_payload(
     session: &EditSession,
     range_ms: Option<(f64, f64)>,
 ) -> Option<(ExportSpanVec, Vec<ExportSpanVec>, Vec<bool>)> {
+    export_timeline_payload_with_gains(session, range_ms).map(|(v, a, m, _g)| (v, a, m))
+}
+
+/// Gain-aware variant of [`export_timeline_payload`]. Returns a per-lane
+/// `gain_db` vector that is **parallel to** the returned `audio_lane_spans`
+/// — i.e. both are filtered to drop empty lanes in lock-step, so
+/// `gains[i]` applies to `audio_lane_spans[i]`.
+///
+/// The range-slicing pass can strip a lane down to nothing (e.g. an overlay
+/// audio lane that sits entirely outside the In/Out window). Whenever we drop
+/// that lane's spans we must also drop its gain, or the amix dispatcher
+/// rejects the payload with a length mismatch. That's why gain collection
+/// piggybacks on the same `filter_map` instead of reading the project
+/// tracks independently.
+fn export_timeline_payload_with_gains(
+    session: &EditSession,
+    range_ms: Option<(f64, f64)>,
+) -> Option<(ExportSpanVec, Vec<ExportSpanVec>, Vec<bool>, Vec<f32>)> {
     let video_clips = session.project().and_then(timeline::clips_from_project)?;
     let video_clips = match range_ms {
         Some(r) => timeline::slice_clips_to_range_ms(&video_clips, r),
@@ -216,9 +234,15 @@ fn export_timeline_payload(
         .project()
         .map(timeline::clips_from_all_audio_tracks)
         .unwrap_or_default();
-    let audio_lane_spans: Vec<ExportSpanVec> = lane_clip_lists
+    // `audio_track_gains_db` is in project order over `TrackKind::Audio` and
+    // matches the outer order of `lane_clip_lists` 1:1 — so zipping them is
+    // safe. We then `filter_map` away empty lanes in lock-step, preserving
+    // the invariant that `gains.len() == audio_lane_spans.len()`.
+    let all_gains = session.audio_track_gains_db();
+    let (audio_lane_spans, lane_gains_db): (Vec<ExportSpanVec>, Vec<f32>) = lane_clip_lists
         .into_iter()
-        .filter_map(|clips| {
+        .zip(all_gains.into_iter())
+        .filter_map(|(clips, gain)| {
             let sliced = match range_ms {
                 Some(r) => timeline::slice_clips_to_range_ms(&clips, r),
                 None => clips,
@@ -226,16 +250,15 @@ fn export_timeline_payload(
             if sliced.is_empty() {
                 None
             } else {
-                Some(
-                    sliced
-                        .into_iter()
-                        .map(|c| (c.path, c.media_in_s, c.media_out_s))
-                        .collect::<ExportSpanVec>(),
-                )
+                let spans: ExportSpanVec = sliced
+                    .into_iter()
+                    .map(|c| (c.path, c.media_in_s, c.media_out_s))
+                    .collect();
+                Some((spans, gain))
             }
         })
-        .collect();
-    Some((segs, audio_lane_spans, mute_mask))
+        .unzip();
+    Some((segs, audio_lane_spans, mute_mask, lane_gains_db))
 }
 
 fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
@@ -306,6 +329,11 @@ pub(crate) enum ExportPreflight {
         /// `-an`'ing everything or erroring out. Ignored when a dedicated audio lane
         /// is present (primary audio is already stripped by `-map 0:v:0`).
         primary_mute_mask: Vec<bool>,
+        /// Parallel to `audio_lane_spans`: per-lane **gain in dB** (0.0 = unity).
+        /// Any non-zero entry routes the export through the amix path even for a
+        /// single lane, applying `volume=XdB` ahead of the mix. Empty when there
+        /// are no audio lanes; otherwise `len() == audio_lane_spans.len()`.
+        lane_gains_db: Vec<f32>,
         orientation: Option<ClipOrientation>,
         scale: Option<ClipScale>,
         /// True when the ffmpeg call should pass `-an`, dropping audio from the
@@ -341,8 +369,8 @@ pub(crate) fn prepare_export_job(
     };
 
     let range_ms = session.marker_range_ms();
-    let Some((video_spans, audio_lane_spans, primary_mute_mask)) =
-        export_timeline_payload(session, range_ms)
+    let Some((video_spans, audio_lane_spans, primary_mute_mask, lane_gains_db)) =
+        export_timeline_payload_with_gains(session, range_ms)
     else {
         return ExportPreflight::Status(
             "No clips in the In/Out range — clear markers or adjust them to export.".into(),
@@ -384,6 +412,7 @@ pub(crate) fn prepare_export_job(
         video_spans,
         audio_lane_spans,
         primary_mute_mask,
+        lane_gains_db,
         orientation,
         scale,
         mute_audio,
@@ -431,6 +460,7 @@ fn install_export_preset_confirm_callback(
                 video_spans,
                 audio_lane_spans,
                 primary_mute_mask,
+                lane_gains_db,
                 orientation,
                 scale,
                 mute_audio,
@@ -472,6 +502,7 @@ fn install_export_preset_confirm_callback(
                         // swaps silence in for the muted spans. `_silence_dir` stays
                         // on the stack so the tempfile outlives ffmpeg.
                         let mut audio_lane_spans = audio_lane_spans;
+                        let mut lane_gains_db = lane_gains_db;
                         let _silence_dir = if !mute_audio
                             && audio_lane_spans.is_empty()
                             && primary_mute_mask.iter().any(|m| *m)
@@ -493,6 +524,11 @@ fn install_export_preset_confirm_callback(
                                         );
                                         if !lane.is_empty() {
                                             audio_lane_spans = vec![lane];
+                                            // Synthesized lane carries no user-configurable gain —
+                                            // silence @ 0 dB is just silence. Keeping the gains
+                                            // vector parallel to `audio_lane_spans` is what the
+                                            // export dispatcher validates on entry.
+                                            lane_gains_db = vec![0.0];
                                         }
                                         Some(dir)
                                     } else {
@@ -504,9 +540,20 @@ fn install_export_preset_confirm_callback(
                         } else {
                             None
                         };
-                        let r = export_concat_with_audio_lanes_oriented(
+                        // Gain-aware export entry point. We always pass `Some(&gains)`
+                        // when there are any lanes so the dispatcher can detect the
+                        // non-unity case and route through amix; `None` is reserved
+                        // for the pure "no audio lane / mute_audio" path that short-
+                        // circuits to `-an` before gain can even matter.
+                        let gains_slice: Option<&[f32]> = if audio_lane_spans.is_empty() {
+                            None
+                        } else {
+                            Some(&lane_gains_db)
+                        };
+                        let r = export_concat_with_audio_lanes_oriented_with_gains(
                             &video_spans,
                             &audio_lane_spans,
+                            gains_slice,
                             orientation,
                             scale,
                             subtitle_path.as_deref(),
@@ -601,6 +648,120 @@ fn install_export_preflight_callback(window: &AppWindow, session: Rc<RefCell<Edi
 /// each drag frame — that would spam the footer. The Set-In/Set-Out *keyboard*
 /// paths still announce via `status_text`; a drop-style "released" summary
 /// could be added later if the user wants audible-ish feedback.
+/// Install the four **Edit → Audio Lane Gain…** callbacks (open, lane-changed,
+/// cancel, confirm) on `window`. Extracted so `#[cfg(test)]` smoke tests can
+/// wire the same production handlers onto a headless `AppWindow` and exercise
+/// them via `window.invoke_edit_audio_lane_gain()` / `invoke_gain_confirm(...)`.
+/// Mirrors the shape of [`install_edit_drag_marker_callbacks`] + the
+/// `install_export_preflight_callback` helper used by the export smoke test.
+pub fn install_audio_lane_gain_callbacks(
+    window: &AppWindow,
+    session: Rc<RefCell<EditSession>>,
+    debouncer: Rc<autosave::AutosaveDebouncer>,
+    recent: Rc<RefCell<RecentStore>>,
+) {
+    {
+        // Open: prefill lane 1's current gain. Re-checks the "no audio lanes"
+        // case so tests that bypass the menu gate get a clean status message
+        // instead of an empty sheet.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_edit_audio_lane_gain(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let gains = session.borrow().audio_track_gains_db();
+            if gains.is_empty() {
+                w.set_status_text("No audio lanes — add one first.".into());
+                return;
+            }
+            w.set_gain_sheet_max_lane(gains.len() as i32);
+            w.set_gain_sheet_lane(1);
+            w.set_gain_sheet_db(gains[0]);
+            w.set_gain_sheet_error("".into());
+            w.set_gain_sheet_visible(true);
+        });
+    }
+
+    {
+        // Lane-changed: user typed a new lane number, refresh the dB field.
+        // Out-of-range lanes leave the field alone — confirm will catch them.
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        window.on_gain_lane_changed(move |lane_1based| {
+            let Some(w) = weak.upgrade() else { return };
+            let gains = session.borrow().audio_track_gains_db();
+            let idx = lane_1based as isize - 1;
+            if idx >= 0 && (idx as usize) < gains.len() {
+                w.set_gain_sheet_db(gains[idx as usize]);
+            }
+        });
+    }
+
+    {
+        // Cancel: hide the sheet without touching the project.
+        let weak = window.as_weak();
+        window.on_gain_cancel(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_gain_sheet_visible(false);
+                w.set_gain_sheet_error("".into());
+            }
+        });
+    }
+
+    {
+        // Confirm: validate lane (1-based → 0-based), delegate to
+        // `set_audio_track_gain_db` (clamping + NaN handling + undo), close on
+        // success, surface inline errors on failure (leaving the sheet open so
+        // the user can correct without reopening).
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        window.on_gain_confirm(move |lane_1based, db| {
+            let Some(w) = weak.upgrade() else { return };
+            if lane_1based < 1 {
+                w.set_gain_sheet_error(
+                    format!("Lane must be 1 or greater (got {lane_1based}).").into(),
+                );
+                return;
+            }
+            let lane = lane_1based as usize - 1;
+            let lane_count = session.borrow().audio_track_gains_db().len();
+            if lane >= lane_count {
+                w.set_gain_sheet_error(
+                    format!(
+                        "Lane {lane_1based} is out of range (have {lane_count} audio lane{}).",
+                        if lane_count == 1 { "" } else { "s" }
+                    )
+                    .into(),
+                );
+                return;
+            }
+            // Drop the mutable borrow before the match arms run — otherwise
+            // the `session.borrow()` call inside `sync_menu_and_autosave` /
+            // the applied-value read-back would panic with `RefCell already
+            // mutably borrowed` (the scrutinee's temporary lives to end-of-match).
+            let res = session.borrow_mut().set_audio_track_gain_db(lane, db);
+            match res {
+                Ok(()) => {
+                    w.set_gain_sheet_visible(false);
+                    w.set_gain_sheet_error("".into());
+                    sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                    let applied = session
+                        .borrow()
+                        .audio_track_gain_db(lane)
+                        .unwrap_or(0.0);
+                    w.set_status_text(
+                        format!("Lane {lane_1based} gain set to {applied:+.1} dB").into(),
+                    );
+                }
+                Err(e) => {
+                    w.set_gain_sheet_error(format!("{e:#}").into());
+                }
+            }
+        });
+    }
+}
+
 pub fn install_edit_drag_marker_callbacks(window: &AppWindow, session: Rc<RefCell<EditSession>>) {
     {
         let weak = window.as_weak();
@@ -777,6 +938,15 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     // Overlay gate is strictly `media-ready` — the helper creates the lane
     // itself, so it doesn't require one to pre-exist.
     window.set_overlay_audio_enabled(window.get_media_ready());
+    // Replace shares the same gate — same reasoning (helper creates its own
+    // lane and the per-primary-clip mute pass only needs a project to scan).
+    window.set_replace_audio_enabled(window.get_media_ready());
+    // Audio Lane Gain needs a project AND at least one audio lane to act on;
+    // the sheet would have nothing to prefill otherwise. Using `media-ready`
+    // alone would let the menu open into an empty sheet, which is worse than
+    // just greying it out.
+    let audio_gain_ok = window.get_media_ready() && !session.audio_track_gains_db().is_empty();
+    window.set_audio_gain_enabled(audio_gain_ok);
     let insert_subtitle_ok = session
         .project()
         .map(|p| p.tracks.iter().any(|t| t.kind == TrackKind::Subtitle))
@@ -980,6 +1150,8 @@ pub fn run() -> Result<()> {
     clear_timeline_models(&window);
     window.set_insert_audio_enabled(false);
     window.set_overlay_audio_enabled(false);
+    window.set_replace_audio_enabled(false);
+    window.set_audio_gain_enabled(false);
     window.set_insert_subtitle_enabled(false);
     window.set_move_clip_down_enabled(false);
     window.set_move_clip_up_enabled(false);
@@ -1562,6 +1734,62 @@ pub fn run() -> Result<()> {
                 }
             }
             None => tracing::debug!("overlay audio cancelled"),
+        });
+    }
+
+    {
+        let sender = player_handle_ref(&player);
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let debouncer = Rc::clone(&debouncer);
+        let recent = Rc::clone(&recent);
+        // Replace = mute every primary clip + overlay in one atomic step.
+        // Reuses the same file picker as overlay / insert-audio so the user
+        // sees a familiar dialog and the same set of audio-only filters.
+        window.on_edit_replace_audio(move || match prompt_insert_audio_dialog() {
+            Some(replace_path) => {
+                let mru_path = replace_path.clone();
+                let playhead_ms = weak
+                    .upgrade()
+                    .map(|w| w.get_playhead_ms() as f64)
+                    .unwrap_or(0.0);
+                let result = session
+                    .borrow_mut()
+                    .replace_audio_clip_at_playhead(replace_path, playhead_ms);
+                match result {
+                    Ok(()) => {
+                        recent.borrow_mut().record_media(mru_path);
+                        if let Some(w) = weak.upgrade() {
+                            let lanes = session
+                                .borrow()
+                                .project()
+                                .map(|p| {
+                                    p.tracks
+                                        .iter()
+                                        .filter(|t| t.kind == TrackKind::Audio)
+                                        .count()
+                                })
+                                .unwrap_or(0);
+                            sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                            w.set_status_text(
+                                format!(
+                                    "Audio replaced — primary track muted, new lane added \
+                                    ({lanes} audio track{}). Audible at export.",
+                                    if lanes == 1 { "" } else { "s" }
+                                )
+                                .into(),
+                            );
+                        }
+                        reload_player_timeline(&sender, &session.borrow());
+                    }
+                    Err(e) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text(format!("Replace audio failed: {e}").into());
+                        }
+                    }
+                }
+            }
+            None => tracing::debug!("replace audio cancelled"),
         });
     }
 
@@ -2269,6 +2497,13 @@ pub fn run() -> Result<()> {
         });
     }
 
+    install_audio_lane_gain_callbacks(
+        &window,
+        Rc::clone(&session),
+        Rc::clone(&debouncer),
+        Rc::clone(&recent),
+    );
+
     {
         // Edit → Mute Clip Audio: toggles audio_mute on the clip under the playhead.
         let weak = window.as_weak();
@@ -2930,6 +3165,107 @@ mod ui_smoke_tests {
         window.invoke_edit_drag_out_marker_ms(99_999.0);
         assert_eq!(session.borrow().out_marker_ms(), Some(2_000.0));
         assert!((window.get_marker_out_ms() - 2_000.0).abs() < 0.001);
+
+        // Phase U2-e — Audio Lane Gain… sheet round-trip. Fresh session: no
+        // audio lanes yet, so the menu gate must stay off even when
+        // media-ready. Then append an audio lane and re-sync: the gate
+        // flips on and the `on_edit_audio_lane_gain` callback opens the
+        // sheet prefilled from lane 0's current gain (0 dB at start).
+        let gain_session = Rc::new(RefCell::new(EditSession::default()));
+        gain_session
+            .borrow_mut()
+            .open_media_with_probe(&probe, PathBuf::from("/tmp/gain-probe.mp4"))
+            .expect("open with fake probe");
+        window.set_media_ready(true);
+        sync_menu(&window, &gain_session.borrow());
+        assert!(
+            !window.get_audio_gain_enabled(),
+            "no audio lanes yet → Audio Lane Gain… must be disabled"
+        );
+
+        gain_session
+            .borrow_mut()
+            .add_audio_track()
+            .expect("add empty audio lane");
+        sync_menu(&window, &gain_session.borrow());
+        assert!(
+            window.get_audio_gain_enabled(),
+            "one audio lane + media-ready → Audio Lane Gain… must enable"
+        );
+
+        // The install helper needs the autosave + recent Rcs production uses;
+        // the smoke test doesn't actually care whether autosave fires (the
+        // sheet state + session mutation are what we're asserting), but the
+        // function signature is production-shaped so we construct minimal
+        // stand-ins.
+        let gain_debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
+        let gain_recent = Rc::new(RefCell::new(RecentStore::default()));
+        install_audio_lane_gain_callbacks(
+            &window,
+            Rc::clone(&gain_session),
+            gain_debouncer,
+            gain_recent,
+        );
+        window.set_gain_sheet_visible(false);
+        window.invoke_edit_audio_lane_gain();
+        assert!(
+            window.get_gain_sheet_visible(),
+            "invoking the menu callback must open the gain sheet"
+        );
+        assert_eq!(
+            window.get_gain_sheet_lane(),
+            1,
+            "sheet prefills with lane 1 (1-based)"
+        );
+        assert!(
+            (window.get_gain_sheet_db() - 0.0).abs() < 0.001,
+            "sheet prefills with the lane's current gain (0 dB)"
+        );
+        assert_eq!(window.get_gain_sheet_max_lane(), 1);
+
+        // Confirm with a valid value → session takes the new gain,
+        // sheet closes, status line reports the applied (post-clamp) number.
+        window.invoke_gain_confirm(1, 6.5);
+        assert!(
+            !window.get_gain_sheet_visible(),
+            "successful confirm must close the sheet"
+        );
+        assert_eq!(gain_session.borrow().audio_track_gain_db(0), Some(6.5));
+        assert!(
+            window
+                .get_status_text()
+                .as_str()
+                .contains("+6.5 dB"),
+            "status line reports applied gain, got {:?}",
+            window.get_status_text().as_str()
+        );
+
+        // Confirm with an out-of-range lane → sheet stays open, inline error
+        // surfaces, session is untouched.
+        window.invoke_edit_audio_lane_gain();
+        window.invoke_gain_confirm(5, 3.0);
+        assert!(
+            window.get_gain_sheet_visible(),
+            "out-of-range lane must keep the sheet open for correction"
+        );
+        assert!(
+            window
+                .get_gain_sheet_error()
+                .as_str()
+                .contains("out of range"),
+            "expected inline 'out of range' error, got {:?}",
+            window.get_gain_sheet_error().as_str()
+        );
+        assert_eq!(
+            gain_session.borrow().audio_track_gain_db(0),
+            Some(6.5),
+            "rejected confirm must not mutate the project"
+        );
+
+        // Cancel closes the sheet without further mutation.
+        window.invoke_gain_cancel();
+        assert!(!window.get_gain_sheet_visible());
+        assert!(window.get_gain_sheet_error().as_str().is_empty());
     }
 }
 
@@ -3221,6 +3557,7 @@ mod export_payload_tests {
                 dest: got_dest,
                 fmt,
                 range_ms,
+                lane_gains_db: _,
             } => {
                 assert_eq!(got_dest, dest);
                 assert_eq!(fmt, reel_core::WebExportFormat::Mp4Remux);
@@ -3340,6 +3677,7 @@ mod export_payload_tests {
             id: Uuid::new_v4(),
             kind: TrackKind::Video,
             clip_ids: vec![c0, c1],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let session = EditSession::from_project_for_tests(p);
@@ -3492,18 +3830,21 @@ mod export_payload_tests {
             id: Uuid::new_v4(),
             kind: TrackKind::Video,
             clip_ids: vec![v_id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         p.tracks.push(Track {
             id: Uuid::new_v4(),
             kind: TrackKind::Audio,
             clip_ids: vec![a0_id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         p.tracks.push(Track {
             id: Uuid::new_v4(),
             kind: TrackKind::Audio,
             clip_ids: vec![a1_id],
+            gain_db: 0.0,
             extensions: Default::default(),
         });
 

@@ -306,6 +306,7 @@ mod tests {
             id: Uuid::new_v4(),
             kind: TrackKind::Subtitle,
             clip_ids: Vec::new(),
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let s = timeline_chip_sync(&p, true);
@@ -400,6 +401,7 @@ mod tests {
             id: Uuid::new_v4(),
             kind: TrackKind::Subtitle,
             clip_ids: Vec::new(),
+            gain_db: 0.0,
             extensions: Default::default(),
         });
         let s = timeline_chip_sync(&p, false);

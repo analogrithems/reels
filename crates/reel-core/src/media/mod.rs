@@ -10,7 +10,8 @@ pub mod srt;
 pub use export::{
     build_mute_substitution_lane, export_concat_timeline, export_concat_timeline_oriented,
     export_concat_with_audio, export_concat_with_audio_lanes_oriented,
-    export_concat_with_audio_oriented, export_with_ffmpeg, ffmpeg_args_for_format,
+    export_concat_with_audio_lanes_oriented_with_gains, export_concat_with_audio_oriented,
+    export_with_ffmpeg, ffmpeg_args_for_format,
     generate_silence_wav, ExportProgressFn, WebExportFormat,
 };
 pub use frame::grab_frame;
