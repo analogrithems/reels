@@ -48,7 +48,7 @@ pub struct AppPrefs {
 /// Public mirror of [`AudioClock::USER_OFFSET_RANGE_MS`]. Kept here so the
 /// load-time clamp and the UI slider bounds agree without cross-crate
 /// coupling through the player module.
-pub const AUDIO_OFFSET_RANGE_MS: i32 = 500;
+pub const AUDIO_OFFSET_RANGE_MS: i32 = 30_000;
 
 fn default_true() -> bool {
     true
@@ -150,11 +150,10 @@ mod tests {
 
     #[test]
     fn load_clamps_out_of_range_offset() {
-        // A corrupt or hand-edited prefs.json with ±10_000 ms must not
-        // make it to the audio clock — that'd stall the picture for
-        // seconds. The load clamp is the only guard before the value
-        // reaches `AudioClock::set_user_offset_ms`.
-        let json = br#"{ "audio_offset_ms": 10000 }"#;
+        // A corrupt or hand-edited prefs.json with a wild number must not
+        // make it to the audio clock. The load clamp is the only guard
+        // before the value reaches `AudioClock::set_user_offset_ms`.
+        let json = br#"{ "audio_offset_ms": 900000 }"#;
         let parsed: AppPrefs = serde_json::from_slice(json).unwrap();
         // `from_slice` skips the `load()` clamp path, so verify the
         // defaults are honored, then apply the same clamp manually.

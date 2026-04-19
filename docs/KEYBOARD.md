@@ -70,7 +70,16 @@ These match **Edit → Move Clip to Track Below / Above** when those menu items 
 | Move clip to track below | **Ctrl+Shift+↓** | **⌘⇧↓** |
 | Move clip to track above | **Ctrl+Shift+↑** | **⌘⇧↑** |
 
-On **macOS**, Slint’s `KeyEvent` maps the **Command (⌘)** key to the `control` modifier field, so **Ctrl+Shift** in this table corresponds to **⌘⇧** on an Apple keyboard.
+## A/V sync offset
+
+Nudge the audio clock's device-latency offset in 25 ms steps. Also exposed under **View → A/V Offset** with current value + reset. Works with or without media loaded (it's a per-device pref, persisted to `settings.json`).
+
+| Action | Windows / Linux | macOS |
+|--------|-----------------|-------|
+| Shift audio earlier (−25 ms) | **Shift+←** | **⇧←** |
+| Shift audio later (+25 ms) | **Shift+→** | **⇧→** |
+
+On **macOS**, Slint's `KeyEvent` maps the **Command (⌘)** key to the `control` modifier field, so **Ctrl+Shift** in this table corresponds to **⌘⇧** on an Apple keyboard.
 
 ---
 

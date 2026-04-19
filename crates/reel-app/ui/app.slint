@@ -693,8 +693,10 @@ export component AppWindow inherits Window {
     /// Manual A/V offset in **signed** milliseconds (Preferences → A/V
     /// Offset). Positive values say audio arrives later than the auto-
     /// calibrated device latency and hold the picture back. Driven by
-    /// submenu nudges (±10 ms) and a Reset; persisted in prefs. The
-    /// Rust-side clamp is ±500 ms (`AUDIO_OFFSET_RANGE_MS`).
+    /// submenu nudges (±25 ms) and **Shift+Arrow** keyboard shortcuts,
+    /// plus a Reset; persisted in prefs. The Rust-side clamp is ±30 000 ms
+    /// (`AUDIO_OFFSET_RANGE_MS`) — wide enough for bring-your-own-audio
+    /// overlay pre-roll plus any device-latency outlier.
     in-out property <int> audio-offset-ms: 0;
     /// Nudge the offset by `delta_ms`. Rust clamps and persists; the
     /// property is updated on return. `0` = reset to zero.
@@ -1174,14 +1176,14 @@ export component AppWindow inherits Window {
                 }
                 MenuSeparator { }
                 MenuItem {
-                    title: "Shift Earlier (−10 ms)";
+                    title: "Shift Earlier (−25 ms)  ⇧←";
                     icon: @image-url("icons/lucide/arrow-left.svg");
-                    activated => { root.audio-offset-nudge(-10); }
+                    activated => { root.audio-offset-nudge(-25); }
                 }
                 MenuItem {
-                    title: "Shift Later (+10 ms)";
+                    title: "Shift Later (+25 ms)  ⇧→";
                     icon: @image-url("icons/lucide/arrow-right.svg");
-                    activated => { root.audio-offset-nudge(10); }
+                    activated => { root.audio-offset-nudge(25); }
                 }
                 MenuSeparator { }
                 MenuItem {
@@ -1325,6 +1327,15 @@ export component AppWindow inherits Window {
                 accept
             } else if (event.text == "0" && event.modifiers.control && !event.modifiers.shift) {
                 root.view-zoom-fit();
+                accept
+            // Shift+Left / Shift+Right: nudge A/V sync offset earlier / later by 25 ms.
+            // Not gated on media-ready since A/V offset is a device-latency pref and
+            // the menu lets the user dial it in with or without a project loaded.
+            } else if (event.text == Key.LeftArrow && event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt) {
+                root.audio-offset-nudge(-25);
+                accept
+            } else if (event.text == Key.RightArrow && event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt) {
+                root.audio-offset-nudge(25);
                 accept
             } else if (!root.media-ready) {
                 reject

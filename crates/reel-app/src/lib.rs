@@ -1504,8 +1504,9 @@ pub fn run() -> Result<()> {
         });
     }
 
-    // A/V Offset: nudge the manual output-latency offset by ±10 ms. The
-    // audio clock clamps to ±500 ms, then we mirror the clamped value
+    // A/V Offset: nudge the manual output-latency offset by the caller-
+    // supplied delta (±25 ms from the menu / Shift+Arrow shortcut). The
+    // audio clock clamps to ±30 000 ms, then we mirror the clamped value
     // back to the window + prefs so the menu readout, the actual
     // compensation, and the on-disk pref stay in lockstep.
     {
@@ -1519,8 +1520,8 @@ pub fn run() -> Result<()> {
             let next = w.get_audio_offset_ms().saturating_add(delta_ms);
             clock.set_user_offset_ms(next);
             // Read back the clamped value so the UI reflects the actual
-            // state of the clock (a user spamming +10 past the 500 ms cap
-            // would otherwise see a stale property).
+            // state of the clock (a user spamming past the ±30 000 ms
+            // cap would otherwise see a stale property).
             let applied = clock.user_offset_ms();
             w.set_audio_offset_ms(applied);
             app_prefs.borrow_mut().audio_offset_ms = applied;

@@ -202,11 +202,11 @@ impl AudioClock {
     pub fn user_offset_ms(&self) -> i32 {
         (self.user_offset_us.load(Ordering::Acquire) / 1_000) as i32
     }
-    /// Absolute bound on [`set_user_offset_ms`]. ±500 ms covers every
-    /// real-world consumer device (Bluetooth, HDMI ARC, wireless speakers)
-    /// while still being small enough that a user can't accidentally dial
-    /// out to the point where the picture visibly freezes.
-    pub const USER_OFFSET_RANGE_MS: i32 = 500;
+    /// Absolute bound on [`set_user_offset_ms`]. ±30 000 ms (30 s) covers
+    /// every real-world consumer device (Bluetooth, HDMI ARC, wireless
+    /// speakers) plus long bring-your-own-audio overlay workflows where the
+    /// user is dialing in a musical-intro pre-roll by ear.
+    pub const USER_OFFSET_RANGE_MS: i32 = 30_000;
 
     /// Advance the raw position by the time represented by `frames` at
     /// `sample_rate`, scaled by preview speed (`speed_signed` is in the
@@ -1775,13 +1775,15 @@ mod sync_tests {
 
     #[test]
     fn user_offset_clamps_to_declared_range() {
-        // Guarantees the atomic can't overflow and that a runaway
-        // slider wire-up can't stall the picture by seconds. ±500 ms
-        // is the public contract documented on the const.
+        // Guarantees the atomic can't overflow. ±30 000 ms is the public
+        // contract documented on the const; values within the range pass
+        // through unchanged, values outside saturate at the boundary.
         let c = AudioClock::new();
-        c.set_user_offset_ms(10_000);
+        c.set_user_offset_ms(25_000);
+        assert_eq!(c.user_offset_ms(), 25_000);
+        c.set_user_offset_ms(500_000);
         assert_eq!(c.user_offset_ms(), AudioClock::USER_OFFSET_RANGE_MS);
-        c.set_user_offset_ms(-10_000);
+        c.set_user_offset_ms(-500_000);
         assert_eq!(c.user_offset_ms(), -AudioClock::USER_OFFSET_RANGE_MS);
     }
 
