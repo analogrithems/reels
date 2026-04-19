@@ -251,14 +251,34 @@ impl AudioClock {
         if self.output_latency_us.load(Ordering::Acquire) != 0 || sample_rate == 0 {
             return;
         }
-        let us = match timestamp_latency_nanos {
-            Some(nanos) if nanos > 0 => (nanos / 1_000) as u64,
-            _ => fallback_frames.saturating_mul(1_000_000) / sample_rate as u64,
+        // Branch on whether cpal populated a usable timestamp (vs. falling
+        // back to the naive "buffer size ÷ sample rate" estimate, which
+        // *ignores* driver / device latency and is the single biggest cause
+        // of a constant-offset A/V mismatch on Bluetooth, HDMI, and external
+        // DAC devices). The log line surfaces exactly which path we took so
+        // users can read `reel.log` and decide whether to dial in a manual
+        // offset — see `AudioClock::set_user_offset_ms`.
+        let (us, source) = match timestamp_latency_nanos {
+            Some(nanos) if nanos > 0 => ((nanos / 1_000) as u64, "cpal_timestamp"),
+            _ => (
+                fallback_frames.saturating_mul(1_000_000) / sample_rate as u64,
+                "buffer_fallback",
+            ),
         };
         // Floor at 1000us (1 ms) so readers can distinguish "calibrated"
         // from "not yet calibrated" (which stores 0).
-        self.output_latency_us
-            .store(us.max(1_000), Ordering::Release);
+        let stored_us = us.max(1_000);
+        self.output_latency_us.store(stored_us, Ordering::Release);
+        tracing::info!(
+            target: "reel_app::audio",
+            latency_ms = stored_us / 1_000,
+            latency_us = stored_us,
+            raw_timestamp_nanos = ?timestamp_latency_nanos,
+            fallback_frames,
+            sample_rate,
+            source,
+            "audio output latency calibrated"
+        );
     }
 }
 
@@ -1086,6 +1106,48 @@ fn drain_and_mix(lanes: &mut [AudioLane], n: usize) -> Vec<f32> {
     mix
 }
 
+/// Drain up to `buf.len()` samples from `consumer` into `buf`, multiplying
+/// each popped sample by `gain`. Samples that couldn't be popped (ring
+/// buffer underflow) are written as `0.0`. Returns the count of samples
+/// that were **actually popped** — callers use this to distinguish real
+/// content delivered to the device from silence we faked in because the
+/// decoder couldn't keep up.
+///
+/// Why this distinction matters: the cpal output callback fires on a
+/// wall-clock schedule regardless of whether the ring buffer has real
+/// samples. If the decoder is briefly stalled (disk IO, a seek, end of
+/// stream with no silence-pad active) the callback still needs to hand
+/// the device *some* samples or the user hears a pop; we write zeros.
+/// But those zeros are **not** content that advanced the timeline — so
+/// [`AudioClock::advance_by_frames`] must be called with the popped count,
+/// not the buffer length. Advancing through underflow silence is the drift
+/// bug that made the playhead run past the waveform's end (see
+/// `docs/audio-sync.md` / phase notes).
+///
+/// Silence-pad mode (video-tail after audio exhausts) is unaffected: it
+/// explicitly pushes `0.0` samples into the ring buffer via the producer,
+/// and those samples pop successfully here, so the clock advances through
+/// intentional silence exactly as before.
+#[inline]
+pub(crate) fn drain_ring_to_buffer<C: Consumer<Item = f32>>(
+    consumer: &mut C,
+    buf: &mut [f32],
+    gain: f32,
+) -> usize {
+    let mut popped = 0usize;
+    for sample in buf.iter_mut() {
+        match consumer.try_pop() {
+            Some(v) => {
+                *sample = v * gain;
+                popped += 1;
+            }
+            None => {
+                *sample = 0.0;
+            }
+        }
+    }
+    popped
+}
 
 #[allow(clippy::too_many_arguments)]
 fn audio_loop<P, C>(
@@ -1128,26 +1190,43 @@ fn audio_loop<P, C>(
         &config,
         move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
             let g = vol_cb.load(Ordering::Relaxed) as f32 * (1.0 / 1000.0);
-            for sample in data.iter_mut() {
-                *sample = consumer.try_pop().unwrap_or(0.0) * g;
-            }
+            // Pop real samples into the output buffer, falling back to
+            // zeros on ring-buffer underflow. The returned count
+            // distinguishes "audible content delivered" from "we wrote
+            // silence to avoid a pop" — critical for the clock advance
+            // below (see `drain_ring_to_buffer` doc comment).
+            let popped_samples = drain_ring_to_buffer(&mut consumer, data, g);
             // Output-latency calibration (first non-empty callback wins).
             // cpal's `timestamp().playback` is when the first sample of
             // this buffer will hit the speakers; `.callback` is when
             // the callback started. Their delta is the true one-way
             // latency (buffer + driver + device), which is what
             // `AudioClock::get()` subtracts so picture tracks sound.
-            let frames = (data.len() / OUT_CHANNELS as usize) as u64;
-            if frames > 0 {
+            //
+            // Calibration uses `total_frames` (the wall-clock size of
+            // this callback), not `popped_frames`, because latency is a
+            // property of the device + driver stack and is independent
+            // of whether our ring buffer had content ready.
+            let total_frames = (data.len() / OUT_CHANNELS as usize) as u64;
+            if total_frames > 0 {
                 let ts = info.timestamp();
                 let latency_nanos = ts
                     .playback
                     .duration_since(&ts.callback)
                     .map(|d| d.as_nanos());
-                clock_cb.calibrate_from_cpal(latency_nanos, frames, OUT_SAMPLE_RATE);
+                clock_cb.calibrate_from_cpal(latency_nanos, total_frames, OUT_SAMPLE_RATE);
             }
+            // Advance the clock **only** by frames that carried real
+            // content. If the ring buffer underflowed and we wrote zeros
+            // into the last N frames of this callback, those zeros were
+            // not audible content — incrementing pos_us through them
+            // makes the playhead run ahead of the waveform (the drift
+            // bug) and run past the end of the clip at EOF (the
+            // overshoot bug). Silence-pad frames pushed by the audio
+            // loop pop successfully and are counted here.
+            let popped_frames = (popped_samples as u64) / OUT_CHANNELS as u64;
             let sgn = speed_cb.load(Ordering::Relaxed);
-            clock_cb.advance_by_frames(frames, OUT_SAMPLE_RATE, sgn);
+            clock_cb.advance_by_frames(popped_frames, OUT_SAMPLE_RATE, sgn);
         },
         |err| tracing::error!(error = %err, "audio stream error"),
         None,
@@ -1892,6 +1971,135 @@ mod sync_tests {
         // Use `UNIX_EPOCH` to silence the unused-import lint on
         // platforms where the `time` imports are otherwise untouched.
         let _ = UNIX_EPOCH;
+    }
+
+    // --- drain_ring_to_buffer / underflow-safe clock advance ---------------
+    //
+    // These tests lock in the fix for the drift + playhead-overshoot bug:
+    // the cpal callback must advance `pos_us` only by the count of samples
+    // that actually popped from the ring buffer, not by the callback's
+    // buffer length. Prior to the fix, underflow silences (the
+    // `unwrap_or(0.0)` path) inflated `pos_us` at wall-clock rate and the
+    // playhead ran ahead of the audio's true source time — visibly
+    // drifting on long clips and landing past the last clip's end frame.
+
+    fn fresh_rb(cap: usize) -> (
+        <HeapRb<f32> as Split>::Prod,
+        <HeapRb<f32> as Split>::Cons,
+    ) {
+        HeapRb::<f32>::new(cap).split()
+    }
+
+    #[test]
+    fn drain_ring_to_buffer_full_pop_returns_buffer_length() {
+        // Happy path: producer filled the ring with exactly as many
+        // samples as cpal is asking for. Every slot pops successfully,
+        // gain is applied, returned count equals buf.len().
+        let (mut prod, mut cons) = fresh_rb(32);
+        for i in 0..8 {
+            prod.try_push((i + 1) as f32).unwrap();
+        }
+        let mut buf = [0.0f32; 8];
+        let popped = drain_ring_to_buffer(&mut cons, &mut buf, 1.0);
+        assert_eq!(popped, 8);
+        assert_eq!(buf, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn drain_ring_to_buffer_underflow_fills_remainder_with_zeros() {
+        // The underflow scenario that was producing drift: ring buffer
+        // held 4 samples but cpal asked for 8. The first 4 pop normally,
+        // the last 4 fall back to 0.0 — and `popped` reports only 4 so
+        // the caller doesn't inflate the clock by the zero tail.
+        let (mut prod, mut cons) = fresh_rb(32);
+        for v in [0.1, 0.2, 0.3, 0.4] {
+            prod.try_push(v).unwrap();
+        }
+        let mut buf = [99.0f32; 8];
+        let popped = drain_ring_to_buffer(&mut cons, &mut buf, 1.0);
+        assert_eq!(popped, 4);
+        assert!((buf[0] - 0.1).abs() < 1e-6);
+        assert!((buf[3] - 0.4).abs() < 1e-6);
+        assert_eq!(&buf[4..], &[0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn drain_ring_to_buffer_empty_ring_returns_zero() {
+        // Complete underflow: cpal fires on schedule but the decoder
+        // hasn't put anything in the ring yet. Caller must see
+        // `popped == 0` so no clock advance happens at all for this
+        // callback.
+        let (_prod, mut cons) = fresh_rb(32);
+        let mut buf = [7.0f32; 4];
+        let popped = drain_ring_to_buffer(&mut cons, &mut buf, 0.5);
+        assert_eq!(popped, 0);
+        assert_eq!(buf, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn drain_ring_to_buffer_applies_gain_only_to_popped_samples() {
+        // Underflow fills with unscaled 0.0, NOT `0.0 * gain` — this
+        // distinction matters zero mathematically but protects us from a
+        // future refactor accidentally treating the fallback as if it
+        // came from the ring.
+        let (mut prod, mut cons) = fresh_rb(32);
+        prod.try_push(2.0).unwrap();
+        prod.try_push(-4.0).unwrap();
+        let mut buf = [0.0f32; 4];
+        let popped = drain_ring_to_buffer(&mut cons, &mut buf, 0.25);
+        assert_eq!(popped, 2);
+        assert!((buf[0] - 0.5).abs() < 1e-6);
+        assert!((buf[1] - (-1.0)).abs() < 1e-6);
+        assert_eq!(&buf[2..], &[0.0, 0.0]);
+    }
+
+    #[test]
+    fn drain_ring_to_buffer_zero_length_buffer_is_noop() {
+        // cpal has been observed to pass zero-length buffers on some
+        // backends (driver reset, device switch). Make sure we don't
+        // report a spurious pop that would advance the clock.
+        let (mut prod, mut cons) = fresh_rb(32);
+        prod.try_push(1.0).unwrap();
+        let mut buf: [f32; 0] = [];
+        let popped = drain_ring_to_buffer(&mut cons, &mut buf, 1.0);
+        assert_eq!(popped, 0);
+        // The ring buffer must be untouched — we never called try_pop.
+        let mut leftover = [0.0f32; 1];
+        assert_eq!(drain_ring_to_buffer(&mut cons, &mut leftover, 1.0), 1);
+        assert!((leftover[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn popped_frames_advance_clock_while_underflow_does_not_drift_it() {
+        // End-to-end invariant: over 10 cpal callbacks, if the ring
+        // buffer only ever had N real samples in it, the clock advances
+        // by `N / sample_rate` ms and *not* by `10 * buffer / sample_rate`
+        // ms. Reproduces the exact drift pattern the user reported
+        // (playhead outruns audio on long clips, then lands past the
+        // clip end at EOF).
+        let c = AudioClock::new();
+        c.set_playing(true);
+        let (mut prod, mut cons) = fresh_rb(4_096);
+        // Stage 1024 real samples — the decoder "fell behind" and only
+        // delivered half what cpal wanted (buffer=512 × 10 callbacks ×
+        // 2 channels would be 10_240; we deliver 1024).
+        for i in 0..1024 {
+            prod.try_push((i as f32) * 0.001).unwrap();
+        }
+        let mut cpal_buf = [0.0f32; 512]; // half a frame at stereo
+        let mut total_popped = 0u64;
+        for _ in 0..10 {
+            let popped = drain_ring_to_buffer(&mut cons, &mut cpal_buf, 1.0);
+            total_popped += popped as u64;
+            c.advance_by_frames(popped as u64 / OUT_CHANNELS as u64, 48_000, 1_000);
+        }
+        // Exactly 1024 samples were real, the other 4_096 were underflow
+        // zeros. Clock must reflect the 1024 real samples only.
+        assert_eq!(total_popped, 1_024);
+        let expected_frames = 1_024u64 / OUT_CHANNELS as u64;
+        let expected_us = expected_frames * 1_000_000 / 48_000;
+        // Raw pos (no latency subtraction) equals the sum of advances.
+        assert_eq!(c.get_raw(), expected_us / 1_000);
     }
 }
 

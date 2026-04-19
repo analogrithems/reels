@@ -169,15 +169,18 @@ component FilmstripLane inherits VerticalBox {
                 clip: true;
                 // Click-to-seek: covers the entire lane body. Declared first
                 // so trim-handle TouchAreas (nested inside chip-rect) and any
-                // other inner TouchAreas take priority on overlap. `mouse-x`
-                // divided by the lane-body width gives a 0..=1 fraction that
-                // the call site multiplies by `duration-ms`.
+                // other inner TouchAreas take priority on overlap. The chip
+                // HorizontalBox below uses `padding-left: 4px` +
+                // `padding-right: 32px`, so chips live in
+                // `[4px, lane-body.width - 32px]`. We translate the click by
+                // the same padding so a click at the last chip's right edge
+                // seeks to EOF, not 32 px short of it.
                 seek-ta := TouchArea {
                     width: 100%;
                     height: 100%;
                     clicked => {
-                        if (lane-body.width > 0) {
-                            root.seek-ratio(max(0.0, min(1.0, self.mouse-x / lane-body.width)));
+                        if (lane-body.width > 36px) {
+                            root.seek-ratio(max(0.0, min(1.0, (self.mouse-x - 4px) / (lane-body.width - 36px))));
                         }
                     }
                 }
@@ -375,8 +378,14 @@ component FilmstripLane inherits VerticalBox {
                 // it paints on top of chip tiles and the empty-state text.
                 // `playhead-ratio` is set by the call site to
                 // `playhead-ms / duration-ms`, clamped 0..=1.
+                //
+                // The chip HorizontalBox above reserves `padding-left: 4px`
+                // and `padding-right: 32px` (drag-drop strip), so the chips
+                // actually render in `[4px, lane-body.width - 32px]`. The
+                // playhead must travel through the same range, otherwise at
+                // ratio=1.0 it lands 32 px past the last chip's right edge.
                 Rectangle {
-                    x: parent.width * root.playhead-ratio;
+                    x: 4px + (parent.width - 36px) * root.playhead-ratio;
                     y: 0;
                     width: 2px;
                     height: parent.height;
@@ -592,6 +601,16 @@ export component AppWindow inherits Window {
     /// True when a project / media is loaded — codec/path/save lines are filled when **View → Show Status** is on (see `sync_footer`).
     in property <bool> footer-visible: false;
     callback footer-refresh();
+
+    /// Active subtitle cue text to render over the preview video. Empty
+    /// string hides the overlay (used in inter-cue gaps and pre/post-roll).
+    /// Multi-line cues are kept intact — the overlay Text element wraps
+    /// on `\n`.
+    in property <string> current-subtitle-text: "";
+    /// Refresh `current-subtitle-text` from the session at the current
+    /// playhead. Fired on every scrub / nudge / edit, and at 100 ms
+    /// intervals while `is-playing` so cues step through during playback.
+    callback subtitle-refresh();
 
     callback file-open();
     callback file-open-recent(int);
@@ -1599,6 +1618,31 @@ export component AppWindow inherits Window {
                     height: img-h * 1px;
                     source: root.current-frame;
                     image-fit: fill;
+                }
+
+                // Subtitle overlay — bottom-center, positioned above the
+                // floating transport chrome's typical resting place (~10%
+                // from the bottom). Hidden when `current-subtitle-text` is
+                // empty so an inter-cue gap blanks the strip rather than
+                // holding the prior line. Single line wraps naturally on
+                // `\n` in the cue body.
+                if root.current-subtitle-text != "": Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - self.height - parent.height * 16 / 100;
+                    width: min(parent.width - 64px, subtitle-label.preferred-width + 32px);
+                    height: subtitle-label.preferred-height + 16px;
+                    background: #00000099;
+                    border-radius: 6px;
+                    subtitle-label := Text {
+                        x: 16px;
+                        y: 8px;
+                        width: parent.width - 32px;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        text: root.current-subtitle-text;
+                        color: white;
+                        font-size: 18px;
+                    }
                 }
             }
 
@@ -3096,6 +3140,19 @@ export component AppWindow inherits Window {
             running: root.footer-visible && root.view-show-status && root.is-playing;
             triggered => {
                 root.footer-refresh();
+            }
+        }
+
+        // Subtitle overlay refresh — only runs during playback (scrub /
+        // nudge / edit paths fire `subtitle-refresh` directly). 100 ms is
+        // fine-grained enough that cues land on the right side of short
+        // transitions (≤ 1 frame at 24 fps) without burning UI cycles on
+        // every tick.
+        subtitle-sync-timer := Timer {
+            interval: 100ms;
+            running: root.is-playing;
+            triggered => {
+                root.subtitle-refresh();
             }
         }
 

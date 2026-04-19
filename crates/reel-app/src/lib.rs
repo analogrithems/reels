@@ -15,6 +15,7 @@ mod project_io;
 mod recent;
 mod session;
 mod shell;
+mod subtitle;
 mod timecode;
 mod timeline;
 mod timeline_chips;
@@ -1018,6 +1019,24 @@ fn sync_timeline_chips(window: &AppWindow, session: &EditSession) {
     window.set_tl_srow3(ModelRc::new(VecModel::from(sync.subtitle[3].clone())));
 }
 
+/// Push the active subtitle cue text for the current playhead into the UI
+/// overlay property. Empty string when no subtitle track covers this instant
+/// or we're in an inter-cue gap — Slint hides the overlay Rectangle in that
+/// case so the gap blanks rather than holding the prior cue.
+pub(crate) fn refresh_subtitle_overlay(
+    window: &AppWindow,
+    session: &EditSession,
+    cache: &subtitle::SubtitleCueCache,
+) {
+    let text = session
+        .project()
+        .and_then(|p| {
+            subtitle::subtitle_text_at_seq_ms(p, window.get_playhead_ms() as f64, cache)
+        })
+        .unwrap_or_default();
+    window.set_current_subtitle_text(text.into());
+}
+
 fn sync_footer(window: &AppWindow, session: &EditSession) {
     let ph = window.get_playhead_ms() as f64;
     let has_project = session.project().is_some();
@@ -1118,6 +1137,11 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
     sync_footer(window, session);
     sync_timeline_chips(window, session);
     sync_marker_ui(window, session);
+    // Ask Slint to ping `on_subtitle_refresh`, which has the cache + session
+    // captured. Keeps `sync_menu`'s signature unchanged while covering every
+    // edit/scrub path — playback ticks refresh via `subtitle-sync-timer` in
+    // `app.slint`.
+    window.invoke_subtitle_refresh();
 }
 
 /// Push the session's In/Out marker state into Slint properties. Uses `-1.0` as the
@@ -1263,13 +1287,16 @@ fn close_window_and_clear_player(
     p: &player::PlayerCmdSender,
     session: &Rc<RefCell<EditSession>>,
     weak: &slint::Weak<AppWindow>,
+    subtitle_cache: &subtitle::SubtitleCueCache,
 ) {
     let mut s = session.borrow_mut();
     s.clear_media();
     p.send(player::Cmd::Close);
     drop(s);
+    subtitle_cache.clear();
     if let Some(w) = weak.upgrade() {
         reset_tools_popup_ui(&w);
+        w.set_current_subtitle_text("".into());
         sync_menu(&w, &session.borrow());
     }
 }
@@ -1281,13 +1308,16 @@ fn open_path_from_ui(
     weak: &slint::Weak<AppWindow>,
     debouncer: &autosave::AutosaveDebouncer,
     recent: &Rc<RefCell<RecentStore>>,
+    subtitle_cache: &subtitle::SubtitleCueCache,
 ) {
     tracing::info!(?path, "open path");
     if let Some(w) = weak.upgrade() {
         w.set_is_playing(false);
         w.set_media_ready(false);
+        w.set_current_subtitle_text("".into());
         reset_tools_popup_ui(&w);
     }
+    subtitle_cache.clear();
     let open_result = session.borrow_mut().open_media(path.clone());
     match open_result {
         Ok(()) => {
@@ -1406,6 +1436,10 @@ pub fn run() -> Result<()> {
     let session = Rc::new(RefCell::new(EditSession::default()));
     let debouncer = Rc::new(autosave::AutosaveDebouncer::new(window.as_weak()));
     let recent = Rc::new(RefCell::new(RecentStore::load()));
+    // Subtitle cue cache — shared across every handler that refreshes the
+    // overlay (scrub, nudge, play-tick timer) so a subtitle file is parsed
+    // at most once per session.
+    let subtitle_cache = Rc::new(subtitle::SubtitleCueCache::default());
     // Tracks the clip currently loaded into the Trim Clip… sheet, so `on_trim_confirm` can
     // apply the edit without racing against the playhead after the sheet opens.
     let trim_target: Rc<RefCell<Option<Uuid>>> = Rc::new(RefCell::new(None));
@@ -1723,9 +1757,10 @@ pub fn run() -> Result<()> {
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
         let recent = Rc::clone(&recent);
+        let subs = Rc::clone(&subtitle_cache);
         window.on_file_open(move || match prompt_open_dialog() {
             Some(path) => {
-                open_path_from_ui(path, &sender, &session, &weak, &debouncer, &recent);
+                open_path_from_ui(path, &sender, &session, &weak, &debouncer, &recent, &subs);
             }
             None => tracing::debug!("open cancelled"),
         });
@@ -1736,6 +1771,7 @@ pub fn run() -> Result<()> {
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
         let recent = Rc::clone(&recent);
+        let subs = Rc::clone(&subtitle_cache);
         let weak = window.as_weak();
         window.on_file_open_recent(move |idx| {
             let Some(path) = recent.borrow().path_for_menu_index(idx) else {
@@ -1749,7 +1785,7 @@ pub fn run() -> Result<()> {
                 }
                 return;
             }
-            open_path_from_ui(path, &sender, &session, &weak, &debouncer, &recent);
+            open_path_from_ui(path, &sender, &session, &weak, &debouncer, &recent, &subs);
         });
     }
 
@@ -1770,6 +1806,7 @@ pub fn run() -> Result<()> {
         let session = Rc::clone(&session);
         let debouncer = Rc::clone(&debouncer);
         let recent = Rc::clone(&recent);
+        let subs = Rc::clone(&subtitle_cache);
         window.on_file_close(move || {
             let Some(w) = weak.upgrade() else {
                 return;
@@ -1786,7 +1823,7 @@ pub fn run() -> Result<()> {
                 return;
             }
             if !dirty {
-                close_window_and_clear_player(&p, &session, &weak);
+                close_window_and_clear_player(&p, &session, &weak, &subs);
                 return;
             }
 
@@ -1846,10 +1883,10 @@ pub fn run() -> Result<()> {
                             }
                         }
                     }
-                    close_window_and_clear_player(&p, &session, &weak);
+                    close_window_and_clear_player(&p, &session, &weak, &subs);
                 }
                 MessageDialogResult::Custom(s) if s == "Don't Save" => {
-                    close_window_and_clear_player(&p, &session, &weak);
+                    close_window_and_clear_player(&p, &session, &weak, &subs);
                 }
                 MessageDialogResult::Cancel => {}
                 MessageDialogResult::Custom(s) if s == "Cancel" => {}
@@ -3173,6 +3210,18 @@ pub fn run() -> Result<()> {
             if let Some(w) = weak.upgrade() {
                 sync_footer(&w, &session.borrow());
             }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let cache = Rc::clone(&subtitle_cache);
+        window.on_subtitle_refresh(move || {
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            refresh_subtitle_overlay(&w, &session.borrow(), &cache);
         });
     }
 
