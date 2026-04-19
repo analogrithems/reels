@@ -29,6 +29,13 @@ export struct TlChip {
     begin-ms: int,
     end-ms: int,
     source-duration-ms: int,
+    // Waveform / thumbnail raster supplied by the Rust-side AssetCache.
+    // `waveform-ready` gates swap-in: while false the chip body shows a
+    // diagonal-stripe placeholder so the timeline renders instantly on
+    // media load and the real image fades in as the background worker
+    // finishes decoding peaks.
+    waveform: image,
+    waveform-ready: bool,
 }
 
 /// Single timeline lane: label column + chip strip (or empty state).
@@ -45,6 +52,10 @@ component FilmstripLane inherits VerticalBox {
     in property <color> lane-accent: Theme.text-tertiary;
     in property <[TlChip]> chips;
     in property <bool> delete-enabled: true;
+    /// Diagonal-stripe image shown on audio chips whose `waveform` hasn't
+    /// arrived from the AssetCache yet. Piped in from `AppWindow` so the
+    /// same raster is shared across every lane.
+    in property <image> placeholder-stripe;
     /// Current playhead as a fraction of total duration (0..=1). Drives the
     /// red vertical playhead line overlaid on the lane body so every lane
     /// (video / audio / subtitle) reads the same play position at a glance.
@@ -151,14 +162,28 @@ component FilmstripLane inherits VerticalBox {
                     width: parent.width;
                     height: parent.height;
                     spacing: 3px;
-                    padding: 4px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+                    padding-left: 4px;
+                    // Reserve a drag-drop strip on the right edge of every
+                    // lane so clips don't run flush to the window. Without
+                    // this you can't reach "past the last clip" with a
+                    // mouse / drop target. ~32 px matches a comfortable
+                    // drop-zone hit area on HiDPI screens.
+                    padding-right: 32px;
                     // `stretch` lets `horizontal-stretch: item.width-weight` distribute
                     // the lane's full width across chips — so a single-clip lane fills
                     // edge-to-edge and multi-clip lanes still proportion by duration.
                     alignment: stretch;
                     for item in root.chips: chip-rect := Rectangle {
                         horizontal-stretch: item.width-weight;
-                        min-width: 60px;
+                        // Lower `min-width` so dense multi-clip lanes fit
+                        // within the lane body instead of overflowing past
+                        // the window edge (the parent Rectangle has
+                        // `clip: true`, which previously *hid* the runoff
+                        // rather than reflowing it). 24 px is still wide
+                        // enough to reach a trim handle or click-target.
+                        min-width: 24px;
                         height: 40px;
                         border-radius: 4px;
                         border-width: 1px;
@@ -180,6 +205,32 @@ component FilmstripLane inherits VerticalBox {
                                 ? (item.chip-idx == 1 ? #5e9ee0 : Theme.clip-video)
                                 : (item.chip-idx == 1 ? #6dd5ff : Theme.clip-audio));
                         clip: true;
+                        // Waveform / thumbnail layer (audio + video chips
+                        // with a backing clip). When the AssetCache has
+                        // produced a raster, it lives on `item.waveform`
+                        // and `waveform-ready` flips to true — the Image
+                        // fills the chip body. Until then we draw the
+                        // shared diagonal-stripe placeholder so chips
+                        // render **immediately** on media load instead
+                        // of waiting for a decode pass. Synthetic (no
+                        // clip-id) chips skip both layers and stay flat.
+                        if item.clip-id != "" && !item.is-subtitle && item.waveform-ready: Image {
+                            x: 0;
+                            y: 0;
+                            width: 100%;
+                            height: 100%;
+                            source: item.waveform;
+                            image-fit: fill;
+                        }
+                        if item.clip-id != "" && !item.is-subtitle && !item.waveform-ready: Image {
+                            x: 0;
+                            y: 0;
+                            width: 100%;
+                            height: 100%;
+                            source: root.placeholder-stripe;
+                            image-fit: fill;
+                            opacity: 0.35;
+                        }
                         // Name overlay: gradient-faded band at the bottom with
                         // the file name, matching v0 `ClipThumbnail` spec.
                         Rectangle {
@@ -299,6 +350,12 @@ export component AppWindow inherits Window {
     always-on-top: root.stay-on-top;
 
     in property <image> current-frame;
+    /// Diagonal-stripe loading pattern shown on audio/video chips whose
+    /// background asset (waveform / thumbnail strip) hasn't finished
+    /// generating yet. Raster'd once at startup by `asset_cache::install`
+    /// and never mutated thereafter. Left empty if the host fails to init
+    /// the cache — chips just show flat color in that case.
+    in property <image> timeline-placeholder-stripe;
     in property <float> duration-ms: 0;
     /// Timeline position; **in-out** so the timeline `Slider` can two-way bind while Rust/player updates during playback.
     in-out property <float> playhead-ms: 0;
@@ -469,6 +526,13 @@ export component AppWindow inherits Window {
     /// Ripple is automatic — the project's sequential clip model has no absolute
     /// timeline positions, so shrinking any clip pulls the rest forward.
     callback clip-trim-commit(string /* clip-id */, int /* edge */, float /* delta-ratio */);
+    /// Fired from the Rust-side AssetCache worker (via
+    /// `slint::invoke_from_event_loop`) whenever a waveform / thumbnail
+    /// raster completes. The handler re-runs `sync_timeline_chips` so the
+    /// chip models pick up the freshly-cached image and the placeholder
+    /// stripe gives way to the real graphic. No arguments — the session
+    /// and window already know everything needed to rebuild.
+    callback refresh-timeline-chips();
     callback file-export();
     callback export-cancel();
     callback export-preset-cancel();
@@ -2261,7 +2325,12 @@ export component AppWindow inherits Window {
             }
             VerticalBox {
                 padding-left: 8px;
-                padding-right: 8px;
+                // Extra right-side gap so the timeline strip doesn't run
+                // flush to the window edge — makes drop targets and trim
+                // handles past the last clip reachable with a mouse. The
+                // FilmstripLane itself reserves an additional 32 px drag
+                // strip inside the lane body (see `padding-right` there).
+                padding-right: 16px;
                 padding-top: 12px;
                 padding-bottom: 12px;
                 spacing: 8px;
@@ -2333,6 +2402,7 @@ export component AppWindow inherits Window {
                             lane-label: "V1";
                             lane-accent: Theme.clip-video;
                             chips: root.tl_vrow0;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: root.tl_video_project_track_count > 1 && 0 < root.tl_video_project_track_count;
                             track-delete => {
@@ -2346,6 +2416,7 @@ export component AppWindow inherits Window {
                             lane-label: "V2";
                             lane-accent: Theme.clip-video;
                             chips: root.tl_vrow1;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: root.tl_video_project_track_count > 1 && 1 < root.tl_video_project_track_count;
                             track-delete => {
@@ -2359,6 +2430,7 @@ export component AppWindow inherits Window {
                             lane-label: "V3";
                             lane-accent: Theme.clip-video;
                             chips: root.tl_vrow2;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: root.tl_video_project_track_count > 1 && 2 < root.tl_video_project_track_count;
                             track-delete => {
@@ -2372,6 +2444,7 @@ export component AppWindow inherits Window {
                             lane-label: "V4";
                             lane-accent: Theme.clip-video;
                             chips: root.tl_vrow3;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: root.tl_video_project_track_count > 1 && 3 < root.tl_video_project_track_count;
                             track-delete => {
@@ -2449,6 +2522,7 @@ export component AppWindow inherits Window {
                             lane-label: "A1";
                             lane-accent: Theme.clip-audio;
                             chips: root.tl_arow0;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: 0 < root.tl_audio_project_track_count;
                             track-delete => {
@@ -2462,6 +2536,7 @@ export component AppWindow inherits Window {
                             lane-label: "A2";
                             lane-accent: Theme.clip-audio;
                             chips: root.tl_arow1;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: 1 < root.tl_audio_project_track_count;
                             track-delete => {
@@ -2475,6 +2550,7 @@ export component AppWindow inherits Window {
                             lane-label: "A3";
                             lane-accent: Theme.clip-audio;
                             chips: root.tl_arow2;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: 2 < root.tl_audio_project_track_count;
                             track-delete => {
@@ -2488,6 +2564,7 @@ export component AppWindow inherits Window {
                             lane-label: "A4";
                             lane-accent: Theme.clip-audio;
                             chips: root.tl_arow3;
+                            placeholder-stripe: root.timeline-placeholder-stripe;
                             playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                             delete-enabled: 3 < root.tl_audio_project_track_count;
                             track-delete => {
@@ -2563,6 +2640,7 @@ export component AppWindow inherits Window {
                         lane-label: "S1";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow0;
+                        placeholder-stripe: root.timeline-placeholder-stripe;
                         playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 0 < root.tl_subtitle_project_track_count;
                         track-delete => {
@@ -2576,6 +2654,7 @@ export component AppWindow inherits Window {
                         lane-label: "S2";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow1;
+                        placeholder-stripe: root.timeline-placeholder-stripe;
                         playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 1 < root.tl_subtitle_project_track_count;
                         track-delete => {
@@ -2589,6 +2668,7 @@ export component AppWindow inherits Window {
                         lane-label: "S3";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow2;
+                        placeholder-stripe: root.timeline-placeholder-stripe;
                         playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 2 < root.tl_subtitle_project_track_count;
                         track-delete => {
@@ -2602,6 +2682,7 @@ export component AppWindow inherits Window {
                         lane-label: "S4";
                         lane-accent: Theme.clip-subtitle;
                         chips: root.tl_srow3;
+                        placeholder-stripe: root.timeline-placeholder-stripe;
                         playhead-ratio: root.duration-ms > 0 ? root.playhead-ms / root.duration-ms : 0;
                         delete-enabled: 3 < root.tl_subtitle_project_track_count;
                         track-delete => {

@@ -61,6 +61,13 @@ fn chips_for_track(p: &Project, track_idx: usize, kind: TrackKind) -> Vec<TlChip
                 begin_ms,
                 end_ms,
                 source_duration_ms: src_ms,
+                // Waveform / thumbnail start empty; the AssetCache layer
+                // (see `asset_cache.rs`) fills them in asynchronously and
+                // the chip list is rebuilt when a job completes. Until
+                // then `waveform_ready == false` keeps the placeholder
+                // stripe visible so the chip shows up instantly.
+                waveform: slint::Image::default(),
+                waveform_ready: false,
             },
         )
         .collect()
@@ -94,6 +101,13 @@ fn synthetic_full_width_chip(label: String, is_video: bool) -> Vec<TlChip> {
         begin_ms: 0,
         end_ms: 0,
         source_duration_ms: 0,
+        // Synthetic single-media chips have no backing clip, so they can't
+        // be keyed in the AssetCache. Leave `waveform_ready: false`; the
+        // FilmstripLane renders them as flat color (no placeholder shown
+        // for synthetic chips — they represent a whole stream, not a
+        // decodeable segment).
+        waveform: slint::Image::default(),
+        waveform_ready: false,
     }]
 }
 

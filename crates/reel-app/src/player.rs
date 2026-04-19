@@ -66,10 +66,28 @@ const OUT_CHANNELS: u16 = 2;
 
 /// Shared playback clock, in milliseconds since the current source start.
 /// Advanced by the audio thread as samples are written to the output stream.
+///
+/// # Output-latency compensation
+///
+/// `pos_ms` tracks **samples handed to the OS audio buffer** — not samples
+/// actually emitted by the speakers. On most systems the speaker is playing
+/// audio from ~5–20 ms ago relative to the most recent cpal callback (one
+/// callback buffer's worth, plus device-dependent offsets). If the video
+/// thread schedules frames against `pos_ms`, video renders "one buffer
+/// ahead" of what the user hears — the classic A/V sync complaint.
+///
+/// `output_latency_ms` holds that buffer estimate. It is calibrated once on
+/// the first non-empty cpal output callback (see [`audio_loop`]) as
+/// `frames_per_callback / OUT_SAMPLE_RATE`. [`AudioClock::get`] subtracts
+/// that offset so readers see **audible-now**, keeping video in lockstep
+/// with the speaker, not the ring buffer. [`AudioClock::get_raw`] returns
+/// the uncorrected value for internal audio-thread use (so audio doesn't
+/// subtract its own latency from itself).
 #[derive(Clone, Debug, Default)]
 pub struct AudioClock {
     pos_ms: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
+    output_latency_ms: Arc<AtomicU64>,
 }
 
 impl AudioClock {
@@ -79,7 +97,17 @@ impl AudioClock {
     pub fn set(&self, ms: u64) {
         self.pos_ms.store(ms, Ordering::Release);
     }
+    /// Latency-compensated read: audible-now in sequence ms. Use this from
+    /// the **video** thread / UI so picture matches sound.
     pub fn get(&self) -> u64 {
+        let raw = self.pos_ms.load(Ordering::Acquire);
+        let lat = self.output_latency_ms.load(Ordering::Acquire);
+        raw.saturating_sub(lat)
+    }
+    /// Raw written-to-OS position. Use this from the **audio** thread so
+    /// audio decode doesn't chase its own latency offset.
+    #[allow(dead_code)]
+    pub fn get_raw(&self) -> u64 {
         self.pos_ms.load(Ordering::Acquire)
     }
     pub fn set_playing(&self, p: bool) {
@@ -87,6 +115,17 @@ impl AudioClock {
     }
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Acquire)
+    }
+    /// Calibration hook: set the estimated one-way output latency (cpal
+    /// callback buffer + device). Called once by the audio thread on the
+    /// first non-empty callback. Stable across seeks / media changes since
+    /// the audio device doesn't change mid-session.
+    pub fn set_output_latency_ms(&self, ms: u64) {
+        self.output_latency_ms.store(ms, Ordering::Release);
+    }
+    #[allow(dead_code)]
+    pub fn output_latency_ms(&self) -> u64 {
+        self.output_latency_ms.load(Ordering::Acquire)
     }
 }
 
@@ -822,11 +861,32 @@ fn audio_loop<P, C>(
             for sample in data.iter_mut() {
                 *sample = consumer.try_pop().unwrap_or(0.0) * g;
             }
+            // Output-latency calibration (first non-empty callback wins).
+            // `data.len() / channels` = frames the OS wants us to fill this
+            // tick; those frames will leave the speakers ~one-buffer later.
+            // Subtracting that from `AudioClock::get()` aligns picture with
+            // sound — see the doc comment on [`AudioClock`]. We only set
+            // this once per session; device changes would need a teardown.
+            if clock_cb.output_latency_ms() == 0 {
+                let frames = (data.len() / OUT_CHANNELS as usize) as u64;
+                if frames > 0 {
+                    let lat = (frames * 1000 / OUT_SAMPLE_RATE as u64).max(1);
+                    clock_cb.set_output_latency_ms(lat);
+                    tracing::debug!(
+                        frames,
+                        latency_ms = lat,
+                        "calibrated audio output latency"
+                    );
+                }
+            }
             let sgn = speed_cb.load(Ordering::Relaxed);
             if clock_cb.is_playing() && sgn > 0 {
                 let written = data.len() as u64 / OUT_CHANNELS as u64;
                 let ms = written * 1000 / OUT_SAMPLE_RATE as u64;
-                let cur = clock_cb.get();
+                // Use the raw (uncorrected) position — audio-side bookkeeping
+                // must not subtract its own output latency from itself, or
+                // the advance would compound.
+                let cur = clock_cb.get_raw();
                 let sp = (sgn as f64).clamp(250.0, 4000.0) / 1000.0;
                 let adv = ((ms as f64) * sp).round() as u64;
                 clock_cb.set(cur.saturating_add(adv));

@@ -3,6 +3,7 @@
 //! The `reel` binary (`src/main.rs`) calls [`run`]. Integration tests link against this crate
 //! to exercise `AppWindow` (see `tests/ui_visual_golden.rs`).
 
+mod asset_cache;
 mod autosave;
 mod effects;
 mod footer;
@@ -878,12 +879,61 @@ fn clear_timeline_models(window: &AppWindow) {
     window.set_tl_srow3(empty_tl_model());
 }
 
+thread_local! {
+    /// UI-thread singleton for the async asset cache (waveforms / thumbs).
+    /// Populated once in [`run`] right after player spawn. Kept on a
+    /// thread-local so chip enrichment doesn't require plumbing the cache
+    /// handle through every `sync_timeline_chips` call site. Accessed only
+    /// from the Slint event-loop thread — no cross-thread sync needed.
+    static ASSET_CACHE: std::cell::RefCell<Option<asset_cache::AssetCache>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Enrich each audio chip in `rows` with its cached waveform (if any) or
+/// enqueue a generation job. Runs in-place on the TlChip slice just before
+/// the model is pushed to Slint. Called from [`sync_timeline_chips`] for
+/// every audio row.
+fn attach_audio_waveforms(rows: &mut [TlChip], p: &reel_core::project::Project) {
+    ASSET_CACHE.with(|slot| {
+        let Some(cache) = slot.borrow().clone() else {
+            return;
+        };
+        for chip in rows.iter_mut() {
+            if chip.is_video || chip.is_subtitle || chip.clip_id.is_empty() {
+                continue;
+            }
+            // Resolve clip UUID -> source path for the worker.
+            let Ok(uuid) = Uuid::parse_str(chip.clip_id.as_str()) else {
+                continue;
+            };
+            let Some(clip) = p.clips.iter().find(|c| c.id == uuid) else {
+                continue;
+            };
+            let in_ms = chip.begin_ms.max(0) as u64;
+            let out_ms = chip.end_ms.max(chip.begin_ms) as u64;
+            if let Some(img) =
+                cache.get_or_request(chip.clip_id.as_str(), &clip.source_path, in_ms, out_ms)
+            {
+                chip.waveform = img;
+                chip.waveform_ready = true;
+            }
+        }
+    });
+}
+
 fn sync_timeline_chips(window: &AppWindow, session: &EditSession) {
     let Some(p) = session.project() else {
         clear_timeline_models(window);
         return;
     };
-    let sync = timeline_chips::timeline_chip_sync(p, session.opened_from_project_document());
+    let mut sync = timeline_chips::timeline_chip_sync(p, session.opened_from_project_document());
+    // Enrich audio chips with cached waveforms before pushing the model
+    // (synchronous cache hit → `waveform_ready: true`; miss → placeholder
+    // stripe shows while the worker generates it, then `refresh-timeline-chips`
+    // fires and this function re-runs with the freshly-cached image).
+    for row in sync.audio.iter_mut() {
+        attach_audio_waveforms(row, p);
+    }
     window.set_tl_video_track_count(sync.video_display_n);
     window.set_tl_audio_track_count(sync.audio_display_n);
     window.set_tl_subtitle_track_count(sync.subtitle_display_n);
@@ -1214,6 +1264,25 @@ pub fn run() -> Result<()> {
             return Err(e);
         }
     };
+
+    // Background asset cache: decodes audio peaks / thumbnails off the UI
+    // thread and swaps them into TlChip waveforms as they finish. The
+    // placeholder diagonal-stripe tile is bound once here so every lane
+    // can reference it through the `placeholder-stripe` property.
+    let asset_cache = asset_cache::AssetCache::spawn(window.as_weak());
+    window.set_timeline_placeholder_stripe(asset_cache.placeholder_image());
+    ASSET_CACHE.with(|slot| {
+        *slot.borrow_mut() = Some(asset_cache.clone());
+    });
+    {
+        let weak = window.as_weak();
+        let session_cb = Rc::clone(&session);
+        window.on_refresh_timeline_chips(move || {
+            if let Some(w) = weak.upgrade() {
+                sync_timeline_chips(&w, &session_cb.borrow());
+            }
+        });
+    }
 
     {
         let vol = player.master_volume_1000.clone();
