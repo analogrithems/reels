@@ -82,6 +82,24 @@ struct Job {
     out_ms: u64,
 }
 
+/// Scale `src_w × src_h` to the largest `fit_w × fit_h` that fits
+/// inside `cell_w × cell_h` while preserving aspect ratio. Always
+/// returns at least `1 × 1` so the ffmpeg scaler can be constructed
+/// safely on degenerate inputs (a zero-dim scaler request panics
+/// inside sws_scale). Returned dims are **even-rounded** to avoid
+/// the occasional swscale chroma-alignment warning.
+fn fit_cell(src_w: u32, src_h: u32, cell_w: u32, cell_h: u32) -> (u32, u32) {
+    if src_w == 0 || src_h == 0 {
+        return (1, 1);
+    }
+    let sw = src_w as f64;
+    let sh = src_h as f64;
+    let scale = (cell_w as f64 / sw).min(cell_h as f64 / sh);
+    let fit_w = ((sw * scale).round() as u32).clamp(1, cell_w) & !1;
+    let fit_h = ((sh * scale).round() as u32).clamp(1, cell_h) & !1;
+    (fit_w.max(2), fit_h.max(2))
+}
+
 /// Shared, `Clone`-able handle to the background asset cache. Stored on
 /// the session/window scope and consulted from `sync_timeline_chips`.
 ///
@@ -377,12 +395,21 @@ fn decode_peaks(
 }
 
 /// Raster `peaks` into an RGBA8 buffer of `(WAVE_WIDTH, WAVE_HEIGHT)`.
-/// Transparent background + opaque vertical lines in `WAVE_RGBA`.
+///
+/// Transparent background + vertical lines in `WAVE_RGBA`. The alpha
+/// ramps by vertical distance from the midline — strongest at the
+/// peak extents, fading toward the center — which gives the waveform
+/// depth at chip scale and avoids the flat "solid bar" look of equal
+/// alpha throughout. Also adds a 1 px always-on midline at ~20 %
+/// alpha so silent stretches still read as "this is an audio track"
+/// instead of an empty box.
 fn raster_peaks(peaks: &[(f32, f32)]) -> SharedPixelBuffer<Rgba8Pixel> {
     let w = WAVE_WIDTH;
     let h = WAVE_HEIGHT;
     let mid = (h as f32) / 2.0;
     let scale = mid - 1.0;
+    // Midline alpha — subtle so it reads as an axis, not a feature.
+    const MID_ALPHA: u8 = 52;
     let mut pixels = vec![
         Rgba8Pixel {
             r: 0,
@@ -392,6 +419,18 @@ fn raster_peaks(peaks: &[(f32, f32)]) -> SharedPixelBuffer<Rgba8Pixel> {
         };
         (w * h) as usize
     ];
+    // Paint the midline first; per-column columns overwrite it where
+    // the waveform is actually present.
+    let mid_y = mid.floor() as u32;
+    for x in 0..w {
+        let idx = (mid_y * w + x) as usize;
+        pixels[idx] = Rgba8Pixel {
+            r: WAVE_RGBA.0,
+            g: WAVE_RGBA.1,
+            b: WAVE_RGBA.2,
+            a: MID_ALPHA,
+        };
+    }
     for (x, (mn, mx)) in peaks.iter().enumerate().take(w as usize) {
         let top_f = mid - (*mx).clamp(-1.0, 1.0) * scale;
         let bot_f = mid - (*mn).clamp(-1.0, 1.0) * scale;
@@ -400,17 +439,21 @@ fn raster_peaks(peaks: &[(f32, f32)]) -> SharedPixelBuffer<Rgba8Pixel> {
         } else {
             (bot_f as i32, top_f as i32)
         };
-        // Always paint at least one pixel at the midline so near-silence
-        // still reads as a thin horizontal line (visual "is present").
         let yt = yt.clamp(0, (h - 1) as i32);
         let yb = yb.clamp(0, (h - 1) as i32).max(yt);
         for y in yt..=yb {
+            // Gradient alpha: 1.0 at extents (max distance from mid),
+            // tapering toward the midline. Base floor of 96/255 so
+            // thin peaks still read; extents bump toward 255.
+            let dist = (y as f32 - mid).abs() / scale.max(1.0);
+            let t = dist.clamp(0.0, 1.0);
+            let alpha = (96.0 + t * 159.0).round().min(255.0) as u8;
             let idx = (y as u32 * w + x as u32) as usize;
             pixels[idx] = Rgba8Pixel {
                 r: WAVE_RGBA.0,
                 g: WAVE_RGBA.1,
                 b: WAVE_RGBA.2,
-                a: WAVE_RGBA.3,
+                a: alpha,
             };
         }
     }
@@ -452,18 +495,22 @@ fn generate_thumbnails_buffer(
         anyhow::bail!("video stream reports 0×0 dimensions");
     }
 
-    // Scale directly to the thumbnail cell size — ffmpeg handles aspect
-    // by stretching, which is acceptable at 40×28 (the chip body is so
-    // small that letterboxing would just add black bars most users
-    // wouldn't read as intentional). FAST_BILINEAR is good enough for
-    // icon-scale output.
+    // Preserve source aspect ratio: scale to fit inside the cell and
+    // letterbox (top/bottom bars) or pillarbox (left/right bars) the
+    // remainder. Fixes vertical / 9:16 phone footage that otherwise
+    // rendered horizontally-stretched into a 40×28 cell. The strip is
+    // pre-filled with opaque black, so unused area needs no explicit
+    // fill — the blit just skips those pixels.
+    let (fit_w, fit_h) = fit_cell(src_w, src_h, THUMB_CELL, THUMB_HEIGHT);
+    let pad_x = (THUMB_CELL - fit_w) / 2;
+    let pad_y = (THUMB_HEIGHT - fit_h) / 2;
     let mut scaler = ffmpeg::software::scaling::Context::get(
         decoder.format(),
         src_w,
         src_h,
         ffmpeg::format::Pixel::RGBA,
-        THUMB_CELL,
-        THUMB_HEIGHT,
+        fit_w,
+        fit_h,
         ffmpeg::software::scaling::Flags::FAST_BILINEAR,
     )?;
 
@@ -515,19 +562,25 @@ fn generate_thumbnails_buffer(
         }
         let stride = rgba.stride(0);
         let data = rgba.data(0);
-        // Blit this cell into the strip. Each source row is `stride`
-        // bytes wide but only `THUMB_CELL * 4` of those are pixels —
-        // ffmpeg pads rows for SIMD alignment. Copy row-by-row to
-        // honour the stride.
-        let dst_x = (i * THUMB_CELL) as usize;
-        for row in 0..THUMB_HEIGHT as usize {
+        // Blit this aspect-preserved frame into the cell, centered.
+        // `stride` is ffmpeg's row alignment (≥ fit_w * 4), `fit_w *
+        // fit_h` is the actual pixel rectangle. Rows and columns
+        // outside the fit rectangle stay as the strip's default black
+        // fill → letterbox / pillarbox bars.
+        let cell_left = (i * THUMB_CELL) as usize;
+        for row in 0..fit_h as usize {
             let src_off = row * stride;
-            for col in 0..THUMB_CELL as usize {
+            let dst_row = row + pad_y as usize;
+            if dst_row >= THUMB_HEIGHT as usize {
+                break;
+            }
+            for col in 0..fit_w as usize {
                 let s = src_off + col * 4;
                 if s + 3 >= data.len() {
                     break;
                 }
-                let idx = row * THUMB_WIDTH as usize + dst_x + col;
+                let dst_col = cell_left + pad_x as usize + col;
+                let idx = dst_row * THUMB_WIDTH as usize + dst_col;
                 strip[idx] = Rgba8Pixel {
                     r: data[s],
                     g: data[s + 1],
@@ -651,6 +704,56 @@ mod tests {
         let j2 = rx.try_recv().expect("thumbnail job should have enqueued");
         assert!(matches!(j1.kind, JobKind::Waveform));
         assert!(matches!(j2.kind, JobKind::Thumbnails));
+    }
+
+    #[test]
+    fn fit_cell_landscape_fills_width() {
+        // 16:9 source (1920×1080) into a 40×28 cell — width is the
+        // binding dim. Expected: fit to ~40 wide, aspect-preserved height.
+        let (w, h) = fit_cell(1920, 1080, 40, 28);
+        assert_eq!(w, 40);
+        // 40 * (1080/1920) = 22.5 → rounds to 22 (even).
+        assert_eq!(h, 22);
+    }
+
+    #[test]
+    fn fit_cell_portrait_fills_height() {
+        // 9:16 source (1080×1920) into 40×28 — height is the binding
+        // dim. Expected: height pinned to 28, width narrower so the
+        // chip pillarboxes instead of stretching horizontally.
+        let (w, h) = fit_cell(1080, 1920, 40, 28);
+        assert_eq!(h, 28);
+        // 28 * (1080/1920) = 15.75 → rounds even to 16.
+        assert_eq!(w, 16);
+    }
+
+    #[test]
+    fn fit_cell_square_source_uses_short_dim() {
+        let (w, h) = fit_cell(500, 500, 40, 28);
+        assert_eq!((w, h), (28, 28));
+    }
+
+    #[test]
+    fn fit_cell_zero_dimensions_return_nonzero_fallback() {
+        // Degenerate sources (0×N, N×0) would panic sws_scale; the
+        // helper must return usable dims so we can still construct a
+        // scaler and the strip gets a black cell.
+        let (w, h) = fit_cell(0, 100, 40, 28);
+        assert!(w >= 1 && h >= 1);
+        let (w, h) = fit_cell(100, 0, 40, 28);
+        assert!(w >= 1 && h >= 1);
+    }
+
+    #[test]
+    fn fit_cell_output_is_even_for_swscale() {
+        // sws_scale warns on odd chroma-plane sizes. The helper
+        // rounds down to the nearest even, so arbitrary odd source
+        // ratios still produce even-dim output.
+        for (sw, sh) in [(1001, 1001), (999, 564), (123, 456), (17, 29)] {
+            let (w, h) = fit_cell(sw, sh, 40, 28);
+            assert_eq!(w % 2, 0, "fit_w must be even for {}x{}", sw, sh);
+            assert_eq!(h % 2, 0, "fit_h must be even for {}x{}", sw, sh);
+        }
     }
 
     #[test]

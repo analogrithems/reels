@@ -134,9 +134,11 @@ impl AudioClock {
     /// Calibration hook: set the estimated one-way output latency (cpal
     /// callback buffer + device) in **milliseconds**. Internally stored
     /// as microseconds; the ms granularity is fine because device
-    /// latency is itself only good to a few ms. Called once by the
-    /// audio thread on the first callback and stable across seeks /
-    /// media changes since the audio device doesn't change mid-session.
+    /// latency is itself only good to a few ms. Prefer
+    /// [`calibrate_from_cpal`] on the audio thread — this setter is
+    /// retained for tests and future direct overrides (e.g. a user-facing
+    /// "manual A/V offset" slider).
+    #[allow(dead_code)]
     pub fn set_output_latency_ms(&self, ms: u64) {
         self.output_latency_us
             .store(ms.saturating_mul(1_000), Ordering::Release);
