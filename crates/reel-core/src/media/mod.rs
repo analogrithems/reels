@@ -5,6 +5,7 @@ pub mod export;
 pub mod frame;
 pub mod metadata;
 pub mod probe;
+pub mod scan;
 pub mod srt;
 pub mod ttml;
 
@@ -18,6 +19,7 @@ pub use export::{
 pub use frame::grab_frame;
 pub use metadata::{AudioStreamInfo, MediaMetadata, VideoStreamInfo};
 pub use probe::FfmpegProbe;
+pub use scan::{scan_file, ScanIssue, ScanReport, ScanSeverity};
 pub use srt::{
     find_cue_at_seconds as find_srt_cue_at_seconds, parse_file as parse_srt_file,
     parse_str as parse_srt_str, probe_file as probe_srt_file, SrtCue, SrtProbe,

@@ -536,6 +536,30 @@ export component AppWindow inherits Window {
     /// Error label under the fields; empty hides it.
     in property <string> trim-error: "";
 
+    // --- Scan for Errors sheet (Edit → Scan for Errors…) ---
+    /// Visibility flag for the results sheet; flipped on by Rust when the
+    /// menu fires, off when the user dismisses the sheet.
+    in-out property <bool> scan-sheet-visible: false;
+    /// Menu gate — true when a primary clip is loaded *and* has a source path
+    /// we can re-open with ffmpeg (set by `sync_menu` alongside `media-ready`).
+    in property <bool> scan-enabled: false;
+    /// Which phase the sheet is displaying: "idle" / "running" / "done" / "error".
+    /// Drives progress bar vs. results view.
+    in property <string> scan-phase: "idle";
+    /// 0.0–1.0 progress ratio while `scan-phase == "running"`.
+    in property <float> scan-progress: 0.0;
+    /// Basename of the file being scanned, for the sheet header.
+    in property <string> scan-file-name: "";
+    /// Verdict string — "ok" / "warn" / "error" — used for the coloured pill.
+    in property <string> scan-verdict: "";
+    /// One-line headline ("No issues found…", "3 decode errors — repair recommended.", etc.).
+    in property <string> scan-headline: "";
+    /// Multi-line detail block (newline-separated issue messages, already bounded
+    /// to [`ScanReport::MAX_ISSUES`] by the core). Empty when nothing to show.
+    in property <string> scan-details: "";
+    /// True when `verdict == error`; drives the "Repair recommended" call-out.
+    in property <bool> scan-repair-recommended: false;
+
     // --- Seek-bar In/Out markers (ephemeral session state) ---
     /// `-1` when unset; otherwise the sequence-ms position of the In marker.
     /// (`Option<f64>` doesn't have a Slint representation, so we use sentinel `-1`.)
@@ -724,6 +748,14 @@ export component AppWindow inherits Window {
     callback edit-set-out-marker();
     /// **Edit → Clear Range Markers** (`Option+X` / `Alt+X`): removes both markers.
     callback edit-clear-markers();
+    /// **Edit → Scan for Errors…**: spawn a worker that decodes every packet in
+    /// the primary clip's source file and reports any demux / decode errors.
+    /// Rust flips `scan-sheet-visible` to `true` and drives `scan-phase` +
+    /// `scan-progress` back to the UI while the scan runs.
+    callback edit-scan-errors();
+    /// Dismiss the scan results sheet. If a scan is still running Rust should
+    /// set a cancel flag; the worker will notice it on the next progress tick.
+    callback scan-dismiss();
     /// Drag of the yellow **In** handle on the scrub bar — argument is the new
     /// absolute sequence position in milliseconds (clamped in Slint so the In
     /// handle can't cross the Out handle).
@@ -1189,6 +1221,13 @@ export component AppWindow inherits Window {
                 title: "Clear Range Markers";
                 enabled: root.marker-any-set;
                 activated => { root.edit-clear-markers(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Scan for Errors…";
+                icon: @image-url("icons/lucide/search.svg");
+                enabled: root.scan-enabled;
+                activated => { root.edit-scan-errors(); }
             }
         }
         Menu {
@@ -4062,6 +4101,169 @@ export component AppWindow inherits Window {
                                     accessible-label: "Apply resize with entered scale percent";
                                     clicked => {
                                         root.resize-confirm(round(resize-input.text.to-float()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.scan-sheet-visible: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: rgba(0, 0, 0, 55%);
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => {
+                    // Backdrop dismisses the sheet (same pattern as trim/gain/resize).
+                    root.scan-dismiss();
+                }
+            }
+            VerticalBox {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                HorizontalBox {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: min(parent.width * 0.92, 520px);
+                        background: #2e2e36;
+                        border-radius: 8px;
+                        TouchArea {
+                            // Swallow card clicks so the backdrop doesn't close the sheet.
+                            width: 100%;
+                            height: 100%;
+                        }
+                        VerticalBox {
+                            padding: 16px;
+                            spacing: 10px;
+                            Text {
+                                text: "Scan for Errors";
+                                color: #eee;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.scan-file-name != ""
+                                    ? "Scanning: " + root.scan-file-name
+                                    : "No file loaded.";
+                                color: #888;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            // Running state — progress bar + explanation.
+                            if root.scan-phase == "running": VerticalBox {
+                                spacing: 8px;
+                                Text {
+                                    text: "Decoding every packet to verify the stream is healthy. This can take a few seconds for large files.";
+                                    color: #bbb;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                                Rectangle {
+                                    height: 6px;
+                                    background: #1a1a20;
+                                    border-radius: 3px;
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        height: 100%;
+                                        width: parent.width * root.scan-progress;
+                                        background: #4da3ff;
+                                        border-radius: 3px;
+                                    }
+                                }
+                                Text {
+                                    text: round(root.scan-progress * 100) + "%";
+                                    color: #ccc;
+                                    font-size: 11px;
+                                }
+                            }
+
+                            // Done state — verdict pill + headline + details.
+                            if root.scan-phase == "done": VerticalBox {
+                                spacing: 8px;
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    alignment: start;
+                                    Rectangle {
+                                        width: self.preferred-width + 16px;
+                                        height: 20px;
+                                        border-radius: 10px;
+                                        background: root.scan-verdict == "ok"
+                                            ? #2a6a3a
+                                            : (root.scan-verdict == "warn" ? #7a5a1a : #7a2a2a);
+                                        Text {
+                                            text: root.scan-verdict == "ok"
+                                                ? "PASS"
+                                                : (root.scan-verdict == "warn" ? "WARN" : "FAIL");
+                                            color: #fff;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: root.scan-headline;
+                                    color: #eee;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                                if root.scan-repair-recommended: Text {
+                                    text: "Repair tip: try `ffmpeg -i <input> -c copy <output>.mov` to rewrite the container, or re-encode the bitstream if that alone doesn't help.";
+                                    color: #ffb366;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                                if root.scan-details != "": Rectangle {
+                                    background: #1a1a20;
+                                    border-radius: 4px;
+                                    min-height: 60px;
+                                    max-height: 240px;
+                                    VerticalBox {
+                                        padding: 8px;
+                                        Text {
+                                            text: root.scan-details;
+                                            color: #ccc;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Error state — scan itself failed (couldn't open file, etc.).
+                            if root.scan-phase == "error": VerticalBox {
+                                spacing: 6px;
+                                Text {
+                                    text: "Scan failed";
+                                    color: #ff8080;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                }
+                                Text {
+                                    text: root.scan-headline;
+                                    color: #ff8080;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            HorizontalBox {
+                                spacing: 10px;
+                                alignment: end;
+                                Button {
+                                    text: root.scan-phase == "running" ? "Cancel" : "Close";
+                                    accessible-label: root.scan-phase == "running"
+                                        ? "Cancel scan and close sheet"
+                                        : "Close scan results sheet";
+                                    clicked => {
+                                        root.scan-dismiss();
                                     }
                                 }
                             }

@@ -801,6 +801,189 @@ pub fn install_edit_drag_marker_callbacks(window: &AppWindow, session: Rc<RefCel
     }
 }
 
+/// **Edit → Scan for Errors…** wiring.
+///
+/// Opens the results sheet in a "running" phase, spawns a background thread
+/// that calls [`reel_core::media::scan::scan_file`] against the primary
+/// clip's source, streams progress back to Slint via `on_ui`, and lands on
+/// either "done" (verdict + details) or "error" (couldn't open the file).
+/// The `scan-dismiss` callback sets a shared `AtomicBool` cancel flag —
+/// the worker notices it the next time it sees a progress tick and returns
+/// early, so dismissing an in-flight scan is cheap and doesn't leak a
+/// decoder thread for the rest of the file's duration.
+pub fn install_scan_for_errors_callbacks(
+    window: &AppWindow,
+    session: Rc<RefCell<EditSession>>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Shared between menu-fire and dismiss so we can cancel a running scan
+    // without racing against thread spawn. `true` = cancel requested.
+    let cancel_flag: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::new(RefCell::new(None));
+
+    {
+        let weak = window.as_weak();
+        let session = Rc::clone(&session);
+        let cancel_flag = Rc::clone(&cancel_flag);
+        window.on_edit_scan_errors(move || {
+            let Some(w) = weak.upgrade() else { return };
+            // Find the source file for the clip under the playhead.
+            let ph = w.get_playhead_ms() as f64;
+            let sess = session.borrow();
+            let Some(project) = sess.project() else {
+                w.set_status_text("No project loaded — nothing to scan.".into());
+                return;
+            };
+            let Some(clip) = timeline::primary_clip_ref_at_seq_ms(project, ph) else {
+                w.set_status_text("No clip at playhead — nothing to scan.".into());
+                return;
+            };
+            let path = clip.source_path.clone();
+            drop(sess);
+            if path.as_os_str().is_empty() || !path.exists() {
+                w.set_status_text(
+                    format!("Scan: source file missing: {}", path.display()).into(),
+                );
+                return;
+            }
+
+            // Prime the sheet — "running" with a 0% bar.
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            w.set_scan_file_name(file_name.into());
+            w.set_scan_phase("running".into());
+            w.set_scan_progress(0.0);
+            w.set_scan_headline("".into());
+            w.set_scan_details("".into());
+            w.set_scan_verdict("".into());
+            w.set_scan_repair_recommended(false);
+            w.set_scan_sheet_visible(true);
+
+            // Shared cancel flag; replace any stale one from a prior run.
+            let cancel = Arc::new(AtomicBool::new(false));
+            *cancel_flag.borrow_mut() = Some(Arc::clone(&cancel));
+
+            let weak_worker = weak.clone();
+            let path_for_worker = path.clone();
+            let cancel_worker = Arc::clone(&cancel);
+            std::thread::Builder::new()
+                .name("reel-scan".into())
+                .spawn(move || {
+                    let weak_progress = weak_worker.clone();
+                    let cancel_progress = Arc::clone(&cancel_worker);
+                    let scan_result = reel_core::media::scan::scan_file(
+                        &path_for_worker,
+                        move |ratio| {
+                            if cancel_progress.load(Ordering::SeqCst) {
+                                return; // worker will check again between packets
+                            }
+                            let wk = weak_progress.clone();
+                            on_ui(wk, move |win| {
+                                if win.get_scan_sheet_visible() {
+                                    win.set_scan_progress(ratio as f32);
+                                }
+                            });
+                        },
+                    );
+
+                    // If the sheet was already dismissed, don't overwrite UI.
+                    if cancel_worker.load(Ordering::SeqCst) {
+                        return;
+                    }
+
+                    match scan_result {
+                        Ok(report) => {
+                            let verdict = report.verdict.as_str().to_string();
+                            let headline = report.headline();
+                            let details = if report.issues.is_empty() {
+                                String::new()
+                            } else {
+                                let mut lines: Vec<String> = report
+                                    .issues
+                                    .iter()
+                                    .map(|i| format!("• [{}] {}", i.kind, i.message))
+                                    .collect();
+                                if (report.error_count + report.warning_count) as usize
+                                    > report.issues.len()
+                                {
+                                    lines.push(format!(
+                                        "… and {} more (not shown)",
+                                        (report.error_count + report.warning_count) as usize
+                                            - report.issues.len()
+                                    ));
+                                }
+                                lines.join("\n")
+                            };
+                            let repair = report.repair_recommended();
+                            tracing::info!(
+                                target: "reel_app::scan",
+                                path = %path_for_worker.display(),
+                                verdict = %verdict,
+                                packets = report.packets_read,
+                                video_frames = report.video_frames_decoded,
+                                audio_frames = report.audio_frames_decoded,
+                                errors = report.error_count,
+                                warnings = report.warning_count,
+                                "scan complete"
+                            );
+                            on_ui(weak_worker, move |win| {
+                                if !win.get_scan_sheet_visible() {
+                                    return;
+                                }
+                                win.set_scan_progress(1.0);
+                                win.set_scan_verdict(verdict.into());
+                                win.set_scan_headline(headline.into());
+                                win.set_scan_details(details.into());
+                                win.set_scan_repair_recommended(repair);
+                                win.set_scan_phase("done".into());
+                            });
+                        }
+                        Err(e) => {
+                            let msg = format!("{e}");
+                            tracing::warn!(
+                                target: "reel_app::scan",
+                                path = %path_for_worker.display(),
+                                error = %msg,
+                                "scan failed to open file"
+                            );
+                            on_ui(weak_worker, move |win| {
+                                if !win.get_scan_sheet_visible() {
+                                    return;
+                                }
+                                win.set_scan_headline(msg.into());
+                                win.set_scan_phase("error".into());
+                            });
+                        }
+                    }
+                })
+                .ok();
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let cancel_flag = Rc::clone(&cancel_flag);
+        window.on_scan_dismiss(move || {
+            // Flip the cancel flag so any in-flight worker bails on its next
+            // progress tick. (A fully-finished worker's UI write is guarded
+            // by `get_scan_sheet_visible()` above so dismissing after the
+            // worker finishes is still safe.)
+            if let Some(flag) = cancel_flag.borrow().as_ref() {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if let Some(w) = weak.upgrade() {
+                w.set_scan_sheet_visible(false);
+                w.set_scan_phase("idle".into());
+                w.set_scan_progress(0.0);
+            }
+        });
+    }
+}
+
 fn begin_export_effect(
     weak: slint::Weak<AppWindow>,
     session: Rc<RefCell<EditSession>>,
@@ -1118,6 +1301,13 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         let mute_state = session.audio_mute_state_at_seq_ms(ph);
         window.set_audio_mute_enabled(window.get_media_ready() && mute_state.is_some());
         window.set_audio_mute_active(mute_state.unwrap_or(false));
+        // Edit → Scan for Errors: enabled whenever we have a primary clip with a
+        // non-empty source path — scan opens the file independently of the
+        // playback pipeline, so it doesn't need full `media-ready`, just a file.
+        let scan_ok = timeline::primary_clip_ref_at_seq_ms(p, ph)
+            .map(|c| !c.source_path.as_os_str().is_empty() && c.source_path.exists())
+            .unwrap_or(false);
+        window.set_scan_enabled(scan_ok);
         sync_audio_track_menu(window, session, ph);
     } else {
         window.set_duration_ms(0.0);
@@ -1129,6 +1319,7 @@ pub(crate) fn sync_menu(window: &AppWindow, session: &EditSession) {
         window.set_resize_enabled(false);
         window.set_audio_mute_enabled(false);
         window.set_audio_mute_active(false);
+        window.set_scan_enabled(false);
         clear_audio_track_menu(window);
     }
     let ph = window.get_playhead_ms();
@@ -2989,6 +3180,12 @@ pub fn run() -> Result<()> {
             w.set_status_text("Cleared range markers".into());
         });
     }
+
+    // Edit → Scan for Errors… — decodes the primary clip's source file on a
+    // worker thread and reports any demux/decode issues in a modal sheet.
+    // The worker honours a shared `Arc<AtomicBool>` cancel flag so dismissing
+    // the sheet mid-scan stops the decode loop on the next progress tick.
+    install_scan_for_errors_callbacks(&window, Rc::clone(&session));
 
     // -- Yellow handle drags on the scrub bar (QuickTime-style trim handles) --
     //
