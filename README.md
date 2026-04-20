@@ -1,4 +1,4 @@
-# <img src="assets/icons/knotreels-transparent.png" alt="Reel logo" height="72" valign="middle">&nbsp;Reeals
+# <img src="assets/icons/knotreels-transparent.png" alt="Reel logo" height="72" valign="middle">&nbsp;Reels
 
 **A fully open-source desktop video editor — Rust + Slint + FFmpeg, iMovie-style workflow.**
 
