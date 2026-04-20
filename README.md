@@ -29,8 +29,6 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 - Floating transport bar with play / pause, rewind, fast-forward at stepped speeds (0.25× – 2× each direction), scrub slider, volume, loop, A/V offset calibration, fullscreen, and tools. Auto-hides when idle.
 - Keyboard shortcuts throughout — see **Help → Keyboard shortcuts** or [docs/KEYBOARD.md](docs/KEYBOARD.md).
 
-![Transport bar over the preview](docs/screenshots/02-transport-bar.png)
-
 ### Editing (Edit menu)
 
 - **Undo / Redo** at the document level.
@@ -41,8 +39,6 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 - **Range markers** (`I` / `O` / `⌥X`) — scope exports to a selection.
 - **Scan for Errors…** — runs a full decode pass over the source file and reports demux / decode issues with a PASS / WARN / FAIL verdict (see below).
 
-![Edit menu showing all editing features](docs/screenshots/03-edit-menu.png)
-
 ### File menu
 
 - **Open**, **Open Recent**, **Save** / **Revert**, **New Window**.
@@ -50,16 +46,12 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 - **New Video / Audio / Subtitle Track**.
 - **Export** to the format catalog (see Export below).
 
-![File menu](docs/screenshots/04-file-menu.png)
-
 ### View menu
 
 - **Loop Playback**, **Zoom In / Out / To Fit / Actual Size** (with **pan-when-zoomed**: drag the preview when the image overflows the viewport).
 - **Fullscreen** (also on the transport bar).
 - Toggle **Video Tracks / Audio Tracks / Subtitle Tracks** visibility.
 - **Show Status** footer, **Always Show Controls**, **A/V Offset** submenu for sync calibration.
-
-![View menu](docs/screenshots/05-view-menu.png)
 
 ### Effects menu (optional, via Python sidecar)
 
@@ -70,22 +62,15 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 
 Effects run out-of-process via `uv run python sidecar/facefusion_bridge.py`. No proprietary SaaS, no API keys. The sidecar venv is managed by `make setup`.
 
-![Effects menu](docs/screenshots/06-effects-menu.png)
-
 ### Export
 
 Ten+ format presets covering the web, mobile, and pro-intermediate tiers plus a range of GIF variants — MP4 (remux, H.264+AAC, HEVC+AAC), WebM (VP8 / VP9 / AV1 + Opus), MKV remux, MOV (remux, ProRes 422 HQ + PCM), MKV DNxHR HQ + PCM, and GIFs sized from *Sharp* down to *Tiny*. See [docs/SUPPORTED_FORMATS.md](docs/SUPPORTED_FORMATS.md).
-
-![Export presets](docs/screenshots/09-export.png)
 
 Multi-audio-lane export mixes every `TrackKind::Audio` lane via `amix`. Partial-clip mutes emit silence substitution automatically.
 
 ### Scan for Errors
 
 New in 0.1.3 — quickly answer "is this file damaged, or is the player buggy?" without dropping to the terminal. Decodes every packet in the primary clip's source, tallies demux / decode issues, flags non-monotonic packet PTS (the pattern that correlates with mid-playback stalls on some mobile MOV files), and recommends `ffmpeg -c copy` repair when needed.
-
-![Scan in progress](docs/screenshots/07-scan-errors.png)
-![Scan result — WARN verdict on a file with non-monotonic PTS](docs/screenshots/08-scan-result.png)
 
 ---
 
