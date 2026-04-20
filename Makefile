@@ -1,4 +1,4 @@
-.PHONY: setup build lint test run run-cli macos-app macos-app-release clean ci check-tools fixtures fmt
+.PHONY: setup build lint test run run-cli macos-app macos-app-release macos-app-release-bundled build-deps clean ci check-tools fixtures fmt
 
 SHELL := /bin/bash
 
@@ -48,6 +48,20 @@ macos-app:
 
 macos-app-release:
 	./scripts/macos/build_app_bundle.sh release
+
+# Build FFmpeg + GPL deps (pinned in build/deps.toml) into .build/deps/.
+# First run is slow (~15-25 min); subsequent runs are no-ops when nothing
+# in deps.toml changes.
+build-deps:
+	./scripts/macos/build_deps.sh
+
+# Release-style bundle: same output shape the GitHub release workflow
+# produces locally. Links against the bundled FFmpeg instead of Homebrew
+# ffmpeg@7 and ships dylibs + licenses inside Reel.app.
+macos-app-release-bundled: build-deps
+	PKG_CONFIG_PATH=$(CURDIR)/.build/deps/out/lib/pkgconfig:$(PKG_CONFIG_PATH) \
+		./scripts/macos/build_app_bundle.sh release
+	./scripts/macos/bundle_deps_into_app.sh
 
 fixtures:
 	bash scripts/generate_fixtures.sh

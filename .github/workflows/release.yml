@@ -1,4 +1,7 @@
-# Builds a release .app on tag push (v*), zips it, and attaches it to a GitHub Release.
+# Builds a release .app on tag push (v*), bundles FFmpeg + GPL deps pinned
+# in build/deps.toml, zips it, and attaches it to a GitHub Release along
+# with a corresponding-source tarball (GPL compliance).
+#
 # Prerequisite: maintainers create an annotated tag and push it (see docs/RELEASING.md).
 
 name: Release
@@ -14,8 +17,6 @@ permissions:
 jobs:
   macos:
     runs-on: macos-14
-    env:
-      PKG_CONFIG_PATH: /opt/homebrew/opt/ffmpeg@7/lib/pkgconfig
 
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +27,41 @@ jobs:
         with:
           shared-key: release-macos
 
-      - name: Install system deps
-        run: brew install ffmpeg@7 pkg-config
+      # Cache the built FFmpeg/x264/x265/... stack between runs. Cache key is
+      # the SHA of build/deps.toml so any version bump forces a rebuild.
+      - name: Cache bundled deps
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: .build/deps
+          key: bundled-deps-macos-14-${{ hashFiles('build/deps.toml') }}
 
-      - name: Build Reel.app (release)
+      - name: Install build tooling
+        run: brew install pkg-config cmake nasm yasm
+
+      - name: Build FFmpeg + GPL deps (from build/deps.toml)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: ./scripts/macos/build_deps.sh
+
+      - name: Build Reel.app (linked against bundled FFmpeg)
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/.build/deps/out/lib/pkgconfig
         run: ./scripts/macos/build_app_bundle.sh release
+
+      - name: Bundle FFmpeg stack into Reel.app
+        run: ./scripts/macos/bundle_deps_into_app.sh
+
+      - name: Sanity-check bundled app
+        run: |
+          APP="target/Reel.app"
+          echo "--- reel dylib refs ---"
+          otool -L "$APP/Contents/MacOS/reel" | head -30
+          echo ""
+          echo "--- bundled ffmpeg ---"
+          "$APP/Contents/MacOS/ffmpeg" -version | head -5
+          echo ""
+          test -f "$APP/Contents/Resources/licenses/README.txt"
+          test -d "$APP/Contents/Resources/licenses/ffmpeg"
 
       - name: Zip app bundle
         id: zip
@@ -42,16 +73,43 @@ jobs:
           echo "asset_path=${OUT}" >> "$GITHUB_OUTPUT"
           ls -la "${OUT}"
 
+      # GPL compliance: publish a corresponding-source tarball alongside the
+      # app zip. Includes every source tree in .build/deps/src/ plus a copy
+      # of build/deps.toml so future maintainers can reproduce the build.
+      - name: Assemble corresponding-source tarball
+        id: srczip
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          OUT="reel-corresponding-source-v${VERSION}.tar.gz"
+          STAGE="$(mktemp -d)/corresponding-source"
+          mkdir -p "$STAGE"
+          cp build/deps.toml "$STAGE/"
+          cp scripts/macos/build_deps.sh "$STAGE/"
+          for d in .build/deps/src/*/; do
+            name=$(basename "$d")
+            # Skip VCS metadata to keep the tarball lean but still useful.
+            rsync -a --exclude='.git/' "$d" "$STAGE/$name/"
+          done
+          tar -czf "$OUT" -C "$(dirname "$STAGE")" "$(basename "$STAGE")"
+          echo "asset_path=${OUT}" >> "$GITHUB_OUTPUT"
+          ls -la "${OUT}"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: ${{ steps.zip.outputs.asset_path }}
+          files: |
+            ${{ steps.zip.outputs.asset_path }}
+            ${{ steps.srczip.outputs.asset_path }}
           body: |
             **Reel ${{ github.ref_name }}** — see [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md).
 
             ### Install (macOS)
 
-            Unzip the attached **`${{ steps.zip.outputs.asset_path }}`** and open **Reel.app**. Requires **macOS 11+** and **FFmpeg 7.x** on your machine (`brew install ffmpeg@7`); it is not bundled in the app.
+            Unzip the attached **`${{ steps.zip.outputs.asset_path }}`** and open **Reel.app**. Requires **macOS 11+** on **Apple Silicon**. FFmpeg is **bundled** — no `brew install` required.
 
-            This artifact is built on an **Apple Silicon** runner (`uname -m` is reflected in the zip name). It is **not code-signed or notarized** — you may need **Right-click → Open** the first time.
+            This artifact is **not code-signed or notarized** — on first launch macOS may show *"Reel.app is damaged"*. See [README → First launch on macOS](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md#first-launch-on-macos-unsigned-build) for the one-line `xattr` workaround.
+
+            ### License / corresponding source
+
+            The bundled FFmpeg is configured with `--enable-gpl` and links libx264 + libx265, so this binary distribution is covered by **GPL-2.0-or-later**. The **`${{ steps.srczip.outputs.asset_path }}`** asset contains the corresponding source for the GPL'd components (FFmpeg + x264 + x265 + libvpx + libopus + libmp3lame at the pinned refs in `build/deps.toml`).

@@ -2,6 +2,10 @@
 /target
 Cargo.lock.bak
 
+# Bundled FFmpeg build cache (populated by scripts/macos/build_deps.sh;
+# the final artifacts are copied into Reel.app at release time).
+/.build/
+
 # Python sidecar
 sidecar/.venv/
 sidecar/__pycache__/

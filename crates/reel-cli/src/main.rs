@@ -5,12 +5,13 @@
 //!   reel-cli swap  <path> --out <png> [--frame-ms N] [--model …]
 //!                        (identity, invert, facefusion, face_enhance, rvm_chroma, …)
 //!                        [--sidecar-dir <dir>] [--timeout-ms N]
+//!   reel-cli plugins install <name> [--accept-license]
 
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command as ProcessCommand, ExitCode};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use reel_core::{grab_frame, FfmpegProbe, MediaProbe, SidecarClient};
 
@@ -28,6 +29,9 @@ enum Command {
         /// Path to a media file.
         path: PathBuf,
     },
+    /// Manage Reel plugins (install / list).
+    #[command(subcommand)]
+    Plugins(PluginsCommand),
     /// Grab one frame, push it through the FaceFusion sidecar, and write the
     /// returned RGBA as a PNG.
     Swap {
@@ -55,6 +59,20 @@ enum Command {
         /// Per-request sidecar timeout in milliseconds.
         #[arg(long, default_value_t = 10_000)]
         timeout_ms: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginsCommand {
+    /// Install a plugin (clones upstream + sets up a per-user venv). Pinned
+    /// versions live in `build/deps.toml` under `[plugins.<name>]`.
+    Install {
+        /// Plugin name (e.g. `facefusion`).
+        name: String,
+        /// Skip the interactive license prompt and accept the plugin's
+        /// license non-interactively. Required in CI.
+        #[arg(long)]
+        accept_license: bool,
     },
 }
 
@@ -89,6 +107,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("{json}");
             Ok(())
         }
+        Command::Plugins(cmd) => run_plugins(cmd),
         Command::Swap {
             path,
             out,
@@ -98,6 +117,60 @@ fn run(cli: Cli) -> Result<()> {
             timeout_ms,
         } => do_swap(path, out, frame_ms, model, sidecar_dir, timeout_ms),
     }
+}
+
+fn run_plugins(cmd: PluginsCommand) -> Result<()> {
+    match cmd {
+        PluginsCommand::Install {
+            name,
+            accept_license,
+        } => {
+            let script = locate_install_plugin_script()?;
+            let mut c = ProcessCommand::new(&script);
+            c.arg(&name);
+            if accept_license {
+                c.arg("--accept-license");
+            }
+            let status = c
+                .status()
+                .with_context(|| format!("spawn {}", script.display()))?;
+            if !status.success() {
+                return Err(anyhow!(
+                    "plugin install failed (exit {})",
+                    status.code().unwrap_or(-1)
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Find `scripts/install_plugin.sh`. In dev we walk up from `CARGO_MANIFEST_DIR`;
+/// in a shipped binary we look next to the executable (packaging copies the
+/// script into Reel.app/Contents/Resources/scripts/).
+fn locate_install_plugin_script() -> Result<PathBuf> {
+    let candidates = [
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("scripts/install_plugin.sh")),
+        std::env::current_exe().ok().and_then(|p| {
+            p.parent()
+                .map(|d| d.join("../Resources/scripts/install_plugin.sh"))
+        }),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .map(|d| d.join("scripts/install_plugin.sh")),
+    ];
+    for c in candidates.into_iter().flatten() {
+        if c.is_file() {
+            return Ok(c);
+        }
+    }
+    Err(anyhow!(
+        "install_plugin.sh not found; expected at scripts/install_plugin.sh relative to the repo or the binary"
+    ))
 }
 
 fn do_swap(
