@@ -39,6 +39,8 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 - **Range markers** (`I` / `O` / `⌥X`) — scope exports to a selection.
 - **Scan for Errors…** — runs a full decode pass over the source file and reports demux / decode issues with a PASS / WARN / FAIL verdict (see below).
 
+![Edit menu](docs/screenshots/02-edit-menu.png)
+
 ### File menu
 
 - **Open**, **Open Recent**, **Save** / **Revert**, **New Window**.
@@ -46,12 +48,16 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 - **New Video / Audio / Subtitle Track**.
 - **Export** to the format catalog (see Export below).
 
+![File menu](docs/screenshots/03-file-menu.png)
+
 ### View menu
 
 - **Loop Playback**, **Zoom In / Out / To Fit / Actual Size** (with **pan-when-zoomed**: drag the preview when the image overflows the viewport).
 - **Fullscreen** (also on the transport bar).
 - Toggle **Video Tracks / Audio Tracks / Subtitle Tracks** visibility.
 - **Show Status** footer, **Always Show Controls**, **A/V Offset** submenu for sync calibration.
+
+![View menu](docs/screenshots/04-view-menu.png)
 
 ### Effects menu (optional, via Python sidecar)
 
@@ -61,6 +67,8 @@ What ships in the current build (see [docs/FEATURES.md](docs/FEATURES.md) for th
 - **AI Upscale** — planned
 
 Effects run out-of-process via `uv run python sidecar/facefusion_bridge.py`. No proprietary SaaS, no API keys. The sidecar venv is managed by `make setup`.
+
+![Effects menu](docs/screenshots/05-effects-menu.png)
 
 ### Export
 
