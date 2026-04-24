@@ -1,3 +1,11 @@
+---
+title: "UI test harness phases"
+status: living
+phases: [UT1, UT2, UT3, UT4]
+last_reviewed: 2026-04-24
+owners: [core, ui]
+---
+
 # UI test phases (`docs/phases-ui-test.md`)
 
 ### Status (last updated 2026-04-17)

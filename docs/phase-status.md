@@ -1,3 +1,11 @@
+---
+title: "Phase status — engineering & documentation"
+status: living
+phases: [0, 1, 2, 3, 4, U1, U2, U3, U4, U5]
+last_reviewed: 2026-04-24
+owners: [core]
+---
+
 # Phase status (engineering & documentation)
 
 High-level checklist for **infrastructure, engine, and repo documentation**. For **product/UI** milestones (menus, timeline, export UX, AI), see **`docs/phases-ui.md`** and **`docs/FEATURES.md`**.

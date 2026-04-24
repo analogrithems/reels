@@ -1,3 +1,11 @@
+---
+title: "UI & editor phases (Reel desktop)"
+status: living
+phases: [U1, U2, U3, U4, U5]
+last_reviewed: 2026-04-24
+owners: [core, ui]
+---
+
 # UI & editor phases (Reel desktop)
 
 This document is the **product / UI roadmap** for **`reel-app`** (Slint). Engineering/infrastructure phases (0–4) are in **`docs/phase-status.md`**.

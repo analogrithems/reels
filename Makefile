@@ -29,6 +29,7 @@ lint:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	cd sidecar && uv run ruff check .
+	./scripts/lint_phases.sh
 
 test:
 	cargo test --workspace --all-features

@@ -35,6 +35,10 @@ impl HelpDoc {
     }
 
     pub fn markdown(self) -> &'static str {
+        strip_frontmatter(self.raw_markdown())
+    }
+
+    fn raw_markdown(self) -> &'static str {
         match self {
             HelpDoc::About => {
                 concat!(
@@ -107,6 +111,33 @@ pub fn help_bundle(doc: HelpDoc) -> (&'static str, &'static str) {
     (doc.title(), doc.markdown())
 }
 
+/// Strip a leading YAML frontmatter block (`---\n…\n---\n`) if present and
+/// return the remaining body as a `&'static str` — the returned slice is
+/// into the same static buffer that `include_str!` produced, so no
+/// allocation happens.
+///
+/// Phase docs under `docs/phases*` use frontmatter to expose `status` /
+/// `phases` / `last_reviewed` metadata to `scripts/lint_phases.sh` without
+/// cluttering the rendered Help output. Files without a frontmatter block
+/// pass through unchanged — existing help topics (HELP.md, FEATURES.md, …)
+/// are unaffected.
+fn strip_frontmatter(md: &'static str) -> &'static str {
+    if let Some(rest) = md.strip_prefix("---\n") {
+        // Look for the closing `---` on its own line. We accept `\n---\n`,
+        // `\n---\r\n`, and a bare trailing `\n---` at EOF.
+        if let Some(end) = rest.find("\n---\n") {
+            return &rest[end + "\n---\n".len()..];
+        }
+        if let Some(end) = rest.find("\n---\r\n") {
+            return &rest[end + "\n---\r\n".len()..];
+        }
+        if let Some(stripped) = rest.strip_suffix("\n---") {
+            return &stripped[stripped.len()..]; // empty body
+        }
+    }
+    md
+}
+
 /// Build a command that re-executes the current binary (for **New Window**).
 pub fn new_window_command() -> std::process::Command {
     let exe = std::env::current_exe().expect("current_exe");
@@ -120,6 +151,37 @@ pub fn spawn_new_window() -> std::io::Result<std::process::Child> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_frontmatter_removes_yaml_block_but_leaves_body() {
+        // Phase docs have a YAML block up top; the Help window should show
+        // the body only. Hard-coding a tiny fixture here so the test stays
+        // green even if the real phase docs change their metadata.
+        let with_fm = "---\ntitle: test\nstatus: living\n---\n\n# Body\n\ncontents";
+        let stripped = strip_frontmatter(with_fm);
+        assert!(
+            stripped.starts_with("\n# Body") || stripped.starts_with("# Body"),
+            "expected body after frontmatter, got {stripped:?}"
+        );
+        assert!(!stripped.contains("status: living"));
+
+        // Files without a leading `---\n` must pass through verbatim.
+        let plain = "# No frontmatter\n\njust markdown";
+        assert_eq!(strip_frontmatter(plain), plain);
+    }
+
+    #[test]
+    fn phases_ui_help_body_does_not_leak_frontmatter() {
+        // The live docs/phases-ui.md carries frontmatter; verify the Help
+        // window never renders the raw YAML to users.
+        let (_title, body) = help_bundle(HelpDoc::PhasesUi);
+        assert!(
+            !body.starts_with("---"),
+            "phases-ui help leaks frontmatter; head={:?}",
+            &body.as_bytes()[..body.len().min(40)]
+        );
+        assert!(!body.contains("last_reviewed:"));
+    }
 
     #[test]
     fn help_bundle_all_topics_non_empty() {
