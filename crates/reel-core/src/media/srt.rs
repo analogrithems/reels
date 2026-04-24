@@ -165,8 +165,7 @@ World\n";
 
     #[test]
     fn tolerates_dot_millisecond_separator() {
-        let body =
-            "1\n00:00:00.500 --> 00:00:01.750\nHi\n";
+        let body = "1\n00:00:00.500 --> 00:00:01.750\nHi\n";
         let cues = parse_str(body);
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].end, 1.75);
@@ -239,15 +238,24 @@ World\n";
         // Pre-roll: no cue yet.
         assert!(find_cue_at_seconds(&cues, 0.5).is_none());
         // Inside cue 0 (1.0..3.5): inclusive at start, interior.
-        assert_eq!(find_cue_at_seconds(&cues, 1.0).map(|c| c.text.as_str()), Some("Hello"));
-        assert_eq!(find_cue_at_seconds(&cues, 2.0).map(|c| c.text.as_str()), Some("Hello"));
+        assert_eq!(
+            find_cue_at_seconds(&cues, 1.0).map(|c| c.text.as_str()),
+            Some("Hello")
+        );
+        assert_eq!(
+            find_cue_at_seconds(&cues, 2.0).map(|c| c.text.as_str()),
+            Some("Hello")
+        );
         // End of cue 0 is exclusive — landing exactly on 3.5 shows nothing
         // (avoids a one-frame flash of the prior cue on boundary seeks).
         assert!(find_cue_at_seconds(&cues, 3.5).is_none());
         // Inter-cue gap.
         assert!(find_cue_at_seconds(&cues, 3.9).is_none());
         // Cue 1 body.
-        assert_eq!(find_cue_at_seconds(&cues, 5.0).map(|c| c.text.as_str()), Some("World"));
+        assert_eq!(
+            find_cue_at_seconds(&cues, 5.0).map(|c| c.text.as_str()),
+            Some("World")
+        );
         // Past the last cue.
         assert!(find_cue_at_seconds(&cues, 99.0).is_none());
     }
@@ -256,11 +264,7 @@ World\n";
     fn probe_file_handles_vtt_extension() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("demo.vtt");
-        std::fs::write(
-            &path,
-            "WEBVTT\n\n00:00:00.500 --> 00:00:01.750\nHi\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "WEBVTT\n\n00:00:00.500 --> 00:00:01.750\nHi\n").unwrap();
         let pr = probe_file(&path).unwrap();
         assert_eq!(pr.cue_count, 1);
         assert!((pr.duration_seconds - 1.75).abs() < 1e-9);

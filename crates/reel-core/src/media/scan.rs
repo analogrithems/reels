@@ -132,12 +132,7 @@ struct Stream {
     nonmonotonic_logged: bool,
 }
 
-fn push_issue(
-    issues: &mut Vec<ScanIssue>,
-    stream_index: Option<u32>,
-    kind: &str,
-    message: String,
-) {
+fn push_issue(issues: &mut Vec<ScanIssue>, stream_index: Option<u32>, kind: &str, message: String) {
     if issues.len() < ScanReport::MAX_ISSUES {
         issues.push(ScanIssue {
             stream_index,

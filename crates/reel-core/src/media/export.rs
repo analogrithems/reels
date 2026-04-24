@@ -1037,9 +1037,7 @@ fn build_amix_filter_complex_with_gains(
         for (i, db) in g.iter().enumerate() {
             if *db != 0.0 {
                 let input_idx = i + 1;
-                s.push_str(&format!(
-                    "[{input_idx}:a:0]volume={db:.2}dB[a{i}];"
-                ));
+                s.push_str(&format!("[{input_idx}:a:0]volume={db:.2}dB[a{i}];"));
             }
         }
     }
@@ -1047,9 +1045,7 @@ fn build_amix_filter_complex_with_gains(
     // Second pass: list the amix inputs, picking the relabeled tap for any
     // lane that got a volume prefilter and the raw `[i+1:a:0]` otherwise.
     for i in 0..n {
-        let is_boosted = gains
-            .map(|g| g[i] != 0.0)
-            .unwrap_or(false);
+        let is_boosted = gains.map(|g| g[i] != 0.0).unwrap_or(false);
         if is_boosted {
             s.push_str(&format!("[a{i}]"));
         } else {
@@ -1067,15 +1063,18 @@ fn build_amix_filter_complex_with_gains(
 /// amix output is always filter-graph PCM and cannot be `-c:a copy` — every
 /// preset forces a container-appropriate audio encoder. Video stays stream-
 /// copy-eligible only when no `-vf`/`[vout]` chain is active.
-fn append_mixed_audio_format_args(
-    cmd: &mut Command,
-    format: WebExportFormat,
-    vf_present: bool,
-) {
+fn append_mixed_audio_format_args(cmd: &mut Command, format: WebExportFormat, vf_present: bool) {
     match (format, vf_present) {
         (WebExportFormat::Mp4Remux, false) => {
             cmd.args([
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
             ]);
         }
         (WebExportFormat::Mp4Remux, true) => {
@@ -1188,7 +1187,14 @@ fn append_mixed_audio_format_args(
         }
         (WebExportFormat::MovRemux, false) => {
             cmd.args([
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
             ]);
         }
         (WebExportFormat::MovRemux, true) => {
@@ -1371,9 +1377,7 @@ fn append_dual_mux_format_args_with_vf(
             cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy"]);
         }
         (WebExportFormat::MovRemux, false) => {
-            cmd.args([
-                "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart",
-            ]);
+            cmd.args(["-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart"]);
         }
         (WebExportFormat::MovRemux, true) => {
             cmd.args([
@@ -2015,7 +2019,8 @@ mod tests {
     fn amix_filter_complex_three_lanes_prepends_all_audio_taps() {
         let fc = build_amix_filter_complex(3, None);
         assert_eq!(
-            fc, "[1:a:0][2:a:0][3:a:0]amix=inputs=3:duration=longest:normalize=0[aout]"
+            fc,
+            "[1:a:0][2:a:0][3:a:0]amix=inputs=3:duration=longest:normalize=0[aout]"
         );
     }
 
@@ -2026,7 +2031,8 @@ mod tests {
         let (video, audio) = fc.split_once(';').expect("video and audio segments");
         assert_eq!(video, "[0:v:0]transpose=1,scale=-2:720[vout]");
         assert_eq!(
-            audio, "[1:a:0][2:a:0]amix=inputs=2:duration=longest:normalize=0[aout]"
+            audio,
+            "[1:a:0][2:a:0]amix=inputs=2:duration=longest:normalize=0[aout]"
         );
     }
 
@@ -2075,7 +2081,10 @@ mod tests {
         assert!(fc.contains("[2:a:0]volume=-12.00dB[a1];"), "got {fc}");
         assert!(fc.contains("[3:a:0]volume=3.50dB[a2];"), "got {fc}");
         // Lane 0 has unity gain ⇒ no volume clause for it, amix reads raw tap.
-        assert!(!fc.contains("[1:a:0]volume"), "unity lane must not get a volume filter: {fc}");
+        assert!(
+            !fc.contains("[1:a:0]volume"),
+            "unity lane must not get a volume filter: {fc}"
+        );
         assert!(
             fc.contains("[1:a:0][a1][a2]amix=inputs=3"),
             "amix input list must mix raw taps and relabeled taps per-lane: {fc}"
@@ -2091,7 +2100,11 @@ mod tests {
         append_mixed_audio_format_args(&mut cmd, WebExportFormat::Mp4Remux, false);
         let args = cmd_args_as_strings(&cmd);
         let c_a = args.iter().position(|a| a == "-c:a").unwrap();
-        assert_eq!(args[c_a + 1], "aac", "amix path can never stream-copy audio");
+        assert_eq!(
+            args[c_a + 1],
+            "aac",
+            "amix path can never stream-copy audio"
+        );
         // Video can still stream-copy when no vf is active.
         let c_v = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[c_v + 1], "copy");
@@ -2104,7 +2117,8 @@ mod tests {
         let args = cmd_args_as_strings(&cmd);
         let c_a = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(
-            args[c_a + 1], "libopus",
+            args[c_a + 1],
+            "libopus",
             "webm amix must use opus (aac would fail the muxer)"
         );
     }
@@ -2115,7 +2129,11 @@ mod tests {
         append_mixed_audio_format_args(&mut cmd, WebExportFormat::Mp4Remux, true);
         let args = cmd_args_as_strings(&cmd);
         let c_v = args.iter().position(|a| a == "-c:v").unwrap();
-        assert_eq!(args[c_v + 1], "libx264", "vf chain forces libx264 transcode");
+        assert_eq!(
+            args[c_v + 1],
+            "libx264",
+            "vf chain forces libx264 transcode"
+        );
         let c_a = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[c_a + 1], "aac");
     }
@@ -2173,8 +2191,7 @@ mod tests {
 
     #[test]
     fn combined_vf_chain_subtitles_only() {
-        let chain =
-            combined_vf_chain(None, None, Some(Path::new("/tmp/it.srt"))).unwrap();
+        let chain = combined_vf_chain(None, None, Some(Path::new("/tmp/it.srt"))).unwrap();
         assert_eq!(chain, "subtitles='/tmp/it.srt'");
     }
 
@@ -2248,8 +2265,7 @@ mod tests {
     #[test]
     fn subtitle_burn_in_forces_transcode_on_remux() {
         let mut cmd = Command::new("ffmpeg");
-        let chain =
-            combined_vf_chain(None, None, Some(Path::new("/tmp/a.srt"))).unwrap();
+        let chain = combined_vf_chain(None, None, Some(Path::new("/tmp/a.srt"))).unwrap();
         append_format_args_with_vf(&mut cmd, WebExportFormat::Mp4Remux, Some(&chain));
         let args = cmd_args_as_strings(&cmd);
         assert!(
@@ -2335,8 +2351,14 @@ mod tests {
     #[test]
     fn gif_ffmpeg_args_strip_audio_and_select_gif_codec() {
         let args = ffmpeg_args_for_format(WebExportFormat::GifShare);
-        assert!(args.contains(&"-an"), "GIF export must strip audio: {args:?}");
-        let c_v = args.iter().position(|a| *a == "-c:v").expect("missing -c:v");
+        assert!(
+            args.contains(&"-an"),
+            "GIF export must strip audio: {args:?}"
+        );
+        let c_v = args
+            .iter()
+            .position(|a| *a == "-c:v")
+            .expect("missing -c:v");
         assert_eq!(args[c_v + 1], "gif");
         let f = args.iter().position(|a| *a == "-f").expect("missing -f");
         assert_eq!(args[f + 1], "gif");
@@ -2352,10 +2374,16 @@ mod tests {
         // "No such filter: iw)". Regression guard.
         let chain = build_gif_vf(None, GifPreset::SHARE);
         assert!(chain.contains("fps=15"), "{chain}");
-        assert!(chain.contains("scale='min(480\\,iw)':-2:flags=lanczos"), "{chain}");
+        assert!(
+            chain.contains("scale='min(480\\,iw)':-2:flags=lanczos"),
+            "{chain}"
+        );
         assert!(chain.contains("split[s0][s1]"), "{chain}");
         assert!(chain.contains("palettegen=max_colors=96"), "{chain}");
-        assert!(chain.contains("[s1][p]paletteuse=dither=bayer:bayer_scale=4"), "{chain}");
+        assert!(
+            chain.contains("[s1][p]paletteuse=dither=bayer:bayer_scale=4"),
+            "{chain}"
+        );
     }
 
     #[test]
@@ -2402,11 +2430,7 @@ mod tests {
     #[test]
     fn gif_append_format_args_preserves_extra_vf_prefix() {
         let mut cmd = Command::new("ffmpeg");
-        append_format_args_with_vf(
-            &mut cmd,
-            WebExportFormat::GifTiny,
-            Some("transpose=2"),
-        );
+        append_format_args_with_vf(&mut cmd, WebExportFormat::GifTiny, Some("transpose=2"));
         let args = cmd_args_as_strings(&cmd);
         let vf_idx = args.iter().position(|a| a == "-vf").expect("missing -vf");
         let vf = &args[vf_idx + 1];

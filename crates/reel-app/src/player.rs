@@ -1052,9 +1052,7 @@ fn next_mixed_samples(lanes: &mut [AudioLane]) -> Option<Vec<f32>> {
         let next_idx = lane.seg_idx + 1;
         if next_idx < lane.timeline.segments.len() {
             lane.seg_idx = next_idx;
-            lane.timeline
-                .active_index
-                .store(next_idx, Ordering::SeqCst);
+            lane.timeline.active_index.store(next_idx, Ordering::SeqCst);
             let s = &lane.timeline.segments[next_idx];
             match try_open_audio(&s.path, s.audio_stream_index) {
                 Ok(mut a) => {
@@ -1271,10 +1269,7 @@ fn audio_loop<P, C>(
 
         if let Some(c) = cmd {
             match c {
-                Cmd::LoadTimeline {
-                    video,
-                    audio_lanes,
-                } => {
+                Cmd::LoadTimeline { video, audio_lanes } => {
                     lanes.clear();
                     playing = false;
                     silence_pad = false;
@@ -1410,10 +1405,8 @@ fn audio_loop<P, C>(
 
         if playing {
             let sgn = playback_signed_milli.load(Ordering::Relaxed);
-            let all_done = !lanes.is_empty()
-                && lanes
-                    .iter()
-                    .all(|l| l.exhausted && l.pending.is_empty());
+            let all_done =
+                !lanes.is_empty() && lanes.iter().all(|l| l.exhausted && l.pending.is_empty());
             let should_output_silence = sgn < 0
                 || silence_pad
                 || (dedicated_audio
@@ -1449,9 +1442,8 @@ fn audio_loop<P, C>(
             } else if !lanes.is_empty() {
                 match next_mixed_samples(&mut lanes) {
                     Some(mixed) => {
-                        let sp = (playback_signed_milli
-                            .load(Ordering::Relaxed)
-                            .unsigned_abs() as f64)
+                        let sp = (playback_signed_milli.load(Ordering::Relaxed).unsigned_abs()
+                            as f64)
                             .clamp(250.0, 4000.0)
                             / 1000.0;
                         speed_carry.push_speed_samples(mixed, sp, &mut producer, || {
@@ -1520,8 +1512,7 @@ impl AudioCtx {
         let stream = match stream_index {
             Some(i) => {
                 let by_index = input.streams().find(|s| {
-                    s.index() as u32 == i
-                        && s.parameters().medium() == ffmpeg::media::Type::Audio
+                    s.index() as u32 == i && s.parameters().medium() == ffmpeg::media::Type::Audio
                 });
                 if by_index.is_none() {
                     tracing::warn!(
@@ -1795,7 +1786,7 @@ mod sync_tests {
         let c = AudioClock::new();
         c.set_playing(true);
         c.calibrate_from_cpal(Some(20_000_000), 480, 48_000); // 20 ms
-        // Audio writes 500 ms worth of samples to the ring.
+                                                              // Audio writes 500 ms worth of samples to the ring.
         c.advance_by_frames(24_000, 48_000, 1_000);
         let audio_write_head = c.get_raw();
         let video_read_head = c.get();
@@ -1983,10 +1974,7 @@ mod sync_tests {
     // playhead ran ahead of the audio's true source time — visibly
     // drifting on long clips and landing past the last clip's end frame.
 
-    fn fresh_rb(cap: usize) -> (
-        <HeapRb<f32> as Split>::Prod,
-        <HeapRb<f32> as Split>::Cons,
-    ) {
+    fn fresh_rb(cap: usize) -> (<HeapRb<f32> as Split>::Prod, <HeapRb<f32> as Split>::Cons) {
         HeapRb::<f32>::new(cap).split()
     }
 
@@ -2171,10 +2159,7 @@ mod mix_tests {
     fn drain_and_mix_sums_two_lanes_with_gain() {
         // Two equal-length lanes, one at unity and one halved. The output
         // should be a sample-wise sum — this is the core mix invariant.
-        let mut lanes = vec![
-            lane(&[1.0, 0.5, -0.25], 1.0),
-            lane(&[0.1, 0.2, 0.3], 0.5),
-        ];
+        let mut lanes = vec![lane(&[1.0, 0.5, -0.25], 1.0), lane(&[0.1, 0.2, 0.3], 0.5)];
         let out = drain_and_mix(&mut lanes, 3);
         assert_eq!(out.len(), 3);
         assert!((out[0] - 1.05).abs() < 1e-6);

@@ -38,7 +38,11 @@ impl ClipScale {
     /// `skip_serializing_if` on `Clip.scale` keeps unchanged projects off disk.
     pub fn set_percent(&mut self, percent: u32) {
         let clamped = percent.clamp(MIN_PERCENT, MAX_PERCENT);
-        self.percent = if clamped == IDENTITY_PERCENT { 0 } else { clamped };
+        self.percent = if clamped == IDENTITY_PERCENT {
+            0
+        } else {
+            clamped
+        };
     }
 
     /// Current display value for the sheet — identity reads as `100`.

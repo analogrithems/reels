@@ -37,8 +37,8 @@ use reel_core::{
 };
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use session::{
-    path_matches_export_format, remux_failure_hint, split_enabled_for_playhead,
-    video_lane_indices, web_export_format_from_preset_index, EditSession,
+    path_matches_export_format, remux_failure_hint, split_enabled_for_playhead, video_lane_indices,
+    web_export_format_from_preset_index, EditSession,
 };
 use slint::{ModelRc, VecModel};
 
@@ -123,10 +123,7 @@ fn unified_export_video_orientation(
     // `timeline::clips_from_project` builds a reduced view; look up the real
     // `Clip.orientation` by source path so we don't have to thread `orientation`
     // through the timeline cache.
-    let orientations: Vec<ClipOrientation> = clips
-        .iter()
-        .map(|c| c.orientation)
-        .collect();
+    let orientations: Vec<ClipOrientation> = clips.iter().map(|c| c.orientation).collect();
     let mut iter = orientations.into_iter();
     let Some(first) = iter.next() else {
         return Ok(None);
@@ -169,9 +166,11 @@ fn unified_export_video_scale(session: &EditSession) -> Result<Option<ClipScale>
     };
     for s in iter {
         if s != first {
-            return Err("Cannot export: primary video clips have different resize settings. \
+            return Err(
+                "Cannot export: primary video clips have different resize settings. \
                         Apply the same scale to all clips (or remove the outliers) and try again."
-                .into());
+                    .into(),
+            );
         }
     }
     Ok(if first.is_identity() {
@@ -270,9 +269,7 @@ fn export_save_dialog(fmt: reel_core::WebExportFormat) -> rfd::FileDialog {
         reel_core::WebExportFormat::Mp4H264Aac => {
             d.add_filter("MP4 (H.264 + AAC)", &["mp4", "m4v"])
         }
-        reel_core::WebExportFormat::Mp4H265Aac => {
-            d.add_filter("MP4 (HEVC + AAC)", &["mp4", "m4v"])
-        }
+        reel_core::WebExportFormat::Mp4H265Aac => d.add_filter("MP4 (HEVC + AAC)", &["mp4", "m4v"]),
         reel_core::WebExportFormat::WebmVp8Opus => d.add_filter("WebM (VP8 + Opus)", &["webm"]),
         reel_core::WebExportFormat::WebmVp9Opus => d.add_filter("WebM (VP9 + Opus)", &["webm"]),
         reel_core::WebExportFormat::WebmAv1Opus => d.add_filter("WebM (AV1 + Opus)", &["webm"]),
@@ -758,10 +755,7 @@ pub fn install_audio_lane_gain_callbacks(
                     w.set_gain_sheet_visible(false);
                     w.set_gain_sheet_error("".into());
                     sync_menu_and_autosave(&w, &session, &debouncer, &recent);
-                    let applied = session
-                        .borrow()
-                        .audio_track_gain_db(lane)
-                        .unwrap_or(0.0);
+                    let applied = session.borrow().audio_track_gain_db(lane).unwrap_or(0.0);
                     w.set_status_text(
                         format!("Lane {lane_1based} gain set to {applied:+.1} dB").into(),
                     );
@@ -811,10 +805,7 @@ pub fn install_edit_drag_marker_callbacks(window: &AppWindow, session: Rc<RefCel
 /// the worker notices it the next time it sees a progress tick and returns
 /// early, so dismissing an in-flight scan is cheap and doesn't leak a
 /// decoder thread for the rest of the file's duration.
-pub fn install_scan_for_errors_callbacks(
-    window: &AppWindow,
-    session: Rc<RefCell<EditSession>>,
-) {
+pub fn install_scan_for_errors_callbacks(window: &AppWindow, session: Rc<RefCell<EditSession>>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -842,9 +833,7 @@ pub fn install_scan_for_errors_callbacks(
             let path = clip.source_path.clone();
             drop(sess);
             if path.as_os_str().is_empty() || !path.exists() {
-                w.set_status_text(
-                    format!("Scan: source file missing: {}", path.display()).into(),
-                );
+                w.set_status_text(format!("Scan: source file missing: {}", path.display()).into());
                 return;
             }
 
@@ -875,9 +864,8 @@ pub fn install_scan_for_errors_callbacks(
                 .spawn(move || {
                     let weak_progress = weak_worker.clone();
                     let cancel_progress = Arc::clone(&cancel_worker);
-                    let scan_result = reel_core::media::scan::scan_file(
-                        &path_for_worker,
-                        move |ratio| {
+                    let scan_result =
+                        reel_core::media::scan::scan_file(&path_for_worker, move |ratio| {
                             if cancel_progress.load(Ordering::SeqCst) {
                                 return; // worker will check again between packets
                             }
@@ -887,8 +875,7 @@ pub fn install_scan_for_errors_callbacks(
                                     win.set_scan_progress(ratio as f32);
                                 }
                             });
-                        },
-                    );
+                        });
 
                     // If the sheet was already dismissed, don't overwrite UI.
                     if cancel_worker.load(Ordering::SeqCst) {
@@ -1213,9 +1200,7 @@ pub(crate) fn refresh_subtitle_overlay(
 ) {
     let text = session
         .project()
-        .and_then(|p| {
-            subtitle::subtitle_text_at_seq_ms(p, window.get_playhead_ms() as f64, cache)
-        })
+        .and_then(|p| subtitle::subtitle_text_at_seq_ms(p, window.get_playhead_ms() as f64, cache))
         .unwrap_or_default();
     window.set_current_subtitle_text(text.into());
 }
@@ -1384,10 +1369,7 @@ fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSessio
             })
         })
         .collect();
-    sender.send(player::Cmd::LoadTimeline {
-        video,
-        audio_lanes,
-    });
+    sender.send(player::Cmd::LoadTimeline { video, audio_lanes });
 }
 
 fn sync_menu_and_autosave(
@@ -1427,13 +1409,41 @@ fn sync_audio_track_menu(window: &AppWindow, session: &EditSession, ph: f64) {
     window.set_audio_track_enabled(enable);
     window.set_audio_track_default_checked(selected.is_none());
 
-    let setters: [(fn(&AppWindow, slint::SharedString), fn(&AppWindow, bool), fn(&AppWindow, i32)); AUDIO_TRACK_MENU_SLOTS] = [
-        (AppWindow::set_audio_track_label_0, AppWindow::set_audio_track_checked_0, AppWindow::set_audio_track_index_0),
-        (AppWindow::set_audio_track_label_1, AppWindow::set_audio_track_checked_1, AppWindow::set_audio_track_index_1),
-        (AppWindow::set_audio_track_label_2, AppWindow::set_audio_track_checked_2, AppWindow::set_audio_track_index_2),
-        (AppWindow::set_audio_track_label_3, AppWindow::set_audio_track_checked_3, AppWindow::set_audio_track_index_3),
-        (AppWindow::set_audio_track_label_4, AppWindow::set_audio_track_checked_4, AppWindow::set_audio_track_index_4),
-        (AppWindow::set_audio_track_label_5, AppWindow::set_audio_track_checked_5, AppWindow::set_audio_track_index_5),
+    let setters: [(
+        fn(&AppWindow, slint::SharedString),
+        fn(&AppWindow, bool),
+        fn(&AppWindow, i32),
+    ); AUDIO_TRACK_MENU_SLOTS] = [
+        (
+            AppWindow::set_audio_track_label_0,
+            AppWindow::set_audio_track_checked_0,
+            AppWindow::set_audio_track_index_0,
+        ),
+        (
+            AppWindow::set_audio_track_label_1,
+            AppWindow::set_audio_track_checked_1,
+            AppWindow::set_audio_track_index_1,
+        ),
+        (
+            AppWindow::set_audio_track_label_2,
+            AppWindow::set_audio_track_checked_2,
+            AppWindow::set_audio_track_index_2,
+        ),
+        (
+            AppWindow::set_audio_track_label_3,
+            AppWindow::set_audio_track_checked_3,
+            AppWindow::set_audio_track_index_3,
+        ),
+        (
+            AppWindow::set_audio_track_label_4,
+            AppWindow::set_audio_track_checked_4,
+            AppWindow::set_audio_track_index_4,
+        ),
+        (
+            AppWindow::set_audio_track_label_5,
+            AppWindow::set_audio_track_checked_5,
+            AppWindow::set_audio_track_index_5,
+        ),
     ];
     for (i, (set_label, set_checked, set_index)) in setters.iter().enumerate() {
         match streams.get(i) {
@@ -1458,13 +1468,41 @@ fn sync_audio_track_menu(window: &AppWindow, session: &EditSession, ph: f64) {
 fn clear_audio_track_menu(window: &AppWindow) {
     window.set_audio_track_enabled(false);
     window.set_audio_track_default_checked(true);
-    let setters: [(fn(&AppWindow, slint::SharedString), fn(&AppWindow, bool), fn(&AppWindow, i32)); AUDIO_TRACK_MENU_SLOTS] = [
-        (AppWindow::set_audio_track_label_0, AppWindow::set_audio_track_checked_0, AppWindow::set_audio_track_index_0),
-        (AppWindow::set_audio_track_label_1, AppWindow::set_audio_track_checked_1, AppWindow::set_audio_track_index_1),
-        (AppWindow::set_audio_track_label_2, AppWindow::set_audio_track_checked_2, AppWindow::set_audio_track_index_2),
-        (AppWindow::set_audio_track_label_3, AppWindow::set_audio_track_checked_3, AppWindow::set_audio_track_index_3),
-        (AppWindow::set_audio_track_label_4, AppWindow::set_audio_track_checked_4, AppWindow::set_audio_track_index_4),
-        (AppWindow::set_audio_track_label_5, AppWindow::set_audio_track_checked_5, AppWindow::set_audio_track_index_5),
+    let setters: [(
+        fn(&AppWindow, slint::SharedString),
+        fn(&AppWindow, bool),
+        fn(&AppWindow, i32),
+    ); AUDIO_TRACK_MENU_SLOTS] = [
+        (
+            AppWindow::set_audio_track_label_0,
+            AppWindow::set_audio_track_checked_0,
+            AppWindow::set_audio_track_index_0,
+        ),
+        (
+            AppWindow::set_audio_track_label_1,
+            AppWindow::set_audio_track_checked_1,
+            AppWindow::set_audio_track_index_1,
+        ),
+        (
+            AppWindow::set_audio_track_label_2,
+            AppWindow::set_audio_track_checked_2,
+            AppWindow::set_audio_track_index_2,
+        ),
+        (
+            AppWindow::set_audio_track_label_3,
+            AppWindow::set_audio_track_checked_3,
+            AppWindow::set_audio_track_index_3,
+        ),
+        (
+            AppWindow::set_audio_track_label_4,
+            AppWindow::set_audio_track_checked_4,
+            AppWindow::set_audio_track_index_4,
+        ),
+        (
+            AppWindow::set_audio_track_label_5,
+            AppWindow::set_audio_track_checked_5,
+            AppWindow::set_audio_track_index_5,
+        ),
     ];
     for (set_label, set_checked, set_index) in setters.iter() {
         set_label(window, "".into());
@@ -2325,40 +2363,38 @@ pub fn run() -> Result<()> {
         // under one undo snapshot. Same dialog as Replace so the user sees a
         // familiar picker; status text differs so "audio swapped" reads as
         // distinct from "audio added".
-        window.on_edit_replace_audio_clear_others(
-            move || match prompt_insert_audio_dialog() {
-                Some(replace_path) => {
-                    let mru_path = replace_path.clone();
-                    let playhead_ms = weak
-                        .upgrade()
-                        .map(|w| w.get_playhead_ms() as f64)
-                        .unwrap_or(0.0);
-                    let result = session
-                        .borrow_mut()
-                        .replace_audio_clip_at_playhead_clear_others(replace_path, playhead_ms);
-                    match result {
-                        Ok(()) => {
-                            recent.borrow_mut().record_media(mru_path);
-                            if let Some(w) = weak.upgrade() {
-                                sync_menu_and_autosave(&w, &session, &debouncer, &recent);
-                                w.set_status_text(
-                                    "Audio replaced — existing audio lanes cleared, new lane \
+        window.on_edit_replace_audio_clear_others(move || match prompt_insert_audio_dialog() {
+            Some(replace_path) => {
+                let mru_path = replace_path.clone();
+                let playhead_ms = weak
+                    .upgrade()
+                    .map(|w| w.get_playhead_ms() as f64)
+                    .unwrap_or(0.0);
+                let result = session
+                    .borrow_mut()
+                    .replace_audio_clip_at_playhead_clear_others(replace_path, playhead_ms);
+                match result {
+                    Ok(()) => {
+                        recent.borrow_mut().record_media(mru_path);
+                        if let Some(w) = weak.upgrade() {
+                            sync_menu_and_autosave(&w, &session, &debouncer, &recent);
+                            w.set_status_text(
+                                "Audio replaced — existing audio lanes cleared, new lane \
                                     added (1 audio track)."
-                                        .into(),
-                                );
-                            }
-                            reload_player_timeline(&sender, &session.borrow());
+                                    .into(),
+                            );
                         }
-                        Err(e) => {
-                            if let Some(w) = weak.upgrade() {
-                                w.set_status_text(format!("Replace audio failed: {e}").into());
-                            }
+                        reload_player_timeline(&sender, &session.borrow());
+                    }
+                    Err(e) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_status_text(format!("Replace audio failed: {e}").into());
                         }
                     }
                 }
-                None => tracing::debug!("replace-and-clear audio cancelled"),
-            },
-        );
+            }
+            None => tracing::debug!("replace-and-clear audio cancelled"),
+        });
     }
 
     {
@@ -2388,10 +2424,8 @@ pub fn run() -> Result<()> {
                                 .unwrap_or(0);
                             sync_menu_and_autosave(&w, &session, &debouncer, &recent);
                             w.set_status_text(
-                                format!(
-                                    "Inserted subtitle @ {playhead_ms:.0} ms ({n} clips)"
-                                )
-                                .into(),
+                                format!("Inserted subtitle @ {playhead_ms:.0} ms ({n} clips)")
+                                    .into(),
                             );
                         }
                         reload_player_timeline(&sender, &session.borrow());
@@ -3119,7 +3153,10 @@ pub fn run() -> Result<()> {
             match session.borrow_mut().toggle_audio_mute_at_seq_ms(ph) {
                 Ok(()) => {
                     sync_menu_and_autosave(&w, &session, &debouncer, &recent);
-                    let muted = session.borrow().audio_mute_state_at_seq_ms(ph).unwrap_or(false);
+                    let muted = session
+                        .borrow()
+                        .audio_mute_state_at_seq_ms(ph)
+                        .unwrap_or(false);
                     w.set_status_text(
                         if muted {
                             "Clip audio muted"
@@ -3859,10 +3896,7 @@ mod ui_smoke_tests {
         );
         assert_eq!(gain_session.borrow().audio_track_gain_db(0), Some(6.5));
         assert!(
-            window
-                .get_status_text()
-                .as_str()
-                .contains("+6.5 dB"),
+            window.get_status_text().as_str().contains("+6.5 dB"),
             "status line reports applied gain, got {:?}",
             window.get_status_text().as_str()
         );

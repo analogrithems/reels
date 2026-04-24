@@ -43,7 +43,11 @@ pub(crate) fn clips_from_first_audio_track(p: &Project) -> Option<Vec<PrimaryTim
 /// embedded audio on the video segments, same policy as before multi-lane.
 pub(crate) fn clips_from_all_audio_tracks(p: &Project) -> Vec<Vec<PrimaryTimelineClip>> {
     let mut lanes = Vec::new();
-    let audio_count = p.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count();
+    let audio_count = p
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .count();
     for i in 0..audio_count {
         if let Some(lane) = clips_for_audio_track_idx(p, i) {
             lanes.push(lane);

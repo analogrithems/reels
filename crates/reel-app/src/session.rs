@@ -1907,10 +1907,7 @@ impl EditSession {
     /// the referenced clip can't be canonicalised.
     pub fn primary_subtitle_path(&self) -> Option<PathBuf> {
         let proj = self.project.as_ref()?;
-        let track = proj
-            .tracks
-            .iter()
-            .find(|t| t.kind == TrackKind::Subtitle)?;
+        let track = proj.tracks.iter().find(|t| t.kind == TrackKind::Subtitle)?;
         let first_id = *track.clip_ids.first()?;
         let clip = proj.clips.iter().find(|c| c.id == first_id)?;
         Some(clip.source_path.clone())
@@ -2821,7 +2818,12 @@ mod tests {
             .iter()
             .map(|t| {
                 let cid = t.clip_ids[0];
-                p.clips.iter().find(|c| c.id == cid).unwrap().source_path.clone()
+                p.clips
+                    .iter()
+                    .find(|c| c.id == cid)
+                    .unwrap()
+                    .source_path
+                    .clone()
             })
             .collect();
         assert!(lane_paths.contains(&PathBuf::from("/tmp/ov-a.wav")));
@@ -2857,8 +2859,7 @@ mod tests {
         // Grow the primary track to two clips so "every primary clip" is a
         // non-trivial assertion (single-clip would be indistinguishable from
         // a one-shot toggle).
-        let tail_ms =
-            timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
+        let tail_ms = timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
         s.insert_clip_at_playhead_with_probe(
             &probe,
             PathBuf::from("/tmp/fake-video-rep-b.mp4"),
@@ -2909,10 +2910,17 @@ mod tests {
         assert_eq!(a.len(), 1, "replace appends one fresh audio lane");
         assert_eq!(a[0].clip_ids.len(), 1);
         let clip_id = a[0].clip_ids[0];
-        let clip = p.clips.iter().find(|c| c.id == clip_id).expect("replacement clip");
+        let clip = p
+            .clips
+            .iter()
+            .find(|c| c.id == clip_id)
+            .expect("replacement clip");
         assert_eq!(clip.source_path, replace_path);
         assert!((clip.out_point - 4.0).abs() < 1e-9, "duration from probe");
-        assert!(!clip.audio_mute, "replacement clip itself must not be muted");
+        assert!(
+            !clip.audio_mute,
+            "replacement clip itself must not be muted"
+        );
     }
 
     #[test]
@@ -2926,8 +2934,7 @@ mod tests {
         let mut s = EditSession::default();
         s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-repu.mp4"))
             .unwrap();
-        let tail_ms =
-            timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
+        let tail_ms = timeline_end_ms_for_tests(s.project().unwrap()).unwrap_or(0.0);
         s.insert_clip_at_playhead_with_probe(
             &probe,
             PathBuf::from("/tmp/fake-video-repu-b.mp4"),
@@ -2940,7 +2947,11 @@ mod tests {
         s.toggle_audio_mute_at_seq_ms(100.0).unwrap();
         let pre_replace_mute_states: Vec<(Uuid, bool)> = {
             let p = s.project().unwrap();
-            let vt = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap();
+            let vt = p
+                .tracks
+                .iter()
+                .find(|t| t.kind == TrackKind::Video)
+                .unwrap();
             vt.clip_ids
                 .iter()
                 .map(|id| {
@@ -2973,7 +2984,11 @@ mod tests {
             "undo removed the replacement clip"
         );
         // Mute states restored exactly — first clip still muted, second not.
-        let vt = p.tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap();
+        let vt = p
+            .tracks
+            .iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .unwrap();
         let restored: Vec<(Uuid, bool)> = vt
             .clip_ids
             .iter()
@@ -2999,18 +3014,10 @@ mod tests {
         s.open_media_with_probe(&probe, PathBuf::from("/tmp/fake-video-repi.mp4"))
             .unwrap();
 
-        s.replace_audio_clip_at_playhead_with_probe(
-            &probe,
-            PathBuf::from("/tmp/ra-1.wav"),
-            0.0,
-        )
-        .unwrap();
-        s.replace_audio_clip_at_playhead_with_probe(
-            &probe,
-            PathBuf::from("/tmp/ra-2.wav"),
-            0.0,
-        )
-        .unwrap();
+        s.replace_audio_clip_at_playhead_with_probe(&probe, PathBuf::from("/tmp/ra-1.wav"), 0.0)
+            .unwrap();
+        s.replace_audio_clip_at_playhead_with_probe(&probe, PathBuf::from("/tmp/ra-2.wav"), 0.0)
+            .unwrap();
 
         let p = s.project().unwrap();
         assert!(s.all_primary_clips_audio_muted());
@@ -3028,11 +3035,7 @@ mod tests {
         let probe = FakeProbe::with_duration(1.0);
         let mut s = EditSession::default();
         let err = s
-            .replace_audio_clip_at_playhead_with_probe(
-                &probe,
-                PathBuf::from("/tmp/ra.wav"),
-                0.0,
-            )
+            .replace_audio_clip_at_playhead_with_probe(&probe, PathBuf::from("/tmp/ra.wav"), 0.0)
             .expect_err("no-project path must error");
         assert!(err.to_string().contains("no project"));
         assert!(s.project().is_none());
@@ -3073,12 +3076,8 @@ mod tests {
         );
 
         let replace_path = PathBuf::from("/tmp/fake-swap.wav");
-        s.replace_audio_clip_at_playhead_clear_others_with_probe(
-            &probe,
-            replace_path.clone(),
-            0.0,
-        )
-        .expect("clear-others replace ok");
+        s.replace_audio_clip_at_playhead_clear_others_with_probe(&probe, replace_path.clone(), 0.0)
+            .expect("clear-others replace ok");
 
         let p = s.project().unwrap();
         let lanes: Vec<_> = p
@@ -3181,12 +3180,8 @@ mod tests {
         );
 
         let replace_path = PathBuf::from("/tmp/fake-only.wav");
-        s.replace_audio_clip_at_playhead_clear_others_with_probe(
-            &probe,
-            replace_path.clone(),
-            0.0,
-        )
-        .unwrap();
+        s.replace_audio_clip_at_playhead_clear_others_with_probe(&probe, replace_path.clone(), 0.0)
+            .unwrap();
 
         let p = s.project().unwrap();
         let lanes: Vec<_> = p
@@ -3284,9 +3279,15 @@ mod tests {
     fn set_audio_track_gain_db_clamps_out_of_range_values() {
         let mut s = EditSession::from_project_for_tests(project_with_two_audio_lanes());
         s.set_audio_track_gain_db(0, 1_000.0).unwrap();
-        assert_eq!(s.audio_track_gain_db(0), Some(EditSession::AUDIO_GAIN_DB_MAX));
+        assert_eq!(
+            s.audio_track_gain_db(0),
+            Some(EditSession::AUDIO_GAIN_DB_MAX)
+        );
         s.set_audio_track_gain_db(0, -1_000.0).unwrap();
-        assert_eq!(s.audio_track_gain_db(0), Some(EditSession::AUDIO_GAIN_DB_MIN));
+        assert_eq!(
+            s.audio_track_gain_db(0),
+            Some(EditSession::AUDIO_GAIN_DB_MIN)
+        );
     }
 
     #[test]
@@ -3416,11 +3417,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let srt = dir.path().join("cap.srt");
-        std::fs::write(
-            &srt,
-            "1\n00:00:00,000 --> 00:00:02,000\nHello\n",
-        )
-        .unwrap();
+        std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:02,000\nHello\n").unwrap();
         let mut s = EditSession::default();
         s.open_media(f).unwrap();
         let err = s
@@ -3441,11 +3438,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let srt = dir.path().join("cap.srt");
-        std::fs::write(
-            &srt,
-            "1\n00:00:00,500 --> 00:00:02,250\nHi\n",
-        )
-        .unwrap();
+        std::fs::write(&srt, "1\n00:00:00,500 --> 00:00:02,250\nHi\n").unwrap();
         let mut s = EditSession::default();
         s.open_media(f).unwrap();
         s.add_subtitle_track().unwrap();
@@ -3471,11 +3464,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let vtt = dir.path().join("cap.vtt");
-        std::fs::write(
-            &vtt,
-            "WEBVTT\n\n00:00:00.500 --> 00:00:02.000\nHi\n",
-        )
-        .unwrap();
+        std::fs::write(&vtt, "WEBVTT\n\n00:00:00.500 --> 00:00:02.000\nHi\n").unwrap();
         let mut s = EditSession::default();
         s.open_media(f).unwrap();
         s.add_subtitle_track().unwrap();
@@ -3820,9 +3809,7 @@ mod tests {
     #[test]
     fn trim_edge_drag_rejects_unknown_clip_id() {
         let mut s = session_with_two_clip_project();
-        assert!(s
-            .trim_clip_by_edge_drag(Uuid::new_v4(), 0, 0.1)
-            .is_err());
+        assert!(s.trim_clip_by_edge_drag(Uuid::new_v4(), 0, 0.1).is_err());
         assert!(!s.undo_enabled());
     }
 

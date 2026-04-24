@@ -351,11 +351,7 @@ fn sidecar_path_for(path: &Path, in_ms: u64, out_ms: u64) -> Option<PathBuf> {
 /// configuration. Any mismatch — version bump, raster size change, clip
 /// trim change, truncated file — returns `None` so the caller falls
 /// through to a fresh decode.
-fn read_sidecar(
-    path: &Path,
-    expected_in_ms: u64,
-    expected_out_ms: u64,
-) -> Option<Vec<(f32, f32)>> {
+fn read_sidecar(path: &Path, expected_in_ms: u64, expected_out_ms: u64) -> Option<Vec<(f32, f32)>> {
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() < SIDECAR_HEADER_LEN {
         return None;
@@ -421,12 +417,7 @@ fn write_sidecar(
 /// Decode audio via ffmpeg and produce `cols` (min, max) pairs spanning
 /// the clip. Samples are mixed down to mono at 48 kHz for peak extraction
 /// (stereo width doesn't read at this resolution).
-fn decode_peaks(
-    path: &Path,
-    in_ms: u64,
-    out_ms: u64,
-    cols: usize,
-) -> Result<Vec<(f32, f32)>> {
+fn decode_peaks(path: &Path, in_ms: u64, out_ms: u64, cols: usize) -> Result<Vec<(f32, f32)>> {
     // ffmpeg::init() is idempotent; the player thread calls it too and
     // double-init is a no-op.
     ffmpeg::init().ok();
@@ -654,8 +645,7 @@ fn generate_thumbnails_buffer(
         // Sample at the midpoint of each cell (`i + 0.5` / `N`) so the
         // first thumb is shortly after `in_ms` rather than exactly at
         // it (clips often open on a black/logo frame at t=0).
-        let t_ms =
-            in_ms + ((i as u64 * 2 + 1) * span_ms) / (THUMB_COUNT as u64 * 2);
+        let t_ms = in_ms + ((i as u64 * 2 + 1) * span_ms) / (THUMB_COUNT as u64 * 2);
         let ts = (t_ms as i64) * i64::from(ffmpeg::ffi::AV_TIME_BASE) / 1000;
         let _ = input.seek(ts, ..ts);
         decoder.flush();

@@ -115,10 +115,12 @@ pub fn parse_str(body: &str) -> Vec<SrtCue> {
             break;
         };
         let inner = &stripped[after_open..after_open + close_rel];
-        let close_tag_end = after_open + close_rel + stripped[after_open + close_rel..]
-            .find('>')
-            .map(|o| o + 1)
-            .unwrap_or(0);
+        let close_tag_end = after_open
+            + close_rel
+            + stripped[after_open + close_rel..]
+                .find('>')
+                .map(|o| o + 1)
+                .unwrap_or(0);
 
         if let Some(cue) = parse_p_cue(open_tag, inner) {
             out.push(cue);
@@ -144,10 +146,15 @@ fn find_p_open(s: &str) -> Option<usize> {
             // Allow only ASCII word chars between `<` and `:` — avoids
             // matching random `<foo bar:baz="">` attribute-looking text.
             let prefix = &rest[..colon];
-            if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            if !prefix.is_empty()
+                && prefix
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             {
                 let after = &rest[colon + 1..];
-                if after.starts_with('p') && after[1..].starts_with(is_tag_break_char as fn(char) -> bool) {
+                if after.starts_with('p')
+                    && after[1..].starts_with(is_tag_break_char as fn(char) -> bool)
+                {
                     return Some(abs);
                 }
             }
@@ -169,10 +176,15 @@ fn find_p_close(s: &str) -> Option<usize> {
         }
         if let Some(colon) = rest.find(':') {
             let prefix = &rest[..colon];
-            if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            if !prefix.is_empty()
+                && prefix
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             {
                 let after = &rest[colon + 1..];
-                if after.starts_with('p') && after[1..].starts_with(is_tag_break_char as fn(char) -> bool) {
+                if after.starts_with('p')
+                    && after[1..].starts_with(is_tag_break_char as fn(char) -> bool)
+                {
                     return Some(abs);
                 }
             }
@@ -239,7 +251,7 @@ fn attr_value<'a>(open_tag: &'a str, name: &str) -> Option<&'a str> {
             continue;
         }
         let after = abs + needle.len();
-        let q = open_tag.as_bytes().get(after)? ;
+        let q = open_tag.as_bytes().get(after)?;
         if *q != b'"' && *q != b'\'' {
             search_from = after;
             continue;
@@ -266,9 +278,10 @@ fn flatten_inline(inner: &str) -> String {
             // Peek for `<br` (possibly prefixed, possibly with attributes).
             let rest = &inner[i + 1..];
             let is_br = rest.starts_with("br")
-                && rest.as_bytes().get(2).is_some_and(|c| {
-                    matches!(*c, b'/' | b'>' | b' ' | b'\t' | b'\r' | b'\n')
-                });
+                && rest
+                    .as_bytes()
+                    .get(2)
+                    .is_some_and(|c| matches!(*c, b'/' | b'>' | b' ' | b'\t' | b'\r' | b'\n'));
             let is_prefixed_br = rest
                 .find(':')
                 .and_then(|colon| {
