@@ -3099,13 +3099,13 @@ mod tests {
         assert!(
             !p.clips
                 .iter()
-                .any(|c| c.source_path == PathBuf::from("/tmp/overlay-1.wav")),
+                .any(|c| c.source_path == Path::new("/tmp/overlay-1.wav")),
             "overlay-1 clip should be gone"
         );
         assert!(
             !p.clips
                 .iter()
-                .any(|c| c.source_path == PathBuf::from("/tmp/overlay-2.wav")),
+                .any(|c| c.source_path == Path::new("/tmp/overlay-2.wav")),
             "overlay-2 clip should be gone"
         );
         assert!(s.all_primary_clips_audio_muted(), "primary track muted");

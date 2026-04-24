@@ -98,6 +98,12 @@ slint::include_modules!();
 
 type ExportSpanVec = Vec<(PathBuf, f64, f64)>;
 
+/// Fully-assembled export payload returned by [`export_timeline_payload_with_gains`]:
+/// `(video_spans, audio_lanes_spans, per-video-clip mute mask, per-lane gain dB)`.
+/// The tuple is an implementation detail; callers immediately destructure it.
+/// Aliased to keep the function signature under clippy's `type_complexity` lint.
+type ExportPayload = (ExportSpanVec, Vec<ExportSpanVec>, Vec<bool>, Vec<f32>);
+
 fn save_preview_zoom_prefs(app_prefs: &RefCell<AppPrefs>, w: &AppWindow) {
     let mut p = app_prefs.borrow_mut();
     p.preview_zoom_percent = w.get_preview_zoom_percent().clamp(25.0, 400.0);
@@ -217,7 +223,7 @@ fn export_timeline_payload(
 fn export_timeline_payload_with_gains(
     session: &EditSession,
     range_ms: Option<(f64, f64)>,
-) -> Option<(ExportSpanVec, Vec<ExportSpanVec>, Vec<bool>, Vec<f32>)> {
+) -> Option<ExportPayload> {
     let video_clips = session.project().and_then(timeline::clips_from_project)?;
     let video_clips = match range_ms {
         Some(r) => timeline::slice_clips_to_range_ms(&video_clips, r),
@@ -242,7 +248,7 @@ fn export_timeline_payload_with_gains(
     let all_gains = session.audio_track_gains_db();
     let (audio_lane_spans, lane_gains_db): (Vec<ExportSpanVec>, Vec<f32>) = lane_clip_lists
         .into_iter()
-        .zip(all_gains.into_iter())
+        .zip(all_gains)
         .filter_map(|(clips, gain)| {
             let sliced = match range_ms {
                 Some(r) => timeline::slice_clips_to_range_ms(&clips, r),
@@ -1361,7 +1367,7 @@ fn reload_player_timeline(sender: &player::PlayerCmdSender, session: &EditSessio
     let all_gains = session.audio_track_gains_db();
     let audio_lanes: Vec<player::AudioLaneLoad> = lane_clip_lists
         .into_iter()
-        .zip(all_gains.into_iter())
+        .zip(all_gains)
         .filter_map(|(clips, gain_db)| {
             timeline::TimelineSync::from_clips(&clips).map(|sync| player::AudioLaneLoad {
                 timeline: sync,
@@ -1391,6 +1397,16 @@ fn sync_menu_and_autosave(
 /// that only have one or two tracks.
 const AUDIO_TRACK_MENU_SLOTS: usize = 6;
 
+/// One row's worth of Slint property setters for the **Edit → Audio Track**
+/// submenu: `(set_label, set_checked, set_index)`. Aliased so the fixed-size
+/// setter arrays in `sync_audio_track_menu` / `clear_audio_track_menu` don't
+/// trip clippy's `type_complexity` lint.
+type AudioTrackSetter = (
+    fn(&AppWindow, slint::SharedString),
+    fn(&AppWindow, bool),
+    fn(&AppWindow, i32),
+);
+
 /// Push the current primary-clip's audio streams into the `audio-track-*`
 /// Slint properties backing **Edit → Audio Track**. `ph` is the playhead in
 /// sequence ms; we consult the clip under it for both the stream list
@@ -1409,11 +1425,7 @@ fn sync_audio_track_menu(window: &AppWindow, session: &EditSession, ph: f64) {
     window.set_audio_track_enabled(enable);
     window.set_audio_track_default_checked(selected.is_none());
 
-    let setters: [(
-        fn(&AppWindow, slint::SharedString),
-        fn(&AppWindow, bool),
-        fn(&AppWindow, i32),
-    ); AUDIO_TRACK_MENU_SLOTS] = [
+    let setters: [AudioTrackSetter; AUDIO_TRACK_MENU_SLOTS] = [
         (
             AppWindow::set_audio_track_label_0,
             AppWindow::set_audio_track_checked_0,
@@ -1468,11 +1480,7 @@ fn sync_audio_track_menu(window: &AppWindow, session: &EditSession, ph: f64) {
 fn clear_audio_track_menu(window: &AppWindow) {
     window.set_audio_track_enabled(false);
     window.set_audio_track_default_checked(true);
-    let setters: [(
-        fn(&AppWindow, slint::SharedString),
-        fn(&AppWindow, bool),
-        fn(&AppWindow, i32),
-    ); AUDIO_TRACK_MENU_SLOTS] = [
+    let setters: [AudioTrackSetter; AUDIO_TRACK_MENU_SLOTS] = [
         (
             AppWindow::set_audio_track_label_0,
             AppWindow::set_audio_track_checked_0,

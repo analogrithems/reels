@@ -385,6 +385,12 @@ pub fn export_concat_timeline(
 ///
 /// `mute_audio` emits `-an` so the output has no audio track. Paired with the
 /// **Edit → Mute Clip Audio** edit when every primary-track clip is muted.
+//
+// Argument count (9) is intentional: each input is an independent orthogonal
+// axis of the export (segments, orientation, scale, subtitles, mute, output,
+// format, bitrate, progress fn). Grouping them into a struct would trade
+// call-site clarity for a one-time allocation with no behavioral win.
+#[allow(clippy::too_many_arguments)]
 pub fn export_concat_timeline_oriented(
     segments: &[(PathBuf, f64, f64)],
     orientation: Option<ClipOrientation>,
@@ -557,6 +563,7 @@ pub fn export_concat_with_audio(
 /// `audio_lanes` must be in project order (first = preview-driving lane).
 /// Empty lane vectors inside the outer vec are not expected — `timeline::
 /// clips_from_all_audio_tracks` strips lanes with no clips.
+#[allow(clippy::too_many_arguments)]
 pub fn export_concat_with_audio_lanes_oriented(
     video_segments: &[(PathBuf, f64, f64)],
     audio_lanes: &[Vec<(PathBuf, f64, f64)>],
@@ -611,6 +618,7 @@ pub fn export_concat_with_audio_lanes_oriented(
 /// branch with `-filter:a` and container-specific codec selection that the
 /// amix path already solves. Routing N=1 through amix pays the cost of one
 /// transcode for a ~10 loc function instead of duplicating the codec dispatch.
+#[allow(clippy::too_many_arguments)]
 pub fn export_concat_with_audio_lanes_oriented_with_gains(
     video_segments: &[(PathBuf, f64, f64)],
     audio_lanes: &[Vec<(PathBuf, f64, f64)>],
@@ -693,6 +701,7 @@ pub fn export_concat_with_audio_lanes_oriented_with_gains(
 ///
 /// `mute_audio` drops the audio track from the output (`-an`); when true, this
 /// function ignores `audio_segments` and delegates to the video-only pipeline.
+#[allow(clippy::too_many_arguments)]
 pub fn export_concat_with_audio_oriented(
     video_segments: &[(PathBuf, f64, f64)],
     audio_segments: Option<&[(PathBuf, f64, f64)]>,
@@ -836,6 +845,7 @@ pub fn export_concat_with_audio_oriented(
 ///
 /// The amix output cannot be stream-copied — every preset forces a container-
 /// appropriate audio codec via [`append_mixed_audio_format_args`].
+#[allow(clippy::too_many_arguments)]
 fn export_concat_with_audio_mix_oriented(
     video_segments: &[(PathBuf, f64, f64)],
     audio_lanes: &[Vec<(PathBuf, f64, f64)>],
@@ -2363,7 +2373,7 @@ mod tests {
         let f = args.iter().position(|a| *a == "-f").expect("missing -f");
         assert_eq!(args[f + 1], "gif");
         // No audio codec is emitted — `-an` fully drops the audio stream.
-        assert!(!args.iter().any(|a| *a == "-c:a"));
+        assert!(!args.contains(&"-c:a"));
     }
 
     #[test]
